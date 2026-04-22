@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  DRIVER
+  PASSENGER
+}
+
+enum ExperienceLevel {
+  INICIANTE
+  INTERMEDIARIO
+  PROFISSIONAL
+  ELITE
+}
+
+enum VehicleCategory {
+  CONFORTO
+  EXECUTIVO
+}
+
+enum Region {
+  ZN
+  ZS
+  ZO
+  BAIXADA
+  INTER
+}
+
+enum RideStatus {
+  PENDING
+  MATCHING
+  WAITING_DRIVER
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum RideOfferStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  phone     String
+  role      UserRole
+  createdAt DateTime @default(now())
+
+  driver    Driver?
+  passenger Passenger?
+}
+
+model Driver {
+  id              String          @id @default(uuid())
+  userId          String          @unique
+  experienceLevel ExperienceLevel
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  selectedRides RideRequest[]
+
+  user        User                 @relation(fields: [userId], references: [id])
+  vehicles    Vehicle[]
+  regions     DriverRegion[]
+  offers      RideOffer[]
+  availability DriverAvailability[]
+
+  referredPassengers Passenger[]  @relation("DriverReferral")
+}
+
+model Passenger {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  referredByDriverId String?
+
+  user User @relation(fields: [userId], references: [id])
+
+  referredByDriver Driver? @relation("DriverReferral", fields: [referredByDriverId], references: [id])
+
+  rideRequests RideRequest[]
+}
+
+model Vehicle {
+  id        String          @id @default(uuid())
+  driverId  String
+  model     String
+  brand     String
+  plate     String          @unique
+  category  VehicleCategory
+  createdAt DateTime        @default(now())
+
+  driver Driver @relation(fields: [driverId], references: [id])
+}
+
+model DriverRegion {
+  id       String @id @default(uuid())
+  driverId String
+  region   Region
+
+  driver Driver @relation(fields: [driverId], references: [id])
+
+  @@unique([driverId, region])
+}
+
+model DriverAvailability {
+  id        String @id @default(uuid())
+  driverId  String
+  dayOfWeek Int
+  startTime String
+  endTime   String
+
+  driver Driver @relation(fields: [driverId], references: [id])
+}
+
+model RideRequest {
+  id               String      @id @default(uuid())
+  passengerId      String
+  origin           String
+  destination      String
+
+  // 🚀 NOVOS CAMPOS (V2 READY)
+  originLat        Float?
+  originLng        Float?
+  destinationLat   Float?
+  destinationLng   Float?
+
+  distanceKm       Float?
+  durationMin      Int?
+
+  priceEstimated   Float?
+  priceOffered     Float?
+
+  scheduledAt      DateTime
+  status           RideStatus  @default(PENDING)
+  selectedDriverId String?
+  createdAt        DateTime    @default(now())
+
+  passenger Passenger @relation(fields: [passengerId], references: [id])
+
+  offers RideOffer[]
+
+  selectedDriver Driver? @relation(fields: [selectedDriverId], references: [id])
+
+  @@index([scheduledAt])
+}
+
+model RideOffer {
+  id            String          @id @default(uuid())
+  rideRequestId String
+  driverId      String
+  status        RideOfferStatus @default(PENDING)
+  expiresAt     DateTime
+  respondedAt   DateTime?
+  createdAt     DateTime        @default(now())
+
+  rideRequest RideRequest @relation(fields: [rideRequestId], references: [id])
+  driver      Driver      @relation(fields: [driverId], references: [id])
+
+  @@unique([rideRequestId, driverId])
+  @@index([driverId, status])
+}
