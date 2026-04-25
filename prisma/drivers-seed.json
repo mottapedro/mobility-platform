@@ -1,0 +1,20 @@
+[
+  {
+    "name": "Carlos Silva",
+    "driverId": "565d3296-3a72-4219-bd4f-37b3caa03bef",
+    "email": "carlos@driver.com",
+    "region": "ZN"
+  },
+  {
+    "name": "Marcos Lima",
+    "driverId": "3c010fb6-271f-4e5d-b772-f845eca48c0d",
+    "email": "marcos@driver.com",
+    "region": "ZS"
+  },
+  {
+    "name": "Roberto Souza",
+    "driverId": "46911d29-b777-4ba4-8f1e-d974b6217f83",
+    "email": "roberto@driver.com",
+    "region": "ZO"
+  }
+]
