@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
+import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
 
 
 let distanceKm: number | null = null;
@@ -91,8 +92,6 @@ export class RideController {
         });
       }
 
-      console.log("🔥 ANTES DO CREATE PRISMA");
-
       const ride = await prisma.rideRequest.create({
         data: {
           passengerId,
@@ -118,7 +117,17 @@ export class RideController {
         },
       });
 
-      console.log("🔥 DEPOIS DO CREATE PRISMA", ride);
+      // 🚀 Dispara o matching em background (não bloqueia HTTP)
+      setImmediate(async () => {
+        try {
+          console.log(`🚀 Iniciando matching para ride ${ride.id}`);
+          const matchRideUseCase = new MatchRideUseCase();
+          await matchRideUseCase.execute({ rideId: ride.id });
+          console.log(`✅ Matching finalizado para ride ${ride.id}`);
+        } catch (error) {
+          console.error(`🔥 Erro no matching da ride ${ride.id}:`, error);
+        }
+      });
 
       return res.status(201).json({
         message: "Corrida criada com sucesso",
