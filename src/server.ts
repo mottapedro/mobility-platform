@@ -18,15 +18,19 @@ app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
 
-// ⏱️ Job: expira offers pendentes vencidas a cada 10s
-const expireOffersService = new ExpireOffersService();
-setInterval(() => {
-  expireOffersService.execute().catch((err) => {
-    console.error("🔥 Erro no job de expiração de offers:", err);
-  });
-}, 10_000);
+if (process.env.NODE_ENV !== "test") {
+  // ⏱️ Job: expira offers pendentes vencidas a cada 10s
+  const expireOffersService = new ExpireOffersService();
+  setInterval(() => {
+    expireOffersService.execute().catch((err) => {
+      console.error("🔥 Erro no job de expiração de offers:", err);
+    });
+  }, 10_000);
 
-app.listen(3000, () => {
-  console.log("🚀 Server running on port 3000");
-  console.log("⏱️ Job de expiração de offers ativo (a cada 10s)");
-});
+  app.listen(3000, () => {
+    console.log("🚀 Server running on port 3000");
+    console.log("⏱️ Job de expiração de offers ativo (a cada 10s)");
+  });
+}
+
+export { app };

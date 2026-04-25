@@ -1,7 +1,28 @@
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
+
+// ─── Tipo do contexto da corrida (V1.3) ────────────────────────────────────
+export interface RideContext {
+  vip?:     boolean;
+  airport?: boolean;
+  pet?:     boolean;
+  luggage?: boolean;
+}
+
+function validateContext(raw: unknown): RideContext | null {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  const c = raw as Record<string, unknown>;
+  const allowed = ["vip", "airport", "pet", "luggage"];
+  for (const key of Object.keys(c)) {
+    if (!allowed.includes(key)) return null;
+    if (c[key] !== undefined && typeof c[key] !== "boolean") return null;
+  }
+  return c as RideContext;
+}
 
 
 let distanceKm: number | null = null;
@@ -19,7 +40,7 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt } = req.body;
+      const { passengerId, origin, destination, scheduledAt, context: rawContext } = req.body;
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
@@ -58,6 +79,15 @@ export class RideController {
         });
       }
 
+      // valida context (opcional)
+      const context = validateContext(rawContext);
+      if (rawContext !== undefined && context === null) {
+        return res.status(400).json({
+          error: "Invalid context",
+          details: "context deve ser um objeto com campos opcionais: isAirport, isPet, isLuggage, isVip (boolean)",
+        });
+      }
+
       // valida passageiro
       const passengerExists = await prisma.passenger.findUnique({
         where: { id: passengerId },
@@ -92,15 +122,46 @@ export class RideController {
         });
       }
 
+      // ─── FASE 3: Validação de conflito de horário ───────────────────────────
+      const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutos
+      const windowStart = new Date(date.getTime() - CONFLICT_WINDOW_MS);
+      const windowEnd   = new Date(date.getTime() + CONFLICT_WINDOW_MS);
+
+      const conflictingRide = await prisma.rideRequest.findFirst({
+        where: {
+          passengerId,
+          scheduledAt: { gte: windowStart, lte: windowEnd },
+          status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER", "ACCEPTED"] },
+        },
+      });
+
+      if (conflictingRide) {
+        return res.status(409).json({
+          error: "Você já possui uma corrida agendada nesse horário.",
+          code: "SCHEDULE_CONFLICT",
+          conflictingRideId: conflictingRide.id,
+        });
+      }
+      // ───────────────────────────────────────────────────────────────────────
+
+      const safeContext: Prisma.InputJsonValue | undefined = context
+        ? {
+            vip:     context.vip     ?? false,
+            airport: context.airport ?? false,
+            pet:     context.pet     ?? false,
+            luggage: context.luggage ?? false,
+          }
+        : undefined;
+
       const ride = await prisma.rideRequest.create({
         data: {
           passengerId,
           origin: originTrimmed,
           destination: destinationTrimmed,
           scheduledAt: date,
-
           distanceKm,
           durationMin,
+          ...(safeContext !== undefined ? { context: safeContext } : {}),
         },
         include: {
           passenger: {

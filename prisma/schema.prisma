@@ -146,6 +146,9 @@ model RideRequest {
   priceEstimated   Float?
   priceOffered     Float?
 
+  // 🎯 V1.3 — Contexto da corrida
+  context          Json?
+
   scheduledAt      DateTime
   status           RideStatus  @default(PENDING)
   selectedDriverId String?

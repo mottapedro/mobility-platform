@@ -1,4 +1,5 @@
 import { prisma } from "../../infra/prisma/client";
+import { RideContext } from "../../presentation/controllers/ride.controller";
 
 export type MatchLevel = "REFERRED" | "PARTNER" | "GENERAL";
 
@@ -6,6 +7,62 @@ export interface MatchInput {
   rideId: string;
   level?: MatchLevel;
   excludedDriverIds?: string[];
+}
+
+// ─── Lógica de prioridade por contexto ─────────────────────────────────────
+type PriorityLevel = "HIGH" | "MEDIUM" | "LOW";
+
+function calculatePriority(context: RideContext | null): PriorityLevel {
+  if (!context) return "LOW";
+  const score =
+    (context.vip     ? 4 : 0) +
+    (context.airport ? 2 : 0) +
+    (context.pet     ? 1 : 0) +
+    (context.luggage ? 1 : 0);
+  if (score >= 4) return "HIGH";
+  if (score >= 2) return "MEDIUM";
+  return "LOW";
+}
+
+// Filtra e ordena drivers baseado no contexto da corrida
+function applyContextFilters(
+  drivers: { id: string; experienceLevel: string; vehicles: { category: string }[] }[],
+  context: RideContext | null
+): { id: string; experienceLevel: string; vehicles: { category: string }[] }[] {
+  if (!context) return drivers;
+
+  let filtered = [...drivers];
+
+  // vip → priorizar ELITE primeiro
+  if (context.vip) {
+    const elite = filtered.filter(d => d.experienceLevel === "ELITE");
+    const others = filtered.filter(d => d.experienceLevel !== "ELITE");
+    filtered = [...elite, ...others];
+    console.log(`⭐ VIP: ${elite.length} drivers ELITE priorizados`);
+  }
+
+  // airport → priorizar categoria EXECUTIVO
+  if (context.airport) {
+    const exec = filtered.filter(d => d.vehicles.some(v => v.category === "EXECUTIVO"));
+    const others = filtered.filter(d => !d.vehicles.some(v => v.category === "EXECUTIVO"));
+    filtered = [...exec, ...others];
+    console.log(`✈️ Aeroporto: ${exec.length} drivers EXECUTIVO priorizados`);
+  }
+
+  // luggage → priorizar EXECUTIVO (veículo maior)
+  if (context.luggage && !context.airport) {
+    const exec = filtered.filter(d => d.vehicles.some(v => v.category === "EXECUTIVO"));
+    const others = filtered.filter(d => !d.vehicles.some(v => v.category === "EXECUTIVO"));
+    filtered = [...exec, ...others];
+    console.log(`💼 Bagagem: ${exec.length} drivers EXECUTIVO priorizados`);
+  }
+
+  // pet → por ora não filtra (simulação), apenas loga
+  if (context.pet) {
+    console.log(`🐶 Pet: todos os drivers disponíveis (filtro futuro)`);
+  }
+
+  return filtered;
 }
 
 export class MatchRideUseCase {
@@ -81,11 +138,14 @@ export class MatchRideUseCase {
     }
 
     const referredDriverId = ride.passenger.referredByDriverId ?? null;
+    const rideContext = (ride.context ?? null) as RideContext | null;
+    const priority = calculatePriority(rideContext);
 
     // 2. Derivar nível se não fornecido
     const level = input.level ?? (await this.deriveLevel(rideId, referredDriverId));
 
-    console.log(`🚀 Matching iniciado (${level}) para corrida ${rideId}`);
+    console.log(`🚀 Matching iniciado (${level} | prioridade: ${priority}) para corrida ${rideId}`);
+    if (rideContext) console.log(`🎯 Contexto:`, rideContext);
 
     // 3. Atualizar status da corrida
     await prisma.rideRequest.update({
@@ -108,12 +168,10 @@ export class MatchRideUseCase {
     // ── Tier 1: REFERRED ─────────────────────────────────────────────────────
     if (level === "REFERRED") {
       if (!referredDriverId) {
-        // Sem indicação → escalar direto para GENERAL
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
 
       if (alreadyOfferedIds.has(referredDriverId)) {
-        // Já foi tentado → escalar para PARTNER
         return this.execute({ rideId, level: "PARTNER", excludedDriverIds });
       }
 
@@ -136,17 +194,18 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
 
-      // Buscar drivers da rede do driver indicado (referredDrivers)
       const partnerExcluded = [...alreadyOfferedIds, referredDriverId];
 
-      const partnerDrivers = await prisma.driver.findMany({
+      const partnerDriversRaw = await prisma.driver.findMany({
         where: {
           isActive: true,
           id: { notIn: partnerExcluded },
           referredByDriverId: referredDriverId,
         },
-        select: { id: true },
+        select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
       });
+
+      const partnerDrivers = applyContextFilters(partnerDriversRaw, rideContext);
 
       console.log(`🤝 Drivers parceiros encontrados: ${partnerDrivers.length}`);
 
@@ -155,7 +214,6 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
 
-      // Envio em lote para todos os parceiros do tier
       for (const driver of partnerDrivers) {
         await this.createOffer(rideId, driver.id, expiresAt);
       }
@@ -163,13 +221,15 @@ export class MatchRideUseCase {
     }
 
     // ── Tier 3: GENERAL ───────────────────────────────────────────────────────
-    const generalDrivers = await prisma.driver.findMany({
+    const generalDriversRaw = await prisma.driver.findMany({
       where: {
         isActive: true,
         id: { notIn: [...alreadyOfferedIds] },
       },
-      select: { id: true },
+      select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
     });
+
+    const generalDrivers = applyContextFilters(generalDriversRaw, rideContext);
 
     if (generalDrivers.length === 0) {
       console.log(`⚠️ Nenhum driver disponível para corrida ${rideId}`);
