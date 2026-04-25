@@ -77,6 +77,11 @@ model Driver {
   availability DriverAvailability[]
 
   referredPassengers Passenger[]  @relation("DriverReferral")
+
+  // 🔥 Rede de indicação Driver ↔ Driver
+  referredByDriverId String?
+  referredByDriver   Driver?  @relation("DriverNetwork", fields: [referredByDriverId], references: [id])
+  referredDrivers    Driver[] @relation("DriverNetwork")
 }
 
 model Passenger {
