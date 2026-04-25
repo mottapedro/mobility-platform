@@ -1,4 +1,5 @@
 import { prisma } from "../../infra/prisma/client";
+import { MatchRideUseCase } from "./MatchRideUseCase";
 
 export class ExpireOffersService {
   async execute(): Promise<void> {
@@ -24,7 +25,7 @@ export class ExpireOffersService {
 
     console.log(`⏱️ ${offerIds.length} offer(s) expirada(s)`);
 
-    // 🔥 versão otimizada
+    // Para cada corrida afetada, verificar se há offers ativas — se não, tentar re-match
     const ridesWithActiveOffers = await prisma.rideOffer.groupBy({
       by: ["rideRequestId"],
       where: {
@@ -38,18 +39,34 @@ export class ExpireOffersService {
       ridesWithActiveOffers.map((r) => r.rideRequestId)
     );
 
-    const ridesToExpire = rideIds.filter((id) => !activeRideSet.has(id));
+    // Corridas sem offers ativas: tentar re-match antes de expirar
+    const ridesToRematch = rideIds.filter((id) => !activeRideSet.has(id));
 
-    if (ridesToExpire.length > 0) {
+    if (ridesToRematch.length === 0) return;
+
+    const matchRide = new MatchRideUseCase();
+    const expiredRideIds: string[] = [];
+
+    for (const rideId of ridesToRematch) {
+      console.log(`🔄 Re-match automático para corrida ${rideId}...`);
+      const { matched } = await matchRide.execute({ rideId });
+
+      if (!matched) {
+        expiredRideIds.push(rideId);
+      }
+    }
+
+    // Só expira as corridas que não encontraram nenhum driver disponível
+    if (expiredRideIds.length > 0) {
       await prisma.rideRequest.updateMany({
         where: {
-          id: { in: ridesToExpire },
+          id: { in: expiredRideIds },
           status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER"] },
         },
         data: { status: "EXPIRED" },
       });
 
-      console.log(`❌ ${ridesToExpire.length} corrida(s) expirada(s)`);
+      console.log(`❌ ${expiredRideIds.length} corrida(s) expirada(s) — sem drivers disponíveis`);
     }
   }
 }
