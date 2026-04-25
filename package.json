@@ -7,6 +7,7 @@
     "dev": "nodemon --exec ts-node -r tsconfig-paths/register src/server.ts",
     "build": "tsc",
     "start": "node -r tsconfig-paths/register dist/server.js",
+    "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [],
@@ -15,6 +16,8 @@
   "type": "commonjs",
   "dependencies": {
     "@prisma/adapter-pg": "^7.7.0",
+    "@types/cors": "^2.8.19",
+    "cors": "^2.8.6",
     "dotenv": "^17.4.1",
     "express": "^5.2.1",
     "pg": "^8.20.0",

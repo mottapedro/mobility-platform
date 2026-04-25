@@ -1,18 +1,22 @@
 import express from "express";
+import cors from "cors";
 import dotenv from "dotenv";
 import "dotenv/config"; // 👈 DEVE ser a primeira linha
 
 import { rideRoutes } from "./presentation/routes/ride.routes";
 import { offerRoutes } from "./presentation/routes/offer.routes";
+import { passengerRoutes } from "./presentation/routes/passenger.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 
 dotenv.config();
 
 const app = express();
+app.use(cors({ origin: "http://localhost:3001" }));
 app.use(express.json());
 
 app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
+app.use("/passengers", passengerRoutes);
 
 // ⏱️ Job: expira offers pendentes vencidas a cada 10s
 const expireOffersService = new ExpireOffersService();
