@@ -164,6 +164,60 @@ async function main() {
     console.log("\n📁 prisma/drivers-seed.json gerado com sucesso!");
   }
 
+  console.log("\n👤 Seeding passageiro de demo...");
+
+  // ID usado pelo frontend como FALLBACK_PASSENGER_ID
+  const DEMO_PASSENGER_ID = "b3a5278a-0ebf-4d97-8699-669951c8e41c";
+  const DEMO_PASSENGER_NAME = "Ana Beatriz Santos";
+  const DEMO_PASSENGER_EMAIL = "ana.beatriz@mobility.com";
+
+  const existingPassengerUser = await prisma.user.findUnique({
+    where: { email: DEMO_PASSENGER_EMAIL },
+  });
+
+  // Também procura pelo email antigo (seed anterior usava outro email)
+  const oldPassengerUser = await prisma.user.findUnique({
+    where: { email: "passageiro.demo@mobility.com" },
+  });
+
+  if (oldPassengerUser) {
+    // Atualiza nome do usuário antigo para o nome real
+    await prisma.user.update({
+      where: { email: "passageiro.demo@mobility.com" },
+      data: { name: DEMO_PASSENGER_NAME, email: DEMO_PASSENGER_EMAIL },
+    });
+    // Garante que o passenger tem o referredByDriverId correto
+    if (carlosId) {
+      await prisma.passenger.updateMany({
+        where: { userId: oldPassengerUser.id },
+        data: { referredByDriverId: carlosId },
+      });
+    }
+    console.log(`✅ Passageiro demo atualizado: ${DEMO_PASSENGER_NAME}`);
+  } else if (!existingPassengerUser) {
+    const passengerUser = await prisma.user.create({
+      data: {
+        name: DEMO_PASSENGER_NAME,
+        email: DEMO_PASSENGER_EMAIL,
+        phone: "11999990099",
+        role: "PASSENGER",
+      },
+    });
+
+    await prisma.passenger.create({
+      data: {
+        id: DEMO_PASSENGER_ID,
+        userId: passengerUser.id,
+        referredByDriverId: carlosId ?? null,
+      },
+    });
+
+    console.log(`✅ Passageiro demo criado: ${DEMO_PASSENGER_ID}`);
+    if (carlosId) console.log(`🔗 Indicado por: Carlos Silva`);
+  } else {
+    console.log(`⚠️  Passageiro demo já existe, pulando...`);
+  }
+
   console.log("🌱 Seed concluído!");
 }
 
