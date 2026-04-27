@@ -6,6 +6,8 @@ import dotenv from "dotenv";
 import { rideRoutes } from "./presentation/routes/ride.routes";
 import { offerRoutes } from "./presentation/routes/offer.routes";
 import { passengerRoutes } from "./presentation/routes/passenger.routes";
+import { driverRoutes } from "./presentation/routes/driver.routes";
+import { authRoutes } from "./presentation/routes/auth.routes";
 
 dotenv.config();
 
@@ -17,5 +19,7 @@ app.use(express.json());
 app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
+app.use("/drivers", driverRoutes);
+app.use("/auth", authRoutes);
 
 export { app };

@@ -3,6 +3,9 @@ import { RideContext } from "../../presentation/controllers/ride.controller";
 
 export type MatchLevel = "REFERRED" | "PARTNER" | "GENERAL";
 
+// Tempo de exclusividade do motorista indicado antes do fallback para MATCHING geral
+const REFERRAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+
 export interface MatchInput {
   rideId: string;
   level?: MatchLevel;
@@ -15,10 +18,10 @@ type PriorityLevel = "HIGH" | "MEDIUM" | "LOW";
 function calculatePriority(context: RideContext | null): PriorityLevel {
   if (!context) return "LOW";
   const score =
-    (context.vip     ? 4 : 0) +
-    (context.airport ? 2 : 0) +
-    (context.pet     ? 1 : 0) +
-    (context.luggage ? 1 : 0);
+    (context.isVip     ? 4 : 0) +
+    (context.isAirport ? 2 : 0) +
+    (context.isPet     ? 1 : 0) +
+    (context.isLuggage ? 1 : 0);
   if (score >= 4) return "HIGH";
   if (score >= 2) return "MEDIUM";
   return "LOW";
@@ -34,7 +37,7 @@ function applyContextFilters(
   let filtered = [...drivers];
 
   // vip → priorizar ELITE primeiro
-  if (context.vip) {
+  if (context.isVip) {
     const elite = filtered.filter(d => d.experienceLevel === "ELITE");
     const others = filtered.filter(d => d.experienceLevel !== "ELITE");
     filtered = [...elite, ...others];
@@ -42,7 +45,7 @@ function applyContextFilters(
   }
 
   // airport → priorizar categoria EXECUTIVO
-  if (context.airport) {
+  if (context.isAirport) {
     const exec = filtered.filter(d => d.vehicles.some(v => v.category === "EXECUTIVO"));
     const others = filtered.filter(d => !d.vehicles.some(v => v.category === "EXECUTIVO"));
     filtered = [...exec, ...others];
@@ -50,7 +53,7 @@ function applyContextFilters(
   }
 
   // luggage → priorizar EXECUTIVO (veículo maior)
-  if (context.luggage && !context.airport) {
+  if (context.isLuggage && !context.isAirport) {
     const exec = filtered.filter(d => d.vehicles.some(v => v.category === "EXECUTIVO"));
     const others = filtered.filter(d => !d.vehicles.some(v => v.category === "EXECUTIVO"));
     filtered = [...exec, ...others];
@@ -58,7 +61,7 @@ function applyContextFilters(
   }
 
   // pet → por ora não filtra (simulação), apenas loga
-  if (context.pet) {
+  if (context.isPet) {
     console.log(`🐶 Pet: todos os drivers disponíveis (filtro futuro)`);
   }
 
@@ -132,7 +135,7 @@ export class MatchRideUseCase {
     if (!ride) throw new Error("Ride not found");
 
     // Guard: só faz matching em corridas que ainda podem ser matchadas
-    if (!["PENDING", "MATCHING"].includes(ride.status)) {
+    if (!["PENDING", "MATCHING", "WAITING_REFERRAL"].includes(ride.status)) {
       console.log(`⚠️ Corrida ${rideId} ignorada — status: ${ride.status}`);
       return { matched: false, level: "GENERAL" };
     }
@@ -147,13 +150,7 @@ export class MatchRideUseCase {
     console.log(`🚀 Matching iniciado (${level} | prioridade: ${priority}) para corrida ${rideId}`);
     if (rideContext) console.log(`🎯 Contexto:`, rideContext);
 
-    // 3. Atualizar status da corrida
-    await prisma.rideRequest.update({
-      where: { id: rideId },
-      data: { status: "MATCHING" },
-    });
-
-    // 4. IDs já com offer nessa corrida (evita duplicidade e respeita re-match)
+    // 3. IDs já com offer nessa corrida (evita duplicidade e respeita re-match)
     const existingOffers = await prisma.rideOffer.findMany({
       where: { rideRequestId: rideId },
       select: { driverId: true },
@@ -184,7 +181,47 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "PARTNER", excludedDriverIds });
       }
 
+      // ✅ Modo referral: aguarda 60s antes de abrir para outros
+      await prisma.rideRequest.update({
+        where: { id: rideId },
+        data: { status: "WAITING_REFERRAL" },
+      });
+
       await this.createOffer(rideId, referredDriverId, expiresAt);
+      console.log(`⏳ Corrida ${rideId} em WAITING_REFERRAL — fallback em ${REFERRAL_TIMEOUT_MS / 1000}s`);
+      console.log("Referral timeout iniciado:", rideId);
+
+      // Timeout: se ainda WAITING_REFERRAL após REFERRAL_TIMEOUT_MS → escalar para pool geral
+      setTimeout(async () => {
+        try {
+          const current = await prisma.rideRequest.findUnique({
+            where: { id: rideId },
+            select: { status: true },
+          });
+          if (current?.status === "WAITING_REFERRAL") {
+            console.log("Referral expirado → fallback MATCHING:", rideId);
+
+            // Expirar offer ainda pendente do driver indicado (evita aceitação tardia)
+            await prisma.rideOffer.updateMany({
+              where: { rideRequestId: rideId, driverId: referredDriverId, status: "PENDING" },
+              data: { status: "EXPIRED" },
+            });
+
+            await prisma.rideRequest.update({
+              where: { id: rideId },
+              data: { status: "MATCHING" },
+            });
+            await this.execute({
+              rideId,
+              level: "GENERAL",
+              excludedDriverIds: [...excludedDriverIds, referredDriverId],
+            });
+          }
+        } catch (err) {
+          console.error(`🔥 Erro no timeout referral para corrida ${rideId}:`, err);
+        }
+      }, REFERRAL_TIMEOUT_MS);
+
       return { matched: true, level };
     }
 
@@ -193,6 +230,11 @@ export class MatchRideUseCase {
       if (!referredDriverId) {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
+
+      await prisma.rideRequest.update({
+        where: { id: rideId },
+        data: { status: "MATCHING" },
+      });
 
       const partnerExcluded = [...alreadyOfferedIds, referredDriverId];
 
@@ -221,6 +263,11 @@ export class MatchRideUseCase {
     }
 
     // ── Tier 3: GENERAL ───────────────────────────────────────────────────────
+    await prisma.rideRequest.update({
+      where: { id: rideId },
+      data: { status: "MATCHING" },
+    });
+
     const generalDriversRaw = await prisma.driver.findMany({
       where: {
         isActive: true,

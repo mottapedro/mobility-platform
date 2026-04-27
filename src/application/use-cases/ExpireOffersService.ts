@@ -44,10 +44,20 @@ export class ExpireOffersService {
 
     if (ridesToRematch.length === 0) return;
 
+    // Excluir corridas em WAITING_REFERRAL — o timeout de 60s já trata o fallback delas
+    const waitingReferralRides = await prisma.rideRequest.findMany({
+      where: { id: { in: ridesToRematch }, status: "WAITING_REFERRAL" },
+      select: { id: true },
+    });
+    const waitingSet = new Set(waitingReferralRides.map((r) => r.id));
+    const rematchCandidates = ridesToRematch.filter((id) => !waitingSet.has(id));
+
+    if (rematchCandidates.length === 0) return;
+
     const matchRide = new MatchRideUseCase();
     const expiredRideIds: string[] = [];
 
-    for (const rideId of ridesToRematch) {
+    for (const rideId of rematchCandidates) {
       console.log(`🔄 Re-match automático para corrida ${rideId}...`);
       const { matched } = await matchRide.execute({ rideId });
 

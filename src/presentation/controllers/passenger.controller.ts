@@ -41,7 +41,9 @@ export class PassengerController {
               role: "PASSENGER",
             },
           },
-          referredByDriverId: referredByDriverId || null,
+          ...(referredByDriverId
+            ? { referredByDriver: { connect: { id: referredByDriverId } } }
+            : {}),
         },
         include: {
           user: true,

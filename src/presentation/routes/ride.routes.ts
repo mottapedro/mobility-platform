@@ -75,6 +75,7 @@ router.post("/passengers", async (req, res) => {
 });
 
 router.post("/", (req, res) => controller.create(req, res));
+router.patch("/:id", (req, res) => controller.patch(req, res));
 router.get("/:id", (req, res) => controller.getById(req, res));
 
 export { router as rideRoutes };
