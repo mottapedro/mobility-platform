@@ -38,8 +38,12 @@ export async function createDriverReferralChain(
           },
         });
         console.log(`🔗 Nível ${newLevel}: ${ancestor.referrerDriverId} → ${driverId}`);
-      } catch {
-        // Ignore unique constraint violations (duplicate referral paths)
+      } catch (error: unknown) {
+        // Ignore unique constraint violations (P2002) — duplicate referral paths are expected
+        const prismaError = error as { code?: string };
+        if (prismaError?.code !== "P2002") {
+          console.error(`⚠️ Erro inesperado ao criar referral de nível ${newLevel}:`, error);
+        }
       }
     }
   }

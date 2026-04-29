@@ -434,5 +434,16 @@ describe("Matching — PARTNER com rede DriverReferral multi-nível", () => {
 
     const offerDriverIds = allOffers.map((o) => o.driverId);
     expect(offerDriverIds).toContain(driverB.id);
+
+    // Driver C is at level 2 from A's perspective — also in the PARTNER network
+    const driverCId = (
+      await prisma.driverReferral.findFirst({
+        where: { referrerDriverId: driverB.id, level: 1 },
+        select: { referredDriverId: true },
+      })
+    )?.referredDriverId;
+
+    expect(driverCId).toBeTruthy();
+    expect(offerDriverIds).toContain(driverCId);
   });
 });
