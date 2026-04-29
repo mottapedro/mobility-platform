@@ -83,15 +83,28 @@ export class MatchRideUseCase {
     if (!referredOffer) return "REFERRED";
 
     // Driver indicado já foi tentado → verificar se há parceiros da rede não tentados
-    const partnerDrivers = await prisma.driver.findMany({
-      where: {
-        isActive: true,
-        referredByDriverId: referredDriverId,
-      },
-      select: { id: true },
-    });
+    // Multi-level network from DriverReferral table
+    const referralNetworkIds = (
+      await prisma.driverReferral.findMany({
+        where: { referrerDriverId: referredDriverId },
+        select: { referredDriverId: true },
+      })
+    ).map((r) => r.referredDriverId);
 
-    if (partnerDrivers.length === 0) return "GENERAL";
+    // Legacy: direct referredByDriverId relationships
+    const legacyNetworkIds = (
+      await prisma.driver.findMany({
+        where: {
+          isActive: true,
+          referredByDriverId: referredDriverId,
+        },
+        select: { id: true },
+      })
+    ).map((d) => d.id);
+
+    const allNetworkIds = [...new Set([...referralNetworkIds, ...legacyNetworkIds])];
+
+    if (allNetworkIds.length === 0) return "GENERAL";
 
     // Verificar se algum parceiro ainda não recebeu offer
     const triedOffers = await prisma.rideOffer.findMany({
@@ -100,7 +113,7 @@ export class MatchRideUseCase {
     });
     const triedSet = new Set(triedOffers.map((o) => o.driverId));
 
-    const hasUntriedPartner = partnerDrivers.some((d) => !triedSet.has(d.id));
+    const hasUntriedPartner = allNetworkIds.some((id) => !triedSet.has(id));
 
     return hasUntriedPartner ? "PARTNER" : "GENERAL";
   }
@@ -195,12 +208,31 @@ export class MatchRideUseCase {
       }
 
       const partnerExcluded = [...alreadyOfferedIds, referredDriverId];
+      const excludedSet = new Set(partnerExcluded);
+
+      // Multi-level network from DriverReferral table
+      const referralNetworkIds = (
+        await prisma.driverReferral.findMany({
+          where: { referrerDriverId: referredDriverId },
+          select: { referredDriverId: true },
+        })
+      ).map((r) => r.referredDriverId);
+
+      // Legacy: direct referredByDriverId relationships (backward compatibility)
+      const legacyNetworkIds = (
+        await prisma.driver.findMany({
+          where: { referredByDriverId: referredDriverId },
+          select: { id: true },
+        })
+      ).map((d) => d.id);
+
+      const allNetworkIds = [...new Set([...referralNetworkIds, ...legacyNetworkIds])];
+      const eligibleIds = allNetworkIds.filter((id) => !excludedSet.has(id));
 
       const partnerDriversRaw = await prisma.driver.findMany({
         where: {
           isActive: true,
-          id: { notIn: partnerExcluded },
-          referredByDriverId: referredDriverId,
+          id: { in: eligibleIds },
         },
         select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
       });
