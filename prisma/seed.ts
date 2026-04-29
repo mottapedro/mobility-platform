@@ -277,6 +277,34 @@ async function main() {
     console.log(`⚠️  Passageiro demo já existe, pulando...`);
   }
 
+  // 👤 Passageira de teste: Ana Cláudia Elias (indicada por Pedro)
+  const ANA_CLAUDIA_EMAIL = "ana.claudia@email.com";
+  const existingAnaClaudia = await prisma.user.findUnique({ where: { email: ANA_CLAUDIA_EMAIL } });
+
+  if (!existingAnaClaudia) {
+    const anaClaudiaUser = await prisma.user.create({
+      data: {
+        name: "Ana Cláudia Elias",
+        email: ANA_CLAUDIA_EMAIL,
+        phone: "21999999999",
+        role: "PASSENGER",
+        passwordHash: DEFAULT_PASSWORD_HASH,
+      },
+    });
+
+    await prisma.passenger.create({
+      data: {
+        userId: anaClaudiaUser.id,
+        referredByDriverId: pedroId ?? null,
+      },
+    });
+
+    console.log(`✅ Passageira criada: Ana Cláudia Elias (ana.claudia@email.com)`);
+    if (pedroId) console.log(`🔗 Indicada por: Pedro Paulo Motta`);
+  } else {
+    console.log(`⚠️  Ana Cláudia já existe, pulando...`);
+  }
+
   console.log("🌱 Seed concluído!");
 }
 

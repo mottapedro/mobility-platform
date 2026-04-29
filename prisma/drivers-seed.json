@@ -1,31 +1,31 @@
 [
   {
     "name": "Carlos Silva",
-    "driverId": "f7998d87-1874-4902-82b0-35459df43d07",
+    "driverId": "97680934-287a-4977-bffb-eb21354cc95c",
     "email": "carlos@driver.com",
     "region": "ZN"
   },
   {
     "name": "Marcos Lima",
-    "driverId": "c94d8e90-a43a-4041-b12c-ec4484b16473",
+    "driverId": "c48c2fd2-8df1-48e5-8494-258330f7d01b",
     "email": "marcos@driver.com",
     "region": "ZS"
   },
   {
     "name": "Roberto Souza",
-    "driverId": "e9caa2cd-5c4c-4b63-9d6b-c349e8a7335c",
+    "driverId": "a0105e46-87f4-4042-96cc-b46606a59921",
     "email": "roberto@driver.com",
     "region": "ZO"
   },
   {
     "name": "Pedro Paulo Motta",
-    "driverId": "c5736e7d-4b44-4582-bbc2-3bf82dd06875",
+    "driverId": "20e9b1b8-a4a0-43b8-80db-7cd73529a90e",
     "email": "mottapedro01@gmail.com",
     "region": "ZN"
   },
   {
     "name": "João Luiz Correa de Brito",
-    "driverId": "162c2c6e-29ca-41dd-a363-d856e9779e68",
+    "driverId": "c3cd10be-8764-4e78-a3e3-60f0401613ec",
     "email": "jlcbrito@driver.com",
     "region": "ZN"
   }
