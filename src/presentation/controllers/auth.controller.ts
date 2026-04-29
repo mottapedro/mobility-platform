@@ -96,10 +96,13 @@ export class AuthController {
 
       const user = await prisma.user.findUnique({ where: { email } });
       if (!user || !user.passwordHash) {
+        console.log(`[login] ❌ Usuário não encontrado ou sem hash: ${email} | found=${!!user} | hasHash=${!!user?.passwordHash}`);
         return res.status(401).json({ error: "Email ou senha incorretos" });
       }
 
+      console.log(`[login] 🔍 Tentativa: ${email} | hashPrefix=${user.passwordHash.substring(0, 7)}`);
       const valid = await bcrypt.compare(password, user.passwordHash);
+      console.log(`[login] ${valid ? "✅ Senha válida" : "❌ Senha inválida"}: ${email}`);
       if (!valid) {
         return res.status(401).json({ error: "Email ou senha incorretos" });
       }

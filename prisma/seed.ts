@@ -1,5 +1,6 @@
 import "dotenv/config";
 import fs from "fs";
+import bcrypt from "bcryptjs";
 import { PrismaClient, ExperienceLevel, VehicleCategory, Region } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
@@ -11,6 +12,8 @@ const prisma = new PrismaClient({ adapter });
 
 async function main() {
   console.log("🌱 Iniciando seed de drivers...");
+
+  const DEFAULT_PASSWORD_HASH = await bcrypt.hash("123456", 10);
 
   const driversData = [
     {
@@ -52,6 +55,32 @@ async function main() {
       },
       region: Region.ZO,
     },
+    {
+      name: "Pedro Paulo Motta",
+      email: "mottapedro01@gmail.com",
+      phone: "21981722517",
+      experienceLevel: ExperienceLevel.PROFISSIONAL,
+      vehicle: {
+        model: "Onix Plus Turbo",
+        brand: "Chevrolet",
+        plate: "RJS1234",
+        category: VehicleCategory.EXECUTIVO,
+      },
+      region: Region.ZN,
+    },
+    {
+      name: "João Luiz Correa de Brito",
+      email: "jlcbrito@driver.com",
+      phone: "11999990004",
+      experienceLevel: ExperienceLevel.PROFISSIONAL,
+      vehicle: {
+        model: "Logan",
+        brand: "Renault",
+        plate: "UABC1234",
+        category: VehicleCategory.CONFORTO,
+      },
+      region: Region.ZN,
+    },
   ];
 
   const createdDrivers: { name: string; driverId: string | undefined; email: string; region: Region }[] = [];
@@ -82,6 +111,7 @@ async function main() {
         email: data.email,
         phone: data.phone,
         role: "DRIVER",
+        passwordHash: DEFAULT_PASSWORD_HASH,
         driver: {
           create: {
             experienceLevel: data.experienceLevel,
@@ -112,10 +142,32 @@ async function main() {
     console.log(driverInfo);
   }
 
-  // 🔗 Criar rede de indicação: Carlos indica Marcos e Roberto
+  // � Corrigir usuários com passwordHash nulo ou plain-text (sem prefixo bcrypt $2)
+  const usersWithBadHash = await prisma.user.findMany({
+    where: {
+      OR: [
+        { passwordHash: null },
+        { NOT: { passwordHash: { startsWith: "$2" } } },
+      ],
+    },
+    select: { id: true, email: true },
+  });
+  if (usersWithBadHash.length > 0) {
+    for (const u of usersWithBadHash) {
+      await prisma.user.update({
+        where: { id: u.id },
+        data: { passwordHash: DEFAULT_PASSWORD_HASH },
+      });
+      console.log(`🔑 Hash corrigido para: ${u.email}`);
+    }
+  }
+
+  // �🔗 Criar rede de indicação: Carlos indica Marcos e Roberto
   const carlosId = createdDriversMap.get("Carlos Silva");
   const marcosId = createdDriversMap.get("Marcos Lima");
   const robertoId = createdDriversMap.get("Roberto Souza");
+  const pedroId = createdDriversMap.get("Pedro Paulo Motta");
+  const joaoId = createdDriversMap.get("João Luiz Correa de Brito");
 
   if (carlosId && marcosId) {
     const existing = await prisma.driverReferral.findFirst({
@@ -138,6 +190,18 @@ async function main() {
       console.log(`🔗 Rede: Carlos Silva → Roberto Souza`);
     } else {
       console.log(`⚠️  Roberto Souza já tem referência, pulando...`);
+    }
+  }
+
+  if (pedroId && joaoId) {
+    const existing = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: pedroId, referredDriverId: joaoId },
+    });
+    if (!existing) {
+      await createDriverReferralChain(joaoId, pedroId);
+      console.log(`🔗 Rede: Pedro Paulo Motta → João Luiz Correa de Brito`);
+    } else {
+      console.log(`⚠️  João Luiz já tem referência, pulando...`);
     }
   }
 
@@ -195,6 +259,7 @@ async function main() {
         email: DEMO_PASSENGER_EMAIL,
         phone: "11999990099",
         role: "PASSENGER",
+        passwordHash: DEFAULT_PASSWORD_HASH,
       },
     });
 

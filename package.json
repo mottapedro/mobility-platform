@@ -9,7 +9,8 @@
     "start": "node -r tsconfig-paths/register dist/server.js",
     "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts",
     "postinstall": "prisma generate",
-    "test": "jest --runInBand --forceExit"
+    "test": "jest --runInBand --forceExit",
+    "test:e2e": "playwright test --config playwright.config.ts"
   },
   "keywords": [],
   "author": "",
@@ -28,6 +29,7 @@
     "tsconfig-paths": "^4.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@prisma/client": "^7.7.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^5.0.6",
