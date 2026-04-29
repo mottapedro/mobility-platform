@@ -37,8 +37,8 @@ export class AuthController {
       // Validate referral driver (for both passenger and driver registration)
       if (referredByDriverId) {
         const driver = await prisma.driver.findUnique({ where: { id: referredByDriverId } });
-        if (!driver) {
-          return res.status(400).json({ error: "Motorista indicado não encontrado" });
+        if (!driver || !driver.isActive) {
+          return res.status(400).json({ error: "Motorista indicado não encontrado ou inativo" });
         }
       }
 

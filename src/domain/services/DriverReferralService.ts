@@ -52,8 +52,9 @@ export async function createDriverReferralChain(
   for (const edge of edgesToCreate) {
     try {
       await prisma.driverReferral.create({ data: edge });
-    } catch {
-      // P2002 unique constraint — duplicate edge, ignore
+    } catch (e: unknown) {
+      const err = e as { code?: string };
+      if (err.code !== "P2002") throw e; // re-throw anything that isn't a duplicate
     }
   }
 }

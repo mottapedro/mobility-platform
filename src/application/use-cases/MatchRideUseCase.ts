@@ -186,29 +186,27 @@ export class MatchRideUseCase {
       // Timeout: se ainda WAITING_REFERRAL após REFERRAL_TIMEOUT_MS → escalar para rede antes do pool geral
       setTimeout(async () => {
         try {
-          const current = await prisma.rideRequest.findUnique({
-            where: { id: rideId },
-            select: { status: true },
+          // Atomic check-and-update: only proceeds if status is still WAITING_REFERRAL
+          const updated = await prisma.rideRequest.updateMany({
+            where: { id: rideId, status: "WAITING_REFERRAL" },
+            data: { status: "MATCHING" },
           });
-          if (current?.status === "WAITING_REFERRAL") {
-            console.log("Referral expirado → fallback NETWORK_L1:", rideId);
 
-            // Expirar offer ainda pendente do driver indicado (evita aceitação tardia)
-            await prisma.rideOffer.updateMany({
-              where: { rideRequestId: rideId, driverId: referredDriverId, status: "PENDING" },
-              data: { status: "EXPIRED" },
-            });
+          if (updated.count === 0) return; // Already handled by accept/reject/manual-fallback
 
-            await prisma.rideRequest.update({
-              where: { id: rideId },
-              data: { status: "MATCHING" },
-            });
-            await this.execute({
-              rideId,
-              level: "NETWORK_L1",
-              excludedDriverIds: [...excludedDriverIds, referredDriverId],
-            });
-          }
+          console.log("Referral expirado → fallback NETWORK_L1:", rideId);
+
+          // Expirar offer ainda pendente do driver indicado (evita aceitação tardia)
+          await prisma.rideOffer.updateMany({
+            where: { rideRequestId: rideId, driverId: referredDriverId, status: "PENDING" },
+            data: { status: "EXPIRED" },
+          });
+
+          await this.execute({
+            rideId,
+            level: "NETWORK_L1",
+            excludedDriverIds: [...excludedDriverIds, referredDriverId],
+          });
         } catch (err) {
           console.error(`🔥 Erro no timeout referral para corrida ${rideId}:`, err);
         }
@@ -251,7 +249,8 @@ export class MatchRideUseCase {
           NETWORK_L2: "NETWORK_L3",
           NETWORK_L3: "GENERAL",
         };
-        return this.execute({ rideId, level: nextLevel[level], excludedDriverIds });
+        const next = nextLevel[level] ?? "GENERAL";
+        return this.execute({ rideId, level: next, excludedDriverIds });
       }
 
       for (const driver of filtered) {
