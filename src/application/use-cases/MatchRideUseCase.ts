@@ -207,17 +207,22 @@ export class MatchRideUseCase {
 
       const networkDriverIds = networkReferrals.map((r) => r.referredDriverId);
 
-      const partnerDriversRaw = networkDriverIds.length > 0
+      const partnerDriversMap = networkDriverIds.length > 0
         ? await prisma.driver.findMany({
             where: {
               isActive: true,
               id: { in: networkDriverIds },
             },
             select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
-          })
-        : [];
+          }).then((rows) => new Map(rows.map((d) => [d.id, d])))
+        : new Map<string, { id: string; experienceLevel: string; vehicles: { category: string }[] }>();
 
-      const partnerDrivers = applyContextFilters(partnerDriversRaw, rideContext);
+      // Preserve level ordering from networkReferrals
+      const partnerDriversOrdered = networkDriverIds
+        .map((id) => partnerDriversMap.get(id))
+        .filter((d): d is { id: string; experienceLevel: string; vehicles: { category: string }[] } => d !== undefined);
+
+      const partnerDrivers = applyContextFilters(partnerDriversOrdered, rideContext);
 
       console.log(`🤝 Drivers parceiros encontrados: ${partnerDrivers.length}`);
 
