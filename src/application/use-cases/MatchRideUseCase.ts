@@ -83,15 +83,25 @@ export class MatchRideUseCase {
     if (!referredOffer) return "REFERRED";
 
     // Driver indicado já foi tentado → verificar se há parceiros da rede não tentados
-    const partnerDrivers = await prisma.driver.findMany({
-      where: {
-        isActive: true,
-        referredByDriverId: referredDriverId,
-      },
-      select: { id: true },
+    // Preferência: tabela DriverReferral (multi-nível); fallback: referredByDriverId direto
+    const networkEntries = await prisma.driverReferral.findMany({
+      where: { referrerDriverId: referredDriverId },
+      select: { referredDriverId: true },
     });
 
-    if (partnerDrivers.length === 0) return "GENERAL";
+    let partnerIds: string[];
+    if (networkEntries.length > 0) {
+      partnerIds = networkEntries.map((e) => e.referredDriverId);
+    } else {
+      // Fallback para drivers com referredByDriverId = referredDriverId
+      const directPartners = await prisma.driver.findMany({
+        where: { isActive: true, referredByDriverId: referredDriverId },
+        select: { id: true },
+      });
+      partnerIds = directPartners.map((d) => d.id);
+    }
+
+    if (partnerIds.length === 0) return "GENERAL";
 
     // Verificar se algum parceiro ainda não recebeu offer
     const triedOffers = await prisma.rideOffer.findMany({
@@ -100,7 +110,7 @@ export class MatchRideUseCase {
     });
     const triedSet = new Set(triedOffers.map((o) => o.driverId));
 
-    const hasUntriedPartner = partnerDrivers.some((d) => !triedSet.has(d.id));
+    const hasUntriedPartner = partnerIds.some((id) => !triedSet.has(id));
 
     return hasUntriedPartner ? "PARTNER" : "GENERAL";
   }
@@ -194,13 +204,45 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
 
-      const partnerExcluded = [...alreadyOfferedIds, referredDriverId];
+      // Preferência: DriverReferral (níveis 1, 2, 3 ordenados por nível);
+      // Fallback: drivers com referredByDriverId = referredDriverId
+      const networkEntries = await prisma.driverReferral.findMany({
+        where: { referrerDriverId: referredDriverId },
+        select: { referredDriverId: true, level: true },
+        orderBy: { level: "asc" },
+      });
+
+      let networkDriverIds: string[];
+      if (networkEntries.length > 0) {
+        networkDriverIds = networkEntries.map((e) => e.referredDriverId);
+        console.log(
+          `🤝 Rede de indicação (DriverReferral): ${networkEntries.length} entrada(s) — níveis: ${[...new Set(networkEntries.map((e) => e.level))].join(", ")}`
+        );
+      } else {
+        // Fallback: consulta direta por referredByDriverId
+        const directPartners = await prisma.driver.findMany({
+          where: { isActive: true, referredByDriverId: referredDriverId },
+          select: { id: true },
+        });
+        networkDriverIds = directPartners.map((d) => d.id);
+        console.log(
+          `🤝 Drivers parceiros (fallback referredByDriverId): ${networkDriverIds.length}`
+        );
+      }
+
+      const filteredNetworkIds = networkDriverIds.filter(
+        (id) => !alreadyOfferedIds.has(id) && id !== referredDriverId
+      );
+
+      if (filteredNetworkIds.length === 0) {
+        console.log(`⚠️ Nenhum parceiro disponível — escalando para GENERAL`);
+        return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
+      }
 
       const partnerDriversRaw = await prisma.driver.findMany({
         where: {
+          id: { in: filteredNetworkIds },
           isActive: true,
-          id: { notIn: partnerExcluded },
-          referredByDriverId: referredDriverId,
         },
         select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
       });
