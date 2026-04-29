@@ -1,16 +1,21 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
+import { Region } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 
 export class AuthController {
   async register(req: Request, res: Response) {
     try {
-      const { name, email, password, role, phone, referredByDriverId } = req.body;
+      const { name, email, password, role, phone, referredByDriverId, experienceLevel, vehicle, region } = req.body;
 
-      if (!name || !email || !password || !role || !phone) {
+      if (!name || !email || !password || !role) {
         return res.status(400).json({
-          error: "Campos obrigatórios: name, email, password, role, phone",
+          error: "Campos obrigatórios: name, email, password, role",
         });
+      }
+
+      if (role === "passenger" && !phone) {
+        return res.status(400).json({ error: "Campos obrigatórios: phone" });
       }
 
       if (role !== "passenger" && role !== "driver") {
@@ -44,11 +49,36 @@ export class AuthController {
       const passwordHash = await bcrypt.hash(password, 10);
 
       if (role === "driver") {
+        if (!experienceLevel || !vehicle || !Array.isArray(region) || region.length === 0) {
+          return res.status(400).json({ error: "Campos obrigatórios para motorista: experienceLevel, vehicle, region" });
+        }
+        if (!vehicle.model || !vehicle.brand || !vehicle.plate || !vehicle.category) {
+          return res.status(400).json({ error: "Campos obrigatórios para veículo: model, brand, plate, category" });
+        }
+        const validExperience = ["INICIANTE", "INTERMEDIARIO", "PROFISSIONAL", "ELITE"];
+        const validCategories = ["CONFORTO", "EXECUTIVO"];
+        const validRegions = ["ZN", "ZS", "ZO", "BAIXADA", "INTER"];
+        if (!validExperience.includes(experienceLevel)) {
+          return res.status(400).json({ error: "experienceLevel inválido" });
+        }
+        if (!validCategories.includes(vehicle.category)) {
+          return res.status(400).json({ error: "Categoria de veículo inválida" });
+        }
+        if (!region.every((r: string) => validRegions.includes(r))) {
+          return res.status(400).json({ error: "Região inválida" });
+        }
+
         const user = await prisma.user.create({
-          data: { name, email, phone, role: prismaRole, passwordHash },
+          data: { name, email, phone: phone || "", role: prismaRole, passwordHash },
         });
         const driver = await prisma.driver.create({
-          data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
+          data: { userId: user.id, isActive: true, experienceLevel },
+        });
+        await prisma.vehicle.create({
+          data: { driverId: driver.id, model: vehicle.model, brand: vehicle.brand, plate: vehicle.plate, category: vehicle.category },
+        });
+        await prisma.driverRegion.createMany({
+          data: region.map((r: string) => ({ driverId: driver.id, region: r as Region })),
         });
         return res.status(201).json({
           user: { id: user.id, name: user.name, email: user.email, role: "driver" },

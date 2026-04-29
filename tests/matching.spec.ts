@@ -7,21 +7,20 @@ jest.setTimeout(15000);
 // ─── Aguarda até offers aparecerem no banco ────────────────────────────────
 async function waitForOffers(
   rideId: string,
-  minCount = 1,
-  maxWaitMs = 5000,
-  intervalMs = 150
+  expectedCount: number,
+  timeout = 3000
 ): Promise<Array<{ id: string; driverId: string; createdAt: Date }>> {
-  const deadline = Date.now() + maxWaitMs;
+  const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const offers = await prisma.rideOffer.findMany({
       where: { rideRequestId: rideId },
       orderBy: { createdAt: "asc" },
       select: { id: true, driverId: true, createdAt: true },
     });
-    if (offers.length >= minCount) return offers;
-    await new Promise((r) => setTimeout(r, intervalMs));
+    if (offers.length >= expectedCount) return offers;
+    await new Promise((r) => setTimeout(r, 100));
   }
-  return [];
+  return await prisma.rideOffer.findMany({ where: { rideId } });
 }
 
 // ─── Tier 1 — REFERRED ────────────────────────────────────────────────────
@@ -272,3 +271,91 @@ describe("Matching — Contexto VIP", () => {
     expect(offers[0].driverId).toBe(eliteDriverUser.driver!.id);
   });
 });
+
+// ─── Referral reject → GENERAL fallback imediato ──────────────────────────
+describe("Matching — Referral reject → GENERAL fallback imediato", () => {
+  it("quando driver indicado rejeita oferta em WAITING_REFERRAL, driver geral recebe offer", async () => {
+    // Driver A — o indicador (referral)
+    const driverAUser = await prisma.user.create({
+      data: {
+        name: "Driver A Fallback",
+        email: "drivera@fallback.com",
+        phone: "55000000001",
+        role: "DRIVER",
+        driver: { create: { experienceLevel: "PROFISSIONAL", isActive: true } },
+      },
+      include: { driver: true },
+    });
+
+    // Driver B — geral, deve receber offer após rejeição de A
+    const driverBUser = await prisma.user.create({
+      data: {
+        name: "Driver B Fallback",
+        email: "driverb@fallback.com",
+        phone: "55000000002",
+        role: "DRIVER",
+        driver: { create: { experienceLevel: "INTERMEDIARIO", isActive: true } },
+      },
+      include: { driver: true },
+    });
+
+    // Passageiro indicado por Driver A
+    const passengerUser = await prisma.user.create({
+      data: {
+        name: "Passageiro Fallback",
+        email: "pax@fallback.com",
+        phone: "55000000003",
+        role: "PASSENGER",
+      },
+    });
+    const passenger = await prisma.passenger.create({
+      data: {
+        userId: passengerUser.id,
+        referredByDriverId: driverAUser.driver!.id,
+      },
+    });
+
+    // Criar corrida → WAITING_REFERRAL → Driver A recebe offer exclusiva
+    const rideRes = await request(app).post("/rides").send({
+      passengerId: passenger.id,
+      origin: "Barra",
+      destination: "Centro",
+      scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+
+    expect(rideRes.status).toBe(201);
+    const rideId = rideRes.body.ride.id;
+
+    // Aguardar offer de Driver A aparecer
+    const initialOffers = await waitForOffers(rideId, 1);
+    expect(initialOffers.length).toBe(1);
+    const driverAOffer = initialOffers[0];
+    expect(driverAOffer.driverId).toBe(driverAUser.driver!.id);
+
+    // Verificar que a corrida está em WAITING_REFERRAL
+    const rideBeforeReject = await prisma.rideRequest.findUnique({ where: { id: rideId } });
+    expect(rideBeforeReject?.status).toBe("WAITING_REFERRAL");
+
+    // Driver A rejeita → isReferredDriver + WAITING_REFERRAL → fallback GENERAL síncrono
+    const rejectRes = await request(app)
+      .patch(`/offers/${driverAOffer.id}/respond`)
+      .send({ accept: false });
+
+    expect(rejectRes.status).toBe(200);
+
+    // Oferta de Driver A deve estar REJECTED
+    const driverAOfferUpdated = await prisma.rideOffer.findUnique({
+      where: { id: driverAOffer.id },
+    });
+    expect(driverAOfferUpdated?.status).toBe("REJECTED");
+
+    // Aguardar Driver B receber sua offer (fallback GENERAL)
+    const allOffers = await waitForOffers(rideId, 2);
+    const driverBOffer = allOffers.find((o) => o.driverId === driverBUser.driver!.id);
+    expect(driverBOffer).toBeTruthy();
+  });
+});
+function expect(status: number) {
+  throw new Error("Function not implemented.");
+}
+
