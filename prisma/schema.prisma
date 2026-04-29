@@ -82,6 +82,22 @@ model Driver {
   referredByDriverId String?
   referredByDriver   Driver?  @relation("DriverNetwork", fields: [referredByDriverId], references: [id])
   referredDrivers    Driver[] @relation("DriverNetwork")
+
+  // 🔥 Rede de indicação multi-nível (via DriverReferral)
+  referralsMade     DriverReferral[] @relation("Referrer")
+  referralsReceived DriverReferral[] @relation("Referred")
+}
+
+model DriverReferral {
+  id               String   @id @default(uuid())
+  referrerDriverId String
+  referrer         Driver   @relation("Referrer", fields: [referrerDriverId], references: [id])
+  referredDriverId String
+  referred         Driver   @relation("Referred", fields: [referredDriverId], references: [id])
+  level            Int
+  createdAt        DateTime @default(now())
+
+  @@unique([referrerDriverId, referredDriverId])
 }
 
 model Passenger {

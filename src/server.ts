@@ -6,6 +6,7 @@ import "dotenv/config"; // 👈 DEVE ser a primeira linha
 import { rideRoutes } from "./presentation/routes/ride.routes";
 import { offerRoutes } from "./presentation/routes/offer.routes";
 import { passengerRoutes } from "./presentation/routes/passenger.routes";
+import { driverRoutes } from "./presentation/routes/driver.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 
 dotenv.config();
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
+app.use("/drivers", driverRoutes);
 
 if (process.env.NODE_ENV !== "test") {
   // ⏱️ Job: expira offers pendentes vencidas a cada 10s

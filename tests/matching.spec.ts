@@ -134,6 +134,15 @@ describe("Matching — Tier 2 (PARTNER)", () => {
       include: { driver: true },
     });
 
+    // Create the level-1 DriverReferral record (A recruited B)
+    await prisma.driverReferral.create({
+      data: {
+        referrerDriverId: driverAUser.driver!.id,
+        referredDriverId: driverBUser.driver!.id,
+        level: 1,
+      },
+    });
+
     // Passageiro indicado por Driver A
     const passengerUser = await prisma.user.create({
       data: {
