@@ -3,6 +3,7 @@ import fs from "fs";
 import { PrismaClient, ExperienceLevel, VehicleCategory, Region } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
+import { createDriverReferralChain } from "../src/domain/services/DriverReferralService";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const adapter = new PrismaPg(pool);
@@ -117,15 +118,11 @@ async function main() {
   const robertoId = createdDriversMap.get("Roberto Souza");
 
   if (carlosId && marcosId) {
-    const marcos = await prisma.driver.findUnique({
-      where: { id: marcosId },
-      select: { id: true, referredByDriverId: true },
+    const existing = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: carlosId, referredDriverId: marcosId },
     });
-    if (!marcos?.referredByDriverId) {
-      await prisma.driver.update({
-        where: { id: marcosId },
-        data: { referredByDriverId: carlosId },
-      });
+    if (!existing) {
+      await createDriverReferralChain(marcosId, carlosId);
       console.log(`🔗 Rede: Carlos Silva → Marcos Lima`);
     } else {
       console.log(`⚠️  Marcos Lima já tem referência, pulando...`);
@@ -133,15 +130,11 @@ async function main() {
   }
 
   if (carlosId && robertoId) {
-    const roberto = await prisma.driver.findUnique({
-      where: { id: robertoId },
-      select: { id: true, referredByDriverId: true },
+    const existing = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: carlosId, referredDriverId: robertoId },
     });
-    if (!roberto?.referredByDriverId) {
-      await prisma.driver.update({
-        where: { id: robertoId },
-        data: { referredByDriverId: carlosId },
-      });
+    if (!existing) {
+      await createDriverReferralChain(robertoId, carlosId);
       console.log(`🔗 Rede: Carlos Silva → Roberto Souza`);
     } else {
       console.log(`⚠️  Roberto Souza já tem referência, pulando...`);
@@ -187,6 +180,7 @@ async function main() {
       data: { name: DEMO_PASSENGER_NAME, email: DEMO_PASSENGER_EMAIL },
     });
     // Garante que o passenger tem o referredByDriverId correto
+    // referredByDriverId on Passenger is still a valid field (Passenger→Driver relation)
     if (carlosId) {
       await prisma.passenger.updateMany({
         where: { userId: oldPassengerUser.id },
