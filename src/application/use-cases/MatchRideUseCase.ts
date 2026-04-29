@@ -1,7 +1,8 @@
 import { prisma } from "../../infra/prisma/client";
 import { RideContext } from "../../presentation/controllers/ride.controller";
+import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 
-export type MatchLevel = "REFERRED" | "PARTNER" | "GENERAL";
+export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
 
 // Tempo de exclusividade do motorista indicado antes do fallback para MATCHING geral
 const REFERRAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
@@ -75,37 +76,28 @@ export class MatchRideUseCase {
     rideId: string,
     referredDriverId: string | null
   ): Promise<MatchLevel> {
-    // Sem driver indicado → pool geral direto
     if (!referredDriverId) return "GENERAL";
 
-    // Verificar se o driver indicado já foi tentado
     const referredOffer = await prisma.rideOffer.findFirst({
       where: { rideRequestId: rideId, driverId: referredDriverId },
     });
 
     if (!referredOffer) return "REFERRED";
 
-    // Driver indicado já foi tentado → verificar se há parceiros da rede não tentados
-    const partnerDrivers = await prisma.driver.findMany({
-      where: {
-        isActive: true,
-        referredByDriverId: referredDriverId,
-      },
-      select: { id: true },
-    });
+    // Referred driver already tried — check network levels
+    const network = await getDriverNetwork(referredDriverId);
 
-    if (partnerDrivers.length === 0) return "GENERAL";
-
-    // Verificar se algum parceiro ainda não recebeu offer
     const triedOffers = await prisma.rideOffer.findMany({
       where: { rideRequestId: rideId },
       select: { driverId: true },
     });
     const triedSet = new Set(triedOffers.map((o) => o.driverId));
 
-    const hasUntriedPartner = partnerDrivers.some((d) => !triedSet.has(d.id));
+    if (network.level1.some((id) => !triedSet.has(id))) return "NETWORK_L1";
+    if (network.level2.some((id) => !triedSet.has(id))) return "NETWORK_L2";
+    if (network.level3.some((id) => !triedSet.has(id))) return "NETWORK_L3";
 
-    return hasUntriedPartner ? "PARTNER" : "GENERAL";
+    return "GENERAL";
   }
 
   // ─── Criar offer com tolerância a duplicidade ───────────────────────────────
@@ -169,7 +161,7 @@ export class MatchRideUseCase {
       }
 
       if (alreadyOfferedIds.has(referredDriverId)) {
-        return this.execute({ rideId, level: "PARTNER", excludedDriverIds });
+        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds });
       }
 
       const referredDriver = await prisma.driver.findFirst({
@@ -177,8 +169,8 @@ export class MatchRideUseCase {
       });
 
       if (!referredDriver) {
-        console.log(`⚠️ Driver indicado ${referredDriverId} inativo — escalando para PARTNER`);
-        return this.execute({ rideId, level: "PARTNER", excludedDriverIds });
+        console.log(`⚠️ Driver indicado ${referredDriverId} inativo — escalando para NETWORK_L1`);
+        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds });
       }
 
       // ✅ Modo referral: aguarda 60s antes de abrir para outros
@@ -188,10 +180,10 @@ export class MatchRideUseCase {
       });
 
       await this.createOffer(rideId, referredDriverId, expiresAt);
-      console.log(`⏳ Corrida ${rideId} em WAITING_REFERRAL — fallback em ${REFERRAL_TIMEOUT_MS / 1000}s`);
+        console.log(`⏳ Corrida ${rideId} em WAITING_REFERRAL — fallback em ${REFERRAL_TIMEOUT_MS / 1000}s`);
       console.log("Referral timeout iniciado:", rideId);
 
-      // Timeout: se ainda WAITING_REFERRAL após REFERRAL_TIMEOUT_MS → escalar para pool geral
+      // Timeout: se ainda WAITING_REFERRAL após REFERRAL_TIMEOUT_MS → escalar para rede antes do pool geral
       setTimeout(async () => {
         try {
           const current = await prisma.rideRequest.findUnique({
@@ -199,7 +191,7 @@ export class MatchRideUseCase {
             select: { status: true },
           });
           if (current?.status === "WAITING_REFERRAL") {
-            console.log("Referral expirado → fallback MATCHING:", rideId);
+            console.log("Referral expirado → fallback NETWORK_L1:", rideId);
 
             // Expirar offer ainda pendente do driver indicado (evita aceitação tardia)
             await prisma.rideOffer.updateMany({
@@ -213,7 +205,7 @@ export class MatchRideUseCase {
             });
             await this.execute({
               rideId,
-              level: "GENERAL",
+              level: "NETWORK_L1",
               excludedDriverIds: [...excludedDriverIds, referredDriverId],
             });
           }
@@ -225,8 +217,8 @@ export class MatchRideUseCase {
       return { matched: true, level };
     }
 
-    // ── Tier 2: PARTNER ───────────────────────────────────────────────────────
-    if (level === "PARTNER") {
+    // ── Tier 2-4: NETWORK LEVELS ─────────────────────────────────────────────
+    if (level === "NETWORK_L1" || level === "NETWORK_L2" || level === "NETWORK_L3") {
       if (!referredDriverId) {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
@@ -236,27 +228,33 @@ export class MatchRideUseCase {
         data: { status: "MATCHING" },
       });
 
-      const partnerExcluded = [...alreadyOfferedIds, referredDriverId];
+      const network = await getDriverNetwork(referredDriverId);
+      const networkMap: Record<string, string[]> = {
+        NETWORK_L1: network.level1,
+        NETWORK_L2: network.level2,
+        NETWORK_L3: network.level3,
+      };
+      const candidates = networkMap[level].filter((id) => !alreadyOfferedIds.has(id));
 
-      const partnerDriversRaw = await prisma.driver.findMany({
-        where: {
-          isActive: true,
-          id: { notIn: partnerExcluded },
-          referredByDriverId: referredDriverId,
-        },
+      const candidateDrivers = await prisma.driver.findMany({
+        where: { id: { in: candidates }, isActive: true },
         select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
       });
 
-      const partnerDrivers = applyContextFilters(partnerDriversRaw, rideContext);
+      const filtered = applyContextFilters(candidateDrivers, rideContext);
 
-      console.log(`🤝 Drivers parceiros encontrados: ${partnerDrivers.length}`);
+      console.log(`🌐 Network ${level}: ${filtered.length} drivers disponíveis`);
 
-      if (partnerDrivers.length === 0) {
-        console.log(`⚠️ Nenhum parceiro disponível — escalando para GENERAL`);
-        return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
+      if (filtered.length === 0) {
+        const nextLevel: Record<string, MatchLevel> = {
+          NETWORK_L1: "NETWORK_L2",
+          NETWORK_L2: "NETWORK_L3",
+          NETWORK_L3: "GENERAL",
+        };
+        return this.execute({ rideId, level: nextLevel[level], excludedDriverIds });
       }
 
-      for (const driver of partnerDrivers) {
+      for (const driver of filtered) {
         await this.createOffer(rideId, driver.id, expiresAt);
       }
       return { matched: true, level };

@@ -86,7 +86,7 @@ export class RespondToRideOfferUseCase {
         const matchRide = new MatchRideUseCase();
         const { matched } = await matchRide.execute({
           rideId: offer.rideRequestId,
-          level: "GENERAL",
+          level: "NETWORK_L1",
           excludedDriverIds: [offer.driverId],
         });
 

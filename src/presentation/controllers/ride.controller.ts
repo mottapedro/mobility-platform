@@ -262,7 +262,7 @@ export class RideController {
           const matchRideUseCase = new MatchRideUseCase();
           const { matched } = await matchRideUseCase.execute({
             rideId: id,
-            level: "GENERAL",
+            level: "NETWORK_L1",
             excludedDriverIds: referredDriverId ? [referredDriverId] : [],
           });
 

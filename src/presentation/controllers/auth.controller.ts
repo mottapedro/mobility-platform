@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { prisma } from "../../infra/prisma/client";
+import { createDriverReferralChain } from "../../domain/services/DriverReferralService";
 
 export class AuthController {
   async register(req: Request, res: Response) {
@@ -33,8 +34,8 @@ export class AuthController {
         return res.status(400).json({ error: "Este email já está cadastrado" });
       }
 
-      // Validate referral driver
-      if (role === "passenger" && referredByDriverId) {
+      // Validate referral driver (for both passenger and driver registration)
+      if (referredByDriverId) {
         const driver = await prisma.driver.findUnique({ where: { id: referredByDriverId } });
         if (!driver) {
           return res.status(400).json({ error: "Motorista indicado não encontrado" });
@@ -50,6 +51,10 @@ export class AuthController {
         const driver = await prisma.driver.create({
           data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
         });
+        // Create referral chain if driver was referred by another driver
+        if (referredByDriverId) {
+          await createDriverReferralChain(driver.id, referredByDriverId);
+        }
         return res.status(201).json({
           user: { id: user.id, name: user.name, email: user.email, role: "driver" },
           driverId: driver.id,

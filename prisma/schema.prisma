@@ -80,10 +80,9 @@ model Driver {
 
   referredPassengers Passenger[]  @relation("DriverReferral")
 
-  // 🔥 Rede de indicação Driver ↔ Driver
-  referredByDriverId String?
-  referredByDriver   Driver?  @relation("DriverNetwork", fields: [referredByDriverId], references: [id])
-  referredDrivers    Driver[] @relation("DriverNetwork")
+  // Multi-level referral network via join table
+  referralsMade     DriverReferral[] @relation("Referrer")
+  referralsReceived DriverReferral[] @relation("Referred")
 }
 
 model Passenger {
@@ -163,6 +162,22 @@ model RideRequest {
   selectedDriver Driver? @relation(fields: [selectedDriverId], references: [id])
 
   @@index([scheduledAt])
+}
+
+model DriverReferral {
+  id               String   @id @default(uuid())
+
+  referrerDriverId String
+  referrer         Driver   @relation("Referrer", fields: [referrerDriverId], references: [id])
+
+  referredDriverId String
+  referred         Driver   @relation("Referred", fields: [referredDriverId], references: [id])
+
+  level            Int
+
+  createdAt        DateTime @default(now())
+
+  @@unique([referrerDriverId, referredDriverId])
 }
 
 model RideOffer {

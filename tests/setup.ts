@@ -18,8 +18,7 @@ beforeEach(async () => {
   await prisma.rideOffer.deleteMany();
   await prisma.rideRequest.deleteMany();
   await prisma.passenger.deleteMany();
-  // Clear self-referencing FK before deleting drivers
-  await prisma.driver.updateMany({ data: { referredByDriverId: null } });
+  await prisma.driverReferral.deleteMany();
   await prisma.driver.deleteMany();
   await prisma.user.deleteMany();
 });

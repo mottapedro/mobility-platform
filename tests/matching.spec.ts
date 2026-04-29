@@ -1,6 +1,7 @@
 import request from "supertest";
 import { app } from "../src/app";
 import { prisma } from "./setup";
+import { createDriverReferralChain } from "../src/domain/services/DriverReferralService";
 
 jest.setTimeout(15000);
 
@@ -116,7 +117,7 @@ describe("Matching — Tier 2 (PARTNER)", () => {
       include: { driver: true },
     });
 
-    // Driver B — parceiro de A (referredByDriverId = A.driver.id)
+    // Driver B — parceiro de A (level 1 na rede)
     const driverBUser = await prisma.user.create({
       data: {
         name: "Driver B",
@@ -127,12 +128,12 @@ describe("Matching — Tier 2 (PARTNER)", () => {
           create: {
             experienceLevel: "INTERMEDIARIO",
             isActive: true,
-            referredByDriverId: driverAUser.driver!.id,
           },
         },
       },
       include: { driver: true },
     });
+    await createDriverReferralChain(driverBUser.driver!.id, driverAUser.driver!.id);
 
     // Passageiro indicado por Driver A
     const passengerUser = await prisma.user.create({
