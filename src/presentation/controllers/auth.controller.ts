@@ -5,6 +5,7 @@ import { createDriverReferralChain } from "../../domain/services/DriverReferralS
 
 export class AuthController {
   async register(req: Request, res: Response) {
+    
     try {
       const { name, email, password, role, phone, referredByDriverId } = req.body;
 
@@ -90,20 +91,26 @@ export class AuthController {
     try {
       const { email, password } = req.body;
 
+      console.log("[LOGIN REQUEST]", { method: req.method, email, hasPassword: !!password });
+
       if (!email || !password) {
-        return res.status(400).json({ error: "Campos obrigatórios: email, password" });
+        return res.status(400).json({ error: "Missing credentials" });
       }
+
+      const users = await prisma.user.findMany();
+      console.log("USERS IN DB:", users.map(u => u.email));
 
       const user = await prisma.user.findUnique({ where: { email } });
       if (!user || !user.passwordHash) {
-        console.log(`[login] ❌ Usuário não encontrado ou sem hash: ${email} | found=${!!user} | hasHash=${!!user?.passwordHash}`);
+        console.log("[LOGIN FAILED]", { email, reason: "User not found or missing hash" });
         return res.status(401).json({ error: "Email ou senha incorretos" });
       }
 
-      console.log(`[login] 🔍 Tentativa: ${email} | hashPrefix=${user.passwordHash.substring(0, 7)}`);
+      console.log("[LOGIN]", { email: user.email, hashPrefix: user.passwordHash.substring(0, 7) });
       const valid = await bcrypt.compare(password, user.passwordHash);
-      console.log(`[login] ${valid ? "✅ Senha válida" : "❌ Senha inválida"}: ${email}`);
+      console.log("[LOGIN] password match:", valid);
       if (!valid) {
+        console.log("[LOGIN FAILED]", { email, reason: "Invalid credentials" });
         return res.status(401).json({ error: "Email ou senha incorretos" });
       }
 
@@ -113,9 +120,11 @@ export class AuthController {
       if (role === "driver") {
         const driver = await prisma.driver.findUnique({ where: { userId: user.id } });
         entityId = driver?.id;
+        console.log("[LOGIN SUCCESS]", { email, driverId: entityId });
       } else {
         const passenger = await prisma.passenger.findUnique({ where: { userId: user.id } });
         entityId = passenger?.id;
+        console.log("[LOGIN SUCCESS]", { email, passengerId: entityId });
         return res.status(200).json({
           user: { id: user.id, name: user.name, email: user.email, role },
           passengerId: entityId,
