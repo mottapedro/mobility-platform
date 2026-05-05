@@ -90,7 +90,23 @@ async function main() {
     const existing = await prisma.user.findUnique({ where: { email: data.email } });
 
     if (existing) {
-      console.log(`⚠️  Driver ${data.name} já existe, pulando...`);
+      // Garantir que o hash sempre corresponda à senha padrão
+      if (!existing.passwordHash || !existing.passwordHash.startsWith("$2")) {
+        await prisma.user.update({
+          where: { id: existing.id },
+          data: { passwordHash: DEFAULT_PASSWORD_HASH },
+        });
+        console.log(`🔑 Hash atualizado para: ${existing.email}`);
+      } else {
+        // Forçar update para garantir que a senha 123456 sempre funcione no seed
+        await prisma.user.update({
+          where: { id: existing.id },
+          data: { passwordHash: DEFAULT_PASSWORD_HASH },
+        });
+        console.log(`🔑 Hash re-sincronizado para: ${existing.email}`);
+      }
+
+      console.log(`⚠️  Driver ${data.name} já existe, pulando criação...`);
 
       const existingDriver = await prisma.driver.findUnique({
         where: { userId: existing.id },
