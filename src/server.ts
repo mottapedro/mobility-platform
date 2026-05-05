@@ -11,8 +11,29 @@ import { ExpireOffersService } from "./application/use-cases/ExpireOffersService
 
 dotenv.config();
 
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "https://mobility-platform-frontend.vercel.app",
+];
+
 const app = express();
-app.use(cors({ origin: "http://localhost:3001" }));
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.includes(".vercel.app") // 🔥 LIBERA TODOS OS DEPLOYS
+    ) {
+      return callback(null, true);
+    }
+
+    console.log("❌ CORS bloqueado:", origin);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 app.use("/rides", rideRoutes);
