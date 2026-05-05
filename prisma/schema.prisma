@@ -51,12 +51,13 @@ enum RideOfferStatus {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  name      String
-  email     String   @unique
-  phone     String
-  role      UserRole
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  phone        String
+  role         UserRole
+  passwordHash String?
+  createdAt    DateTime @default(now())
 
   driver    Driver?
   passenger Passenger?
