@@ -2,6 +2,7 @@
 module.exports = {
   testEnvironment: "node",
   testMatch: ["**/*.spec.ts"],
+  testPathIgnorePatterns: ["/node_modules/", "/tests/e2e/"],
   moduleFileExtensions: ["ts", "js"],
   rootDir: ".",
   transform: {
