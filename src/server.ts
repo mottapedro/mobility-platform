@@ -9,7 +9,10 @@ app.use(cors({
   credentials: true
 }));
 
-// ⏱️ Job: expira offers pendentes vencidas a cada 10s
+app.get("/health", (_req, res) => {
+  return res.status(200).json({ status: "ok" });
+});
+
 const expireOffersService = new ExpireOffersService();
 setInterval(() => {
   expireOffersService.execute().catch((err) => {
