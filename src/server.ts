@@ -1,79 +1,82 @@
-import express from "express";
-import cors, { CorsOptions } from "cors";
+import express, { NextFunction, Request, Response } from "express";
+import cors from "cors";
 import dotenv from "dotenv";
 import "dotenv/config";
 
 import { rideRoutes } from "./presentation/routes/ride.routes";
 import { offerRoutes } from "./presentation/routes/offer.routes";
 import { passengerRoutes } from "./presentation/routes/passenger.routes";
+import { driverRoutes } from "./presentation/routes/driver.routes";
 import { authRoutes } from "./presentation/routes/auth.routes";
+import { testRoutes } from "./presentation/routes/test.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
+import { prisma } from "./infra/prisma/client";
 
 dotenv.config();
 
-const defaultAllowedOrigins = [
+const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:3001",
-  "http://127.0.0.1:3000",
-  "http://127.0.0.1:3001",
 ];
 
-const envAllowedOrigins = [
-  process.env.FRONTEND_URL,
-  process.env.FRONTEND_VERCEL_URL,
-  process.env.CORS_ORIGINS,
-]
-  .filter((value): value is string => Boolean(value))
-  .flatMap((value) => value.split(",").map((origin) => origin.trim()))
-  .filter(Boolean);
+const app = express();
 
-const allowedOrigins = new Set<string>([
-  ...defaultAllowedOrigins,
-  ...envAllowedOrigins,
-]);
-
-function isAllowedOrigin(origin?: string): boolean {
-  if (!origin) return true;
-  if (allowedOrigins.has(origin)) return true;
-
-  try {
-    const hostname = new URL(origin).hostname;
-    return hostname.endsWith(".vercel.app");
-  } catch {
-    return false;
-  }
-}
-
-const corsOptions: CorsOptions = {
+app.use(cors({
   origin: (origin, callback) => {
-    if (isAllowedOrigin(origin)) {
-      callback(null, true);
-      return;
+    if (!origin) {
+      return callback(null, true);
     }
 
-    callback(new Error(`CORS blocked for origin: ${origin}`));
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.includes(".vercel.app")
+    ) {
+      return callback(null, true);
+    }
+
+    console.log("❌ CORS bloqueado:", origin);
+
+    return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: [
-    "Origin",
-    "X-Requested-With",
-    "Content-Type",
-    "Accept",
-    "Authorization",
-    "ngrok-skip-browser-warning",
-  ],
-};
+}));
 
-const app = express();
-app.use(cors(corsOptions));
-app.options(/.*/, cors(corsOptions));
+app.options("/{*corsPreflight}", cors());
 app.use(express.json());
+
+app.use((req, res, next) => {
+  console.log("➡️", req.method, req.url);
+  next();
+});
+
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
 
 app.use("/auth", authRoutes);
 app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
+app.use("/drivers", driverRoutes);
+
+if (process.env.NODE_ENV !== "production") {
+  app.use("/test", testRoutes);
+
+  app.get("/debug/users", async (req, res) => {
+    const users = await prisma.user.findMany({ select: { email: true, role: true } });
+    console.log("🚨 [/debug/users] DATABASE_URL:", process.env.DATABASE_URL);
+    console.log("🚨 [/debug/users] Users in DB:", users.map((user) => user.email));
+    return res.json({ DATABASE_URL: process.env.DATABASE_URL, users });
+  });
+}
+
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  console.error("🔥 GLOBAL ERROR:", err);
+
+  res.status(500).json({
+    error: "Internal server error",
+  });
+});
 
 if (process.env.NODE_ENV !== "test") {
   const expireOffersService = new ExpireOffersService();
