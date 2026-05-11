@@ -46,6 +46,39 @@ describe("Public driver referral flow", () => {
         },
       ],
     });
+    expect(response.body.driverId).toBeUndefined();
+  });
+
+  it("returns 404 for an unknown public referralCode", async () => {
+    const response = await request(app).get("/public/drivers/missing-code");
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: "Motorista não encontrado" });
+  });
+
+  it("returns 404 for an inactive driver public referralCode", async () => {
+    const user = await prisma.user.create({
+      data: {
+        name: "Inactive Driver",
+        email: "inactive-driver@test.com",
+        phone: "11999990016",
+        role: "DRIVER",
+      },
+    });
+
+    await prisma.driver.create({
+      data: {
+        userId: user.id,
+        isActive: false,
+        experienceLevel: "INTERMEDIARIO",
+        referralCode: "inactive-driver-code",
+      },
+    });
+
+    const response = await request(app).get("/public/drivers/inactive-driver-code");
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual({ error: "Motorista não encontrado" });
   });
 
   it("registers a passenger via referralCode and persists referredByDriverId", async () => {
@@ -86,6 +119,43 @@ describe("Public driver referral flow", () => {
     });
 
     expect(passenger?.referredByDriverId).toBe(referrerDriver.id);
+  });
+
+  it("rejects register when referralCode and referredByDriverId are both provided", async () => {
+    const response = await request(app)
+      .post("/auth/register")
+      .send({
+        name: "Conflict Referral",
+        email: "conflict-referral@test.com",
+        password: "123456",
+        role: "passenger",
+        phone: "11999990017",
+        referralCode: "public-code",
+        referredByDriverId: "internal-id",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "Use apenas referralCode ou referredByDriverId",
+    });
+  });
+
+  it("rejects register with an invalid referralCode", async () => {
+    const response = await request(app)
+      .post("/auth/register")
+      .send({
+        name: "Invalid Referral",
+        email: "invalid-referral@test.com",
+        password: "123456",
+        role: "passenger",
+        phone: "11999990018",
+        referralCode: "missing-code",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({
+      error: "Motorista indicado não encontrado ou inativo",
+    });
   });
 
   it("registers a driver via referralCode and creates the referral chain", async () => {

@@ -154,7 +154,13 @@ export class AuthController {
       if (role === "driver") {
         const driver = await prisma.driver.findUnique({ where: { userId: user.id } });
         entityId = driver?.id;
-        console.log("[LOGIN SUCCESS]", { email, driverId: entityId });
+        console.log("[LOGIN SUCCESS]", { email, driverId: entityId, referralCode: driver?.referralCode });
+
+        return res.status(200).json({
+          user: { id: user.id, name: user.name, email: user.email, role },
+          driverId: entityId,
+          referralCode: driver?.referralCode ?? null,
+        });
       } else {
         const passenger = await prisma.passenger.findUnique({ where: { userId: user.id } });
         entityId = passenger?.id;
@@ -165,11 +171,6 @@ export class AuthController {
           referredByDriverId: passenger?.referredByDriverId ?? null,
         });
       }
-
-      return res.status(200).json({
-        user: { id: user.id, name: user.name, email: user.email, role },
-        driverId: entityId,
-      });
     } catch (error) {
       console.error("🔥 Erro no login:", error);
       return res.status(500).json({ error: "Erro interno ao fazer login" });

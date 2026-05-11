@@ -90,7 +90,7 @@ export class DriverController {
         data: { userId: user.id, isActive: true, experienceLevel: level },
       });
 
-      return res.status(201).json({ id: driver.id, user });
+      return res.status(201).json({ id: driver.id, referralCode: driver.referralCode, user });
     } catch (error: unknown) {
       // Unique constraint: email duplicado
       if (
