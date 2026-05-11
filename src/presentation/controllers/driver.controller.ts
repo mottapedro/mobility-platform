@@ -122,6 +122,7 @@ export class DriverController {
 
       const result = drivers.map((d) => ({
         id: d.id,
+        referralCode: d.referralCode,
         name: d.user.name,
         phone: d.user.phone,
       }));

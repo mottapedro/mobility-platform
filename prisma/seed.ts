@@ -83,7 +83,13 @@ async function main() {
     },
   ];
 
-  const createdDrivers: { name: string; driverId: string | undefined; email: string; region: Region }[] = [];
+  const createdDrivers: {
+    name: string;
+    driverId: string | undefined;
+    email: string;
+    region: Region;
+    referralCode: string | undefined;
+  }[] = [];
   const createdDriversMap = new Map<string, string>(); // name → driverId
 
   for (const data of driversData) {
@@ -116,6 +122,7 @@ async function main() {
         driverId: existingDriver?.id,
         email: existing.email,
         region: data.region,
+        referralCode: existingDriver?.referralCode,
       });
       if (existingDriver?.id) createdDriversMap.set(data.name, existingDriver.id);
       continue;
@@ -149,6 +156,7 @@ async function main() {
       driverId: user.driver?.id,
       email: user.email,
       region: data.region,
+      referralCode: user.driver?.referralCode,
     };
 
     createdDrivers.push(driverInfo);
@@ -225,6 +233,7 @@ async function main() {
   createdDrivers.forEach((driver) => {
     console.log(`👤 ${driver.name}`);
     console.log(`   driverId: ${driver.driverId}`);
+    console.log(`   referralCode: ${driver.referralCode}`);
     console.log(`   region:   ${driver.region}`);
     console.log("------");
   });
