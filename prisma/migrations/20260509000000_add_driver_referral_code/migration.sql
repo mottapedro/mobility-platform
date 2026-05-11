@@ -2,7 +2,7 @@ ALTER TABLE "Driver"
 ADD COLUMN "referralCode" TEXT;
 
 UPDATE "Driver"
-SET "referralCode" = lower(replace("id", '-', ''))
+SET "referralCode" = 'drv_' || md5("id" || ':referral:v1')
 WHERE "referralCode" IS NULL;
 
 ALTER TABLE "Driver"
