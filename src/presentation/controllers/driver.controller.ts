@@ -79,24 +79,24 @@ export class DriverController {
     }
   }
 
-  async listOffers(req: Request, res: Response) {
+  async getOffers(req: Request, res: Response) {
     try {
-      const { driverId } = req.params;
+      console.log("➡️ DRIVER OFFERS HIT");
 
-      if (!driverId || typeof driverId !== "string") {
+      const { id } = req.params;
+
+      if (!id || typeof id !== "string") {
         return res.status(400).json({ error: "driverId inválido na URL" });
       }
 
-      const driver = await prisma.driver.findUnique({ where: { id: driverId } });
+      const driver = await prisma.driver.findUnique({ where: { id } });
       if (!driver) {
         return res.status(404).json({ error: "Driver não encontrado" });
       }
 
-      // Retorna offers PENDING do driver com expiresAt no futuro
-      // WAITING_REFERRAL é incluído para que o driver indicado veja sua oferta exclusiva
       const offers = await prisma.rideOffer.findMany({
         where: {
-          driverId,
+          driverId: id,
           status: "PENDING",
           expiresAt: { gt: new Date() },
           rideRequest: {
@@ -107,9 +107,22 @@ export class DriverController {
         },
         include: {
           rideRequest: {
-            include: {
+            select: {
+              id: true,
+              origin: true,
+              destination: true,
+              scheduledAt: true,
+              status: true,
               passenger: {
-                include: { user: { select: { name: true, phone: true } } },
+                select: {
+                  id: true,
+                  user: {
+                    select: {
+                      name: true,
+                      phone: true,
+                    },
+                  },
+                },
               },
             },
           },
@@ -117,12 +130,23 @@ export class DriverController {
         orderBy: { createdAt: "desc" },
       });
 
-      return res.status(200).json(offers);
+      console.log("✅ offers loaded:", offers.length);
+
+      const response = offers.map((offer) => ({
+        id: offer.id,
+        rideRequestId: offer.rideRequestId,
+        driverId: offer.driverId,
+        status: offer.status,
+        expiresAt: offer.expiresAt,
+        createdAt: offer.createdAt,
+        rideRequest: offer.rideRequest,
+      }));
+
+      return res.status(200).json(response);
     } catch (error) {
-      console.error("Erro ao listar ofertas do driver:", error);
+      console.error("🔥 DRIVER OFFERS ERROR:", error);
       return res.status(500).json({
-        error: "Erro interno ao listar ofertas",
-        details: error instanceof Error ? error.message : error,
+        error: "Erro ao carregar ofertas",
       });
     }
   }

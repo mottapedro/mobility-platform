@@ -2,12 +2,12 @@ import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain } from "../../domain/services/DriverReferralService";
+import { resolveReferralCodeToDriverId } from "../../domain/services/ReferralCodeService";
 
 export class AuthController {
   async register(req: Request, res: Response) {
-    
     try {
-      const { name, email, password, role, phone, referredByDriverId } = req.body;
+      const { name, email, password, role, phone, referredByDriverId, referralCode } = req.body;
 
       if (!name || !email || !password || !role || !phone) {
         return res.status(400).json({
@@ -35,9 +35,19 @@ export class AuthController {
         return res.status(400).json({ error: "Este email já está cadastrado" });
       }
 
+      let resolvedReferralDriverId: string | null = typeof referredByDriverId === "string" ? referredByDriverId : null;
+
+      if (typeof referralCode === "string" && referralCode.trim()) {
+        resolvedReferralDriverId = await resolveReferralCodeToDriverId(referralCode);
+
+        if (!resolvedReferralDriverId) {
+          return res.status(400).json({ error: "Referral code inválido ou expirado" });
+        }
+      }
+
       // Validate referral driver (for both passenger and driver registration)
-      if (referredByDriverId) {
-        const driver = await prisma.driver.findUnique({ where: { id: referredByDriverId } });
+      if (resolvedReferralDriverId) {
+        const driver = await prisma.driver.findUnique({ where: { id: resolvedReferralDriverId } });
         if (!driver || !driver.isActive) {
           return res.status(400).json({ error: "Motorista indicado não encontrado ou inativo" });
         }
@@ -53,8 +63,8 @@ export class AuthController {
           data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
         });
         // Create referral chain if driver was referred by another driver
-        if (referredByDriverId) {
-          await createDriverReferralChain(driver.id, referredByDriverId);
+        if (resolvedReferralDriverId) {
+          await createDriverReferralChain(driver.id, resolvedReferralDriverId);
         }
         return res.status(201).json({
           user: { id: user.id, name: user.name, email: user.email, role: "driver" },
@@ -69,8 +79,8 @@ export class AuthController {
       const passenger = await prisma.passenger.create({
         data: {
           user: { connect: { id: user.id } },
-          ...(referredByDriverId
-            ? { referredByDriver: { connect: { id: referredByDriverId } } }
+          ...(resolvedReferralDriverId
+            ? { referredByDriver: { connect: { id: resolvedReferralDriverId } } }
             : {}),
         },
         include: { user: true },
