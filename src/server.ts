@@ -7,6 +7,7 @@ import { rideRoutes } from "./presentation/routes/ride.routes";
 import { offerRoutes } from "./presentation/routes/offer.routes";
 import { passengerRoutes } from "./presentation/routes/passenger.routes";
 import { driverRoutes } from "./presentation/routes/driver.routes";
+import { publicRoutes } from "./presentation/routes/public.routes";
 import { authRoutes } from "./presentation/routes/auth.routes";
 import { testRoutes } from "./presentation/routes/test.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
@@ -53,6 +54,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+app.use("/public", publicRoutes);
 app.use("/auth", authRoutes);
 app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
