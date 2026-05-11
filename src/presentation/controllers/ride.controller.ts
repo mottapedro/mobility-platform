@@ -2,7 +2,9 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
+import { AdvanceRideDispatchUseCase } from "../../application/use-cases/AdvanceRideDispatchUseCase";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
+import { logError, logInfo } from "../../shared/logger";
 
 // ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
@@ -96,11 +98,6 @@ export class RideController {
         });
       }
 
-      // ─── Regra de negócio: referral define status inicial ──────────────────
-      const initialStatus = passengerExists.referredByDriverId
-        ? "WAITING_REFERRAL"
-        : "MATCHING";
-
       // valida data
       const date = new Date(scheduledAt);
 
@@ -154,7 +151,7 @@ export class RideController {
           origin: originTrimmed,
           destination: destinationTrimmed,
           scheduledAt: date,
-          status: initialStatus,
+          status: "PENDING",
           distanceKm,
           durationMin,
           context: safeContext,
@@ -174,21 +171,18 @@ export class RideController {
         },
       });
 
-      // 🚀 Dispara o matching em background (não bloqueia HTTP)
-      console.log("RIDE CREATED:", {
+      logInfo("ride.dispatch.created", {
         id: ride.id,
-        status: initialStatus,
+        status: "PENDING",
         targetDriverId: passengerExists.referredByDriverId ?? null,
       });
 
       setImmediate(async () => {
         try {
-          console.log(`🚀 Iniciando matching para ride ${ride.id}`);
           const matchRideUseCase = new MatchRideUseCase();
           await matchRideUseCase.execute({ rideId: ride.id });
-          console.log(`✅ Matching finalizado para ride ${ride.id}`);
         } catch (error) {
-          console.error(`🔥 Erro no matching da ride ${ride.id}:`, error);
+          logError("ride.dispatch.start_failed", error, { rideId: ride.id });
         }
       });
 
@@ -248,33 +242,15 @@ export class RideController {
         });
       }
 
-      // WAITING_REFERRAL → MATCHING
-      await prisma.rideRequest.update({
-        where: { id },
-        data: { status: "MATCHING" },
-      });
-
-      console.log(`🔄 Fallback manual disparado para corrida ${id}`);
-
-      // Dispara matching geral excluindo o driver indicado
       setImmediate(async () => {
         try {
-          const matchRideUseCase = new MatchRideUseCase();
-          const { matched } = await matchRideUseCase.execute({
+          const advanceRideDispatchUseCase = new AdvanceRideDispatchUseCase();
+          await advanceRideDispatchUseCase.execute({
             rideId: id,
-            level: "NETWORK_L1",
             excludedDriverIds: referredDriverId ? [referredDriverId] : [],
           });
-
-          if (!matched) {
-            await prisma.rideRequest.update({
-              where: { id },
-              data: { status: "EXPIRED" },
-            });
-            console.log(`⏱️ Corrida ${id} expirada — sem drivers no fallback manual`);
-          }
         } catch (err) {
-          console.error(`🔥 Erro no fallback manual da corrida ${id}:`, err);
+          logError("ride.dispatch.manual_fallback_failed", err, { rideId: id });
         }
       });
 
