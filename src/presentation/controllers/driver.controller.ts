@@ -2,6 +2,63 @@ import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 
 export class DriverController {
+  async getPublicProfile(req: Request, res: Response) {
+    try {
+      const { referralCode } = req.params;
+
+      if (!referralCode || typeof referralCode !== "string") {
+        return res.status(400).json({ error: "referralCode inválido na URL" });
+      }
+
+      const driver = await prisma.driver.findFirst({
+        where: {
+          referralCode,
+          isActive: true,
+        },
+        select: {
+          referralCode: true,
+          experienceLevel: true,
+          createdAt: true,
+          user: {
+            select: {
+              name: true,
+            },
+          },
+          regions: {
+            select: {
+              region: true,
+            },
+          },
+          vehicles: {
+            select: {
+              brand: true,
+              model: true,
+              category: true,
+            },
+          },
+        },
+      });
+
+      if (!driver) {
+        return res.status(404).json({ error: "Motorista não encontrado" });
+      }
+
+      return res.status(200).json({
+        name: driver.user.name,
+        referralCode: driver.referralCode,
+        experienceLevel: driver.experienceLevel,
+        memberSince: driver.createdAt,
+        regions: driver.regions.map((region) => region.region),
+        vehicles: driver.vehicles,
+      });
+    } catch (error) {
+      console.error("Erro ao carregar perfil público do motorista:", error);
+      return res.status(500).json({
+        error: "Erro interno ao carregar motorista",
+      });
+    }
+  }
+
   async create(req: Request, res: Response) {
     try {
       const { name, email, phone, experienceLevel } = req.body;
@@ -33,7 +90,7 @@ export class DriverController {
         data: { userId: user.id, isActive: true, experienceLevel: level },
       });
 
-      return res.status(201).json({ id: driver.id, user });
+      return res.status(201).json({ id: driver.id, referralCode: driver.referralCode, user });
     } catch (error: unknown) {
       // Unique constraint: email duplicado
       if (
@@ -65,6 +122,7 @@ export class DriverController {
 
       const result = drivers.map((d) => ({
         id: d.id,
+        referralCode: d.referralCode,
         name: d.user.name,
         phone: d.user.phone,
       }));

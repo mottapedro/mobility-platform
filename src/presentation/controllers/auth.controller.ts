@@ -5,9 +5,16 @@ import { createDriverReferralChain } from "../../domain/services/DriverReferralS
 
 export class AuthController {
   async register(req: Request, res: Response) {
-    
     try {
-      const { name, email, password, role, phone, referredByDriverId } = req.body;
+      const {
+        name,
+        email,
+        password,
+        role,
+        phone,
+        referredByDriverId,
+        referralCode,
+      } = req.body;
 
       if (!name || !email || !password || !role || !phone) {
         return res.status(400).json({
@@ -29,18 +36,44 @@ export class AuthController {
         return res.status(400).json({ error: "A senha precisa ter pelo menos 6 caracteres" });
       }
 
+      if (referredByDriverId && referralCode) {
+        return res.status(400).json({
+          error: "Use apenas referralCode ou referredByDriverId",
+        });
+      }
+
       // Check unique email
       const existing = await prisma.user.findUnique({ where: { email } });
       if (existing) {
         return res.status(400).json({ error: "Este email já está cadastrado" });
       }
 
-      // Validate referral driver (for both passenger and driver registration)
+      let referrerDriverId: string | null = null;
+
+      if (referralCode !== undefined && referralCode !== null) {
+        if (typeof referralCode !== "string" || !referralCode.trim()) {
+          return res.status(400).json({ error: "referralCode deve ser string não vazia" });
+        }
+
+        const driver = await prisma.driver.findUnique({
+          where: { referralCode: referralCode.trim() },
+        });
+
+        if (!driver || !driver.isActive) {
+          return res.status(400).json({ error: "Motorista indicado não encontrado ou inativo" });
+        }
+
+        referrerDriverId = driver.id;
+      }
+
+      // Backward-compatible internal path while public clients migrate to referralCode
       if (referredByDriverId) {
         const driver = await prisma.driver.findUnique({ where: { id: referredByDriverId } });
         if (!driver || !driver.isActive) {
           return res.status(400).json({ error: "Motorista indicado não encontrado ou inativo" });
         }
+
+        referrerDriverId = driver.id;
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
@@ -53,12 +86,13 @@ export class AuthController {
           data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
         });
         // Create referral chain if driver was referred by another driver
-        if (referredByDriverId) {
-          await createDriverReferralChain(driver.id, referredByDriverId);
+        if (referrerDriverId) {
+          await createDriverReferralChain(driver.id, referrerDriverId);
         }
         return res.status(201).json({
           user: { id: user.id, name: user.name, email: user.email, role: "driver" },
           driverId: driver.id,
+          referralCode: driver.referralCode,
         });
       }
 
@@ -69,8 +103,8 @@ export class AuthController {
       const passenger = await prisma.passenger.create({
         data: {
           user: { connect: { id: user.id } },
-          ...(referredByDriverId
-            ? { referredByDriver: { connect: { id: referredByDriverId } } }
+          ...(referrerDriverId
+            ? { referredByDriver: { connect: { id: referrerDriverId } } }
             : {}),
         },
         include: { user: true },
@@ -120,7 +154,13 @@ export class AuthController {
       if (role === "driver") {
         const driver = await prisma.driver.findUnique({ where: { userId: user.id } });
         entityId = driver?.id;
-        console.log("[LOGIN SUCCESS]", { email, driverId: entityId });
+        console.log("[LOGIN SUCCESS]", { email, driverId: entityId, referralCode: driver?.referralCode });
+
+        return res.status(200).json({
+          user: { id: user.id, name: user.name, email: user.email, role },
+          driverId: entityId,
+          referralCode: driver?.referralCode ?? null,
+        });
       } else {
         const passenger = await prisma.passenger.findUnique({ where: { userId: user.id } });
         entityId = passenger?.id;
@@ -131,11 +171,6 @@ export class AuthController {
           referredByDriverId: passenger?.referredByDriverId ?? null,
         });
       }
-
-      return res.status(200).json({
-        user: { id: user.id, name: user.name, email: user.email, role },
-        driverId: entityId,
-      });
     } catch (error) {
       console.error("🔥 Erro no login:", error);
       return res.status(500).json({ error: "Erro interno ao fazer login" });

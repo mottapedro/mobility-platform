@@ -153,6 +153,21 @@ let joaoCtx: APIRequestContext;
 let passengerId: string;
 let pedroDriverId: string;
 let joaoDriverId: string;
+let pedroReferralCode: string;
+
+async function getPublicDriverProfile(
+  ctx: APIRequestContext,
+  referralCode: string
+): Promise<{ name: string; referralCode: string }> {
+  const res = await ctx.get(`${BASE}/public/drivers/${referralCode}`);
+
+  if (!res.ok()) {
+    const body = await res.text();
+    throw new Error(`getPublicDriverProfile failed for ${referralCode}: ${res.status()} — ${body}`);
+  }
+
+  return res.json();
+}
 
 test.beforeAll(async () => {
   passengerCtx = await playwrightRequest.newContext({ baseURL: BASE });
@@ -176,18 +191,23 @@ test.beforeEach(async () => {
     data: { name: "Pedro Motta", email: "pedro@e2e.test", password: "123456", role: "driver", phone: "21900000001" },
   });
   if (!pedroReg.ok()) throw new Error(`Pedro register: ${await pedroReg.text()}`);
-  pedroDriverId = (await pedroReg.json()).driverId;
+  const pedroBody = await pedroReg.json();
+  pedroDriverId = pedroBody.driverId;
+  pedroReferralCode = pedroBody.referralCode;
+
+  const pedroPublicProfile = await getPublicDriverProfile(passengerCtx, pedroReferralCode);
+  expect(pedroPublicProfile.referralCode).toBe(pedroReferralCode);
 
   // 3. Register João as a driver referred by Pedro (creates L1 referral chain)
   const joaoReg = await joaoCtx.post(`${BASE}/auth/register`, {
-    data: { name: "João Brito", email: "joao@e2e.test", password: "123456", role: "driver", phone: "21900000002", referredByDriverId: pedroDriverId },
+    data: { name: "João Brito", email: "joao@e2e.test", password: "123456", role: "driver", phone: "21900000002", referralCode: pedroReferralCode },
   });
   if (!joaoReg.ok()) throw new Error(`João register: ${await joaoReg.text()}`);
   joaoDriverId = (await joaoReg.json()).driverId;
 
   // 4. Register a test passenger referred by Pedro
   const passReg = await passengerCtx.post(`${BASE}/auth/register`, {
-    data: { name: "Test Passenger", email: "passenger@e2e.test", password: "123456", role: "passenger", phone: "21900000003", referredByDriverId: pedroDriverId },
+    data: { name: "Test Passenger", email: "passenger@e2e.test", password: "123456", role: "passenger", phone: "21900000003", referralCode: pedroReferralCode },
   });
   if (!passReg.ok()) throw new Error(`Passenger register: ${await passReg.text()}`);
   passengerId = (await passReg.json()).passengerId;
