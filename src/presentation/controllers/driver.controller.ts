@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
+import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
 
 export class DriverController {
   async create(req: Request, res: Response) {
@@ -147,6 +148,75 @@ export class DriverController {
       console.error("🔥 DRIVER OFFERS ERROR:", error);
       return res.status(500).json({
         error: "Erro ao carregar ofertas",
+      });
+    }
+  }
+
+  async getNetwork(req: AuthenticatedDriverRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      const authDriverId = req.authDriverId;
+
+      if (!id || typeof id !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+
+      if (!authDriverId) {
+        return res.status(401).json({ error: "Driver authentication required" });
+      }
+
+      if (authDriverId !== id) {
+        return res.status(403).json({ error: "Driver cannot access another network" });
+      }
+
+      const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1);
+      const pageSize = Math.min(
+        100,
+        Math.max(1, Number.parseInt(String(req.query.pageSize ?? "20"), 10) || 20)
+      );
+
+      const [totalPassengers, passengers] = await Promise.all([
+        prisma.passenger.count({
+          where: { referredByDriverId: id },
+        }),
+        prisma.passenger.findMany({
+          where: { referredByDriverId: id },
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                phone: true,
+                createdAt: true,
+              },
+            },
+          },
+          orderBy: { user: { createdAt: "desc" } },
+          skip: (page - 1) * pageSize,
+          take: pageSize,
+        }),
+      ]);
+
+      return res.status(200).json({
+        totalPassengers,
+        page,
+        pageSize,
+        passengers: passengers.map((passenger) => ({
+          id: passenger.id,
+          userId: passenger.userId,
+          name: passenger.user.name,
+          email: passenger.user.email,
+          phone: passenger.user.phone,
+          referredByDriverId: passenger.referredByDriverId,
+          joinedAt: passenger.user.createdAt,
+        })),
+      });
+    } catch (error) {
+      console.error("Erro ao carregar rede do motorista:", error);
+      return res.status(500).json({
+        error: "Erro interno ao carregar rede do motorista",
+        details: error instanceof Error ? error.message : error,
       });
     }
   }
