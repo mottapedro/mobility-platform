@@ -1,6 +1,8 @@
 import { prisma } from "../../infra/prisma/client";
 import { RideContext } from "../../presentation/controllers/ride.controller";
+import { DriverRegionMatcher } from "../../domain/services/DriverRegionMatcher";
 import { getDriverNetwork } from "../../domain/services/DriverReferralService";
+import { RegionResolver } from "../../domain/services/RegionResolver";
 
 export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
 
@@ -70,6 +72,49 @@ function applyContextFilters(
 }
 
 export class MatchRideUseCase {
+  constructor(
+    private readonly regionResolver = new RegionResolver(),
+    private readonly driverRegionMatcher = new DriverRegionMatcher()
+  ) {}
+
+  private async getGeneralCandidateDrivers(
+    origin: string,
+    alreadyOfferedIds: Set<string>,
+    rideContext: RideContext | null
+  ): Promise<{ id: string; experienceLevel: string; vehicles: { category: string }[] }[]> {
+    const resolvedRegion = this.regionResolver.resolve(origin);
+    const regionalMatches = await this.driverRegionMatcher.execute({ region: resolvedRegion });
+    const regionalDriverIds = regionalMatches
+      .map((match) => match.driverId)
+      .filter((driverId) => !alreadyOfferedIds.has(driverId));
+
+    if (regionalDriverIds.length > 0) {
+      const regionalDriversRaw = await prisma.driver.findMany({
+        where: {
+          id: { in: regionalDriverIds },
+          isActive: true,
+        },
+        select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
+      });
+
+      const ordering = new Map(regionalDriverIds.map((driverId, index) => [driverId, index]));
+      regionalDriversRaw.sort((left, right) => {
+        return (ordering.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (ordering.get(right.id) ?? Number.MAX_SAFE_INTEGER);
+      });
+
+      return applyContextFilters(regionalDriversRaw, rideContext);
+    }
+
+    const generalDriversRaw = await prisma.driver.findMany({
+      where: {
+        isActive: true,
+        id: { notIn: [...alreadyOfferedIds] },
+      },
+      select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
+    });
+
+    return applyContextFilters(generalDriversRaw, rideContext);
+  }
 
   // ─── Derivar próximo nível com base no estado atual das offers ──────────────
   private async deriveLevel(
@@ -265,15 +310,11 @@ export class MatchRideUseCase {
       data: { status: "MATCHING" },
     });
 
-    const generalDriversRaw = await prisma.driver.findMany({
-      where: {
-        isActive: true,
-        id: { notIn: [...alreadyOfferedIds] },
-      },
-      select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
-    });
-
-    const generalDrivers = applyContextFilters(generalDriversRaw, rideContext);
+    const generalDrivers = await this.getGeneralCandidateDrivers(
+      ride.origin,
+      alreadyOfferedIds,
+      rideContext
+    );
 
     if (generalDrivers.length === 0) {
       console.log(`⚠️ Nenhum driver disponível para corrida ${rideId}`);
