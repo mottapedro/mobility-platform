@@ -38,6 +38,36 @@ async function createDriverWithRegion(params: {
 }
 
 describe("POST /auth/register with referralCode", () => {
+  it("creates a referred driver with direct parent, network level, slug, and referral code", async () => {
+    const referrer = await createDriverWithRegion({
+      name: "Carlos Silva",
+      email: "carlos.driver@ref.com",
+      region: Region.ZN,
+    });
+
+    const response = await request(app)
+      .post("/auth/register")
+      .send({
+        name: "Marcos Lima",
+        email: "marcos.driver@ref.com",
+        password: "123456",
+        role: "driver",
+        phone: "21988887777",
+        referralCode: "carlos-silva-zn",
+      });
+
+    expect(response.status).toBe(201);
+
+    const driver = await prisma.driver.findUniqueOrThrow({
+      where: { id: response.body.driverId },
+    });
+
+    expect(driver.referredByDriverId).toBe(referrer.id);
+    expect(driver.networkLevel).toBe(1);
+    expect(driver.publicSlug).toBe("marcos-lima");
+    expect(driver.referralCode).toBe("marcos-lima");
+  });
+
   it("creates a passenger linked to the resolved driver", async () => {
     const driver = await createDriverWithRegion({
       name: "Carlos Silva",

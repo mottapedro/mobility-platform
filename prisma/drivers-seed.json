@@ -1,32 +1,101 @@
 [
   {
-    "name": "Carlos Silva",
-    "driverId": "e27ed162-7fd0-4eee-87bb-c502d8d63e45",
-    "email": "carlos@driver.com",
-    "region": "ZN"
-  },
-  {
-    "name": "Marcos Lima",
-    "driverId": "ba395ecc-dd02-4a79-83b3-9579cfba92c6",
-    "email": "marcos@driver.com",
-    "region": "ZS"
-  },
-  {
-    "name": "Roberto Souza",
-    "driverId": "f0db1960-6915-46ec-8b41-834e73665dcb",
-    "email": "roberto@driver.com",
-    "region": "ZO"
-  },
-  {
     "name": "Pedro Paulo Motta",
-    "driverId": "fb18b98e-105b-4fbd-8230-895c3ad1f7e2",
     "email": "mottapedro01@gmail.com",
-    "region": "ZN"
+    "phone": "21981722517",
+    "referralCode": "pedro-paulo-motta-zn",
+    "region": "ZN",
+    "experienceLevel": "PROFISSIONAL",
+    "vehicle": { "model": "Onix Plus Turbo", "brand": "Chevrolet", "plate": "RJS1234", "category": "EXECUTIVO" }
   },
   {
     "name": "João Luiz Correa de Brito",
-    "driverId": "60c0dd6e-074a-47be-a200-0ab045223cfb",
     "email": "jlcbrito@driver.com",
-    "region": "ZN"
+    "phone": "11999990004",
+    "referralCode": "joao-luiz-correa-de-brito-zn",
+    "parentReferralCode": "pedro-paulo-motta-zn",
+    "region": "ZN",
+    "experienceLevel": "PROFISSIONAL",
+    "vehicle": { "model": "Logan", "brand": "Renault", "plate": "UABC1234", "category": "CONFORTO" }
+  },
+  {
+    "name": "Carlinhos",
+    "email": "carlinhos@driver.com",
+    "phone": "21999990011",
+    "referralCode": "carlinhos-zn",
+    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
+    "region": "ZN",
+    "experienceLevel": "INTERMEDIARIO",
+    "vehicle": { "model": "Argo", "brand": "Fiat", "plate": "ALI1001", "category": "CONFORTO" }
+  },
+  {
+    "name": "Jenner",
+    "email": "jenner@driver.com",
+    "phone": "21999990012",
+    "referralCode": "jenner-zn",
+    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
+    "region": "ZN",
+    "experienceLevel": "INTERMEDIARIO",
+    "vehicle": { "model": "Cronos", "brand": "Fiat", "plate": "ALI1002", "category": "CONFORTO" }
+  },
+  {
+    "name": "Bira",
+    "email": "bira@driver.com",
+    "phone": "21999990013",
+    "referralCode": "bira-zn",
+    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
+    "region": "ZN",
+    "experienceLevel": "INICIANTE",
+    "vehicle": { "model": "Voyage", "brand": "Volkswagen", "plate": "ALI1003", "category": "CONFORTO" }
+  },
+  {
+    "name": "Gisele",
+    "email": "gisele@driver.com",
+    "phone": "21999990014",
+    "referralCode": "gisele-zn",
+    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
+    "region": "ZN",
+    "experienceLevel": "PROFISSIONAL",
+    "vehicle": { "model": "Yaris", "brand": "Toyota", "plate": "ALI1004", "category": "EXECUTIVO" }
+  },
+  {
+    "name": "Fábio",
+    "email": "fabio@driver.com",
+    "phone": "21999990015",
+    "referralCode": "fabio-zn",
+    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
+    "region": "ZN",
+    "experienceLevel": "INTERMEDIARIO",
+    "vehicle": { "model": "Polo", "brand": "Volkswagen", "plate": "ALI1005", "category": "CONFORTO" }
+  },
+  {
+    "name": "André Cabral",
+    "email": "andre.cabral@driver.com",
+    "phone": "21999990016",
+    "referralCode": "andre-cabral-zn",
+    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
+    "region": "ZN",
+    "experienceLevel": "PROFISSIONAL",
+    "vehicle": { "model": "Versa", "brand": "Nissan", "plate": "ALI1006", "category": "EXECUTIVO" }
+  },
+  {
+    "name": "Anselmo Valle dos Santos",
+    "email": "anselmo@driver.com",
+    "phone": "21999990017",
+    "referralCode": "anselmo-valle-dos-santos-zn",
+    "parentReferralCode": "pedro-paulo-motta-zn",
+    "region": "ZN",
+    "experienceLevel": "PROFISSIONAL",
+    "vehicle": { "model": "Kicks", "brand": "Nissan", "plate": "ALI1007", "category": "EXECUTIVO" }
+  },
+  {
+    "name": "Fernando Barreira",
+    "email": "fernando.barreira@driver.com",
+    "phone": "21999990018",
+    "referralCode": "fernando-barreira-zn",
+    "parentReferralCode": "pedro-paulo-motta-zn",
+    "region": "ZN",
+    "experienceLevel": "PROFISSIONAL",
+    "vehicle": { "model": "Sentra", "brand": "Nissan", "plate": "ALI1008", "category": "EXECUTIVO" }
   }
 ]

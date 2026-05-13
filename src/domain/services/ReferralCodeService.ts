@@ -65,6 +65,15 @@ export async function resolveReferralCodeToDriverId(referralCode: string): Promi
     return null;
   }
 
+  const stored = await prisma.driver.findFirst({
+    where: { isActive: true, referralCode: normalizedCode },
+    select: { id: true },
+  });
+
+  if (stored) {
+    return stored.id;
+  }
+
   const drivers = await prisma.driver.findMany({
     where: { isActive: true },
     include: {

@@ -34,27 +34,29 @@ export class RespondToRideOfferUseCase {
     const now = new Date();
 
     if (accept) {
-      await prisma.$transaction([
-        prisma.rideOffer.update({
+      await prisma.$transaction(async (tx) => {
+        await tx.rideOffer.update({
           where: { id: offerId },
           data: { status: "ACCEPTED", respondedAt: now },
-        }),
-        prisma.rideOffer.updateMany({
+        });
+
+        await tx.rideOffer.updateMany({
           where: {
             rideRequestId: offer.rideRequestId,
             id: { not: offerId },
             status: "PENDING",
           },
           data: { status: "EXPIRED" },
-        }),
-        prisma.rideRequest.update({
+        });
+
+        await tx.rideRequest.update({
           where: { id: offer.rideRequestId },
           data: {
             status: "ACCEPTED",
             selectedDriverId: offer.driverId,
           },
-        }),
-      ]);
+        });
+      });
 
       console.log(`✅ Corrida ${offer.rideRequestId} aceita pelo driver ${offer.driverId}`);
 

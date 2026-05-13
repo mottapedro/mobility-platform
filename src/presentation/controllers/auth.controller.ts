@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain } from "../../domain/services/DriverReferralService";
 import { resolveReferralCodeToDriverId } from "../../domain/services/ReferralCodeService";
+import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityService";
 
 export class AuthController {
   async register(req: Request, res: Response) {
@@ -56,19 +57,41 @@ export class AuthController {
       const passwordHash = await bcrypt.hash(password, 10);
 
       if (role === "driver") {
-        const user = await prisma.user.create({
-          data: { name, email, phone, role: prismaRole, passwordHash },
+        const referrer = resolvedReferralDriverId
+          ? await prisma.driver.findUnique({
+              where: { id: resolvedReferralDriverId },
+              select: { id: true, networkLevel: true },
+            })
+          : null;
+
+        const result = await prisma.$transaction(async (tx) => {
+          const user = await tx.user.create({
+            data: { name, email, phone, role: prismaRole, passwordHash },
+          });
+
+          const publicSlug = buildDriverPublicSlug(name);
+          const driver = await tx.driver.create({
+            data: {
+              userId: user.id,
+              isActive: true,
+              experienceLevel: "INICIANTE",
+              referredByDriverId: resolvedReferralDriverId,
+              networkLevel: referrer ? referrer.networkLevel + 1 : 0,
+              publicSlug,
+              referralCode: publicSlug,
+            },
+          });
+
+          if (resolvedReferralDriverId) {
+            await createDriverReferralChain(driver.id, resolvedReferralDriverId, tx as typeof prisma);
+          }
+
+          return { user, driver };
         });
-        const driver = await prisma.driver.create({
-          data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
-        });
-        // Create referral chain if driver was referred by another driver
-        if (resolvedReferralDriverId) {
-          await createDriverReferralChain(driver.id, resolvedReferralDriverId);
-        }
+
         return res.status(201).json({
-          user: { id: user.id, name: user.name, email: user.email, role: "driver" },
-          driverId: driver.id,
+          user: { id: result.user.id, name: result.user.name, email: result.user.email, role: "driver" },
+          driverId: result.driver.id,
         });
       }
 
@@ -131,6 +154,14 @@ export class AuthController {
         const driver = await prisma.driver.findUnique({ where: { userId: user.id } });
         entityId = driver?.id;
         console.log("[LOGIN SUCCESS]", { email, driverId: entityId });
+        return res.status(200).json({
+          user: { id: user.id, name: user.name, email: user.email, role },
+          driverId: entityId,
+          referralCode: driver?.referralCode ?? null,
+          publicSlug: driver?.publicSlug ?? null,
+          networkLevel: driver?.networkLevel ?? 0,
+          referredByDriverId: driver?.referredByDriverId ?? null,
+        });
       } else {
         const passenger = await prisma.passenger.findUnique({ where: { userId: user.id } });
         entityId = passenger?.id;
@@ -141,11 +172,6 @@ export class AuthController {
           referredByDriverId: passenger?.referredByDriverId ?? null,
         });
       }
-
-      return res.status(200).json({
-        user: { id: user.id, name: user.name, email: user.email, role },
-        driverId: entityId,
-      });
     } catch (error) {
       console.error("🔥 Erro no login:", error);
       return res.status(500).json({ error: "Erro interno ao fazer login" });

@@ -14,48 +14,52 @@ export interface DriverNetwork {
  */
 export async function createDriverReferralChain(
   newDriverId: string,
-  referrerDriverId: string
+  referrerDriverId: string,
+  client: typeof prisma = prisma
 ): Promise<void> {
   if (newDriverId === referrerDriverId) return;
 
   const edgesToCreate: {
-    referrerDriverId: string;
+    driverId: string;
     referredDriverId: string;
     level: number;
   }[] = [];
 
   // Level 1: direct referrer → newDriver
   edgesToCreate.push({
-    referrerDriverId,
+    driverId: referrerDriverId,
     referredDriverId: newDriverId,
     level: 1,
   });
 
   // Inherited levels: find all referrals where the referrer is the referred party
-  const parentReferrals = await prisma.driverReferral.findMany({
+  const parentReferrals = await client.driverReferral.findMany({
     where: { referredDriverId: referrerDriverId },
   });
 
   for (const parent of parentReferrals) {
     const inheritedLevel = parent.level + 1;
     if (inheritedLevel > 3) continue;
-    if (parent.referrerDriverId === newDriverId) continue; // prevent cycles
+    if (parent.driverId === newDriverId) continue; // prevent cycles
 
     edgesToCreate.push({
-      referrerDriverId: parent.referrerDriverId,
+      driverId: parent.driverId,
       referredDriverId: newDriverId,
       level: inheritedLevel,
     });
   }
 
-  // Insert all edges, skip duplicates via @@unique constraint
   for (const edge of edgesToCreate) {
-    try {
-      await prisma.driverReferral.create({ data: edge });
-    } catch (e: unknown) {
-      const err = e as { code?: string };
-      if (err.code !== "P2002") throw e; // re-throw anything that isn't a duplicate
-    }
+    await client.driverReferral.upsert({
+      where: {
+        driverId_referredDriverId: {
+          driverId: edge.driverId,
+          referredDriverId: edge.referredDriverId,
+        },
+      },
+      update: { level: edge.level },
+      create: edge,
+    });
   }
 }
 
@@ -64,7 +68,7 @@ export async function createDriverReferralChain(
  */
 export async function getDriverNetwork(driverId: string): Promise<DriverNetwork> {
   const referrals = await prisma.driverReferral.findMany({
-    where: { referrerDriverId: driverId },
+    where: { driverId },
     select: { referredDriverId: true, level: true },
   });
 

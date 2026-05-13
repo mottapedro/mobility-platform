@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
+import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityService";
 
 export class DriverController {
   async create(req: Request, res: Response) {
@@ -31,10 +32,16 @@ export class DriverController {
       });
 
       const driver = await prisma.driver.create({
-        data: { userId: user.id, isActive: true, experienceLevel: level },
+        data: {
+          userId: user.id,
+          isActive: true,
+          experienceLevel: level,
+          publicSlug: buildDriverPublicSlug(name),
+          referralCode: buildDriverPublicSlug(name),
+        },
       });
 
-      return res.status(201).json({ id: driver.id, user });
+      return res.status(201).json({ id: driver.id, user, referralCode: driver.referralCode, publicSlug: driver.publicSlug });
     } catch (error: unknown) {
       // Unique constraint: email duplicado
       if (
@@ -68,6 +75,8 @@ export class DriverController {
         id: d.id,
         name: d.user.name,
         phone: d.user.phone,
+        referralCode: d.referralCode,
+        publicSlug: d.publicSlug,
       }));
 
       return res.status(200).json(result);

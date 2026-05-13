@@ -1,4 +1,5 @@
-import { prisma } from "../src/infra/prisma/client";
+import { disconnectPrisma, prisma } from "../src/infra/prisma/client";
+import { clearPendingReferralFallbacks } from "../src/application/use-cases/MatchRideUseCase";
 
 export { prisma };
 
@@ -7,10 +8,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await prisma.$disconnect();
+  await disconnectPrisma();
 });
 
 beforeEach(async () => {
+  clearPendingReferralFallbacks();
+
   // Delete in FK-safe order
   await prisma.driverAvailability.deleteMany();
   await prisma.driverRegion.deleteMany();
@@ -21,4 +24,8 @@ beforeEach(async () => {
   await prisma.driverReferral.deleteMany();
   await prisma.driver.deleteMany();
   await prisma.user.deleteMany();
+});
+
+afterEach(() => {
+  clearPendingReferralFallbacks();
 });
