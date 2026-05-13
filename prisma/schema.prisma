@@ -72,19 +72,20 @@ model Driver {
   isActive           Boolean         @default(true)
   networkLevel       Int             @default(0)
   referredByDriverId String?
-  publicSlug         String?
+  publicSlug         String?         @unique
   createdAt          DateTime        @default(now())
-  selectedRides RideRequest[]
+  selectedRides      RideRequest[]
 
-  user        User                 @relation(fields: [userId], references: [id])
-  vehicles    Vehicle[]
-  regions     DriverRegion[]
-  offers      RideOffer[]
-  availability DriverAvailability[]
-  referredBy   Driver?              @relation("DriverDirectReferral", fields: [referredByDriverId], references: [id])
-  referredDrivers Driver[]          @relation("DriverDirectReferral")
+  regions String[]
 
-  referredPassengers Passenger[]  @relation("DriverReferral")
+  user            User                 @relation(fields: [userId], references: [id])
+  vehicles        Vehicle[]
+  offers          RideOffer[]
+  availability    DriverAvailability[]
+  referredBy      Driver?              @relation("DriverDirectReferral", fields: [referredByDriverId], references: [id])
+  referredDrivers Driver[]             @relation("DriverDirectReferral")
+
+  referredPassengers Passenger[] @relation("DriverReferral")
 
   // Multi-level referral network via join table
   referralsMade     DriverReferral[] @relation("Referrer")
@@ -92,8 +93,8 @@ model Driver {
 }
 
 model Passenger {
-  id                 String   @id @default(uuid())
-  userId             String   @unique
+  id                 String  @id @default(uuid())
+  userId             String  @unique
   referredByDriverId String?
 
   user User @relation(fields: [userId], references: [id])
@@ -115,16 +116,6 @@ model Vehicle {
   driver Driver @relation(fields: [driverId], references: [id])
 }
 
-model DriverRegion {
-  id       String @id @default(uuid())
-  driverId String
-  region   Region
-
-  driver Driver @relation(fields: [driverId], references: [id])
-
-  @@unique([driverId, region])
-}
-
 model DriverAvailability {
   id        String @id @default(uuid())
   driverId  String
@@ -136,30 +127,30 @@ model DriverAvailability {
 }
 
 model RideRequest {
-  id               String      @id @default(uuid())
-  passengerId      String
-  origin           String
-  destination      String
+  id          String @id @default(uuid())
+  passengerId String
+  origin      String
+  destination String
 
   // 🚀 NOVOS CAMPOS (V2 READY)
-  originLat        Float?
-  originLng        Float?
-  destinationLat   Float?
-  destinationLng   Float?
+  originLat      Float?
+  originLng      Float?
+  destinationLat Float?
+  destinationLng Float?
 
-  distanceKm       Float?
-  durationMin      Int?
+  distanceKm  Float?
+  durationMin Int?
 
-  priceEstimated   Float?
-  priceOffered     Float?
+  priceEstimated Float?
+  priceOffered   Float?
 
   // 🎯 V1.3 — Contexto da corrida
-  context          Json?
+  context Json?
 
   scheduledAt      DateTime
-  status           RideStatus  @default(PENDING)
+  status           RideStatus @default(PENDING)
   selectedDriverId String?
-  createdAt        DateTime    @default(now())
+  createdAt        DateTime   @default(now())
 
   passenger Passenger @relation(fields: [passengerId], references: [id])
 
@@ -171,20 +162,19 @@ model RideRequest {
 }
 
 model DriverReferral {
-  id               String   @id @default(uuid())
+  id String @id @default(uuid())
 
-  driverId         String   @map("referrerDriverId")
-  driver           Driver   @relation("Referrer", fields: [driverId], references: [id])
-
+  driverId         String
   referredDriverId String
-  referred         Driver   @relation("Referred", fields: [referredDriverId], references: [id])
 
-  level            Int
+  level Int
 
-  createdAt        DateTime @default(now())
+  createdAt DateTime @default(now())
 
-  @@unique([driverId, referredDriverId], map: "DriverReferral_referrerDriverId_referredDriverId_key")
-  @@index([referredDriverId])
+  driver   Driver @relation("Referrer", fields: [driverId], references: [id])
+  referred Driver @relation("Referred", fields: [referredDriverId], references: [id])
+
+  @@unique([driverId, referredDriverId])
 }
 
 model RideOffer {
