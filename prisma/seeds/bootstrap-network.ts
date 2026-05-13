@@ -70,7 +70,7 @@ export async function runBootstrapNetwork(prisma: PrismaClient) {
               isActive: true,
               experienceLevel: seedDriver.experienceLevel,
               regions: seedDriver.regions,
-              ...(existingDriverByReferralCode.publicSlug == null ? { publicSlug: seedDriver.publicSlug } : {}),
+              publicSlug: seedDriver.publicSlug,
               ...(existingDriverByReferralCode.referredByDriverId == null && referrerDriverId ? { referredByDriverId: referrerDriverId } : {}),
               ...(existingDriverByReferralCode.networkLevel === 0 && referrerDriverId ? { networkLevel } : {}),
             },
@@ -137,8 +137,15 @@ export async function runBootstrapNetwork(prisma: PrismaClient) {
     const referredDriverId = driversByReferralCode.get(seedDriver.referralCode);
 
     if (referrerDriverId && referredDriverId) {
-      console.log(`[CREATE REFERRAL EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
-      await createDriverReferralChain(referredDriverId, referrerDriverId, prisma as unknown as typeof import("../../src/infra/prisma/client").prisma);
+      const existingEdge = await prisma.driverReferral.findUnique({
+        where: { driverId_referredDriverId: { driverId: referrerDriverId, referredDriverId } },
+      });
+      if (existingEdge) {
+        console.log(`[SKIP EXISTING EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
+      } else {
+        console.log(`[CREATE REFERRAL EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
+        await createDriverReferralChain(referredDriverId, referrerDriverId, prisma as unknown as typeof import("../../src/infra/prisma/client").prisma);
+      }
     }
   }
 
