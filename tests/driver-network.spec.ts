@@ -1,6 +1,7 @@
 import request from "supertest";
 import { app } from "../src/app";
 import { prisma } from "./setup";
+import { createDriverReferralChain } from "../src/domain/services/DriverReferralService";
 
 async function createDriver(email: string) {
   const user = await prisma.user.create({
@@ -90,5 +91,49 @@ describe("GET /drivers/:id/network", () => {
     expect(
       response.body.passengers.every((passenger: { referredByDriverId: string }) => passenger.referredByDriverId === driver.id)
     ).toBe(true);
+  });
+
+  it("returns stats with totalPassengers and driver level counts", async () => {
+    const driver = await createDriver("stats-owner@test.com");
+    const level1a = await createDriver("stats-l1a@test.com");
+    const level1b = await createDriver("stats-l1b@test.com");
+    const level2 = await createDriver("stats-l2@test.com");
+
+    await createDriverReferralChain(level1a.id, driver.id);
+    await createDriverReferralChain(level1b.id, driver.id);
+    await createDriverReferralChain(level2.id, level1a.id);
+
+    await createPassenger("stats-p1@test.com", driver.id);
+    await createPassenger("stats-p2@test.com", driver.id);
+
+    const response = await request(app)
+      .get(`/drivers/${driver.id}/network`)
+      .set("x-driver-id", driver.id);
+
+    expect(response.status).toBe(200);
+    expect(response.body.stats).toEqual({
+      totalPassengers: 2,
+      level1Drivers: 2,
+      level2Drivers: 1,
+      level3Drivers: 0,
+    });
+  });
+
+  it("returns relations with driver IDs grouped by referral level", async () => {
+    const driver = await createDriver("rel-owner@test.com");
+    const level1 = await createDriver("rel-l1@test.com");
+    const level2 = await createDriver("rel-l2@test.com");
+
+    await createDriverReferralChain(level1.id, driver.id);
+    await createDriverReferralChain(level2.id, level1.id);
+
+    const response = await request(app)
+      .get(`/drivers/${driver.id}/network`)
+      .set("x-driver-id", driver.id);
+
+    expect(response.status).toBe(200);
+    expect(response.body.relations.level1).toContain(level1.id);
+    expect(response.body.relations.level2).toContain(level2.id);
+    expect(response.body.relations.level3).toHaveLength(0);
   });
 });

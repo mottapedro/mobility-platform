@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
 import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityService";
+import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 
 export class DriverController {
   async create(req: Request, res: Response) {
@@ -184,7 +185,7 @@ export class DriverController {
         Math.max(1, Number.parseInt(String(req.query.pageSize ?? "20"), 10) || 20)
       );
 
-      const [totalPassengers, passengers] = await Promise.all([
+      const [totalPassengers, passengers, driverNetwork] = await Promise.all([
         prisma.passenger.count({
           where: { referredByDriverId: id },
         }),
@@ -205,9 +206,17 @@ export class DriverController {
           skip: (page - 1) * pageSize,
           take: pageSize,
         }),
+        getDriverNetwork(id),
       ]);
 
       return res.status(200).json({
+        stats: {
+          totalPassengers,
+          level1Drivers: driverNetwork.level1.length,
+          level2Drivers: driverNetwork.level2.length,
+          level3Drivers: driverNetwork.level3.length,
+        },
+        relations: driverNetwork,
         totalPassengers,
         page,
         pageSize,
