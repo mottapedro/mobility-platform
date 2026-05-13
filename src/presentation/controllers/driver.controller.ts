@@ -1,7 +1,8 @@
 import { Request, Response } from "express";
+import { DriverRegion } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 
-type DriverRegionEntry = { region: string };
+type DriverRegionEntry = Pick<DriverRegion, "region">;
 
 export class DriverController {
   async getPublicProfile(req: Request, res: Response) {
