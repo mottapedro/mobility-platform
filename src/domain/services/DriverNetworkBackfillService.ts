@@ -6,9 +6,15 @@ export async function backfillDriverNetworkFields(
   options: { dryRun: boolean }
 ) {
   const drivers = await prisma.driver.findMany({
-    include: {
+    select: {
+      id: true,
+      publicSlug: true,
+      referralCode: true,
+      referredByDriverId: true,
+      networkLevel: true,
+      createdAt: true,
+      regions: true,
       user: { select: { name: true } },
-      regions: { select: { region: true }, orderBy: { region: "asc" } },
       referralsReceived: { where: { level: 1 }, select: { driverId: true } },
     },
     orderBy: { createdAt: "asc" },
@@ -44,7 +50,7 @@ export async function backfillDriverNetworkFields(
 
   for (const driver of drivers) {
     const publicSlug = driver.publicSlug ?? buildDriverPublicSlug(driver.user.name);
-    const referralCode = driver.referralCode ?? buildDriverReferralCode(publicSlug, driver.regions.map((entry) => entry.region));
+    const referralCode = driver.referralCode ?? buildDriverReferralCode(publicSlug, driver.regions as import("@prisma/client").Region[]);
     const referredByDriverId = parentByDriverId.get(driver.id) ?? null;
     const networkLevel = getNetworkLevel(driver.id);
 

@@ -21,12 +21,12 @@ describe("DriverRegionMatcher", () => {
       {
         id: "driver-zs-1",
         createdAt: new Date("2026-05-12T01:00:00.000Z"),
-        regions: [{ region: Region.ZS }],
+        regions: ["ZS"],
       },
       {
         id: "driver-zs-2",
         createdAt: new Date("2026-05-12T01:01:00.000Z"),
-        regions: [{ region: Region.ZS }],
+        regions: ["ZS"],
       },
     ]);
 
@@ -38,26 +38,11 @@ describe("DriverRegionMatcher", () => {
       { driverId: "driver-zs-2", matchedRegion: Region.ZS },
     ]);
     expect(findManyMock).toHaveBeenCalledWith({
-      where: {
-        isActive: true,
-        regions: {
-          some: {
-            region: Region.ZS,
-          },
-        },
-      },
+      where: { isActive: true },
       select: {
         id: true,
         createdAt: true,
-        regions: {
-          where: {
-            region: Region.ZS,
-          },
-          select: {
-            region: true,
-          },
-          take: 1,
-        },
+        regions: true,
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
@@ -69,7 +54,7 @@ describe("DriverRegionMatcher", () => {
       {
         id: "driver-zs-alias",
         createdAt: new Date("2026-05-12T01:02:00.000Z"),
-        regions: [{ region: Region.ZS }],
+        regions: ["ZS"],
       },
     ]);
 
@@ -84,7 +69,7 @@ describe("DriverRegionMatcher", () => {
       {
         id: "driver-inter-1",
         createdAt: new Date("2026-05-12T01:03:00.000Z"),
-        regions: [{ region: Region.INTER }],
+        regions: ["INTER"],
       },
     ]);
 
@@ -93,26 +78,11 @@ describe("DriverRegionMatcher", () => {
 
     expect(matches).toEqual([{ driverId: "driver-inter-1", matchedRegion: Region.INTER }]);
     expect(findManyMock).toHaveBeenCalledWith({
-      where: {
-        isActive: true,
-        regions: {
-          some: {
-            region: Region.INTER,
-          },
-        },
-      },
+      where: { isActive: true },
       select: {
         id: true,
         createdAt: true,
-        regions: {
-          where: {
-            region: Region.INTER,
-          },
-          select: {
-            region: true,
-          },
-          take: 1,
-        },
+        regions: true,
       },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
