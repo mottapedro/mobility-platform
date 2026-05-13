@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 
+type DriverRegionEntry = { region: string };
+
 export class DriverController {
   async getPublicProfile(req: Request, res: Response) {
     try {
@@ -48,7 +50,7 @@ export class DriverController {
         referralCode: driver.referralCode,
         experienceLevel: driver.experienceLevel,
         memberSince: driver.createdAt,
-        regions: driver.regions.map((entry: { region: string }) => entry.region),
+        regions: driver.regions.map((entry: DriverRegionEntry) => entry.region),
         vehicles: driver.vehicles,
       });
     } catch (error) {
