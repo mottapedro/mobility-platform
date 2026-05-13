@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { DriverRegion } from "@prisma/client";
+import type { DriverRegion } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 
 type DriverRegionEntry = Pick<DriverRegion, "region">;
