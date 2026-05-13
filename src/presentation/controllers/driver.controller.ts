@@ -3,10 +3,6 @@ import { prisma } from "../../infra/prisma/client";
 
 type DriverRegionEntry = { region: string };
 
-function getRegionFromEntry(entry: DriverRegionEntry): string {
-  return entry.region;
-}
-
 export class DriverController {
   async getPublicProfile(req: Request, res: Response) {
     try {
@@ -54,7 +50,7 @@ export class DriverController {
         referralCode: driver.referralCode,
         experienceLevel: driver.experienceLevel,
         memberSince: driver.createdAt,
-        regions: driver.regions.map(getRegionFromEntry),
+        regions: driver.regions.map((entry: DriverRegionEntry) => entry.region),
         vehicles: driver.vehicles,
       });
     } catch (error) {
