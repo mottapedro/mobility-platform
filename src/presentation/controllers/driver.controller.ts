@@ -209,6 +209,18 @@ export class DriverController {
         getDriverNetwork(id),
       ]);
 
+      // Enrich each page of passengers with ride stats
+      const passengerIds = passengers.map((p) => p.id);
+      const rideStats = await prisma.rideRequest.groupBy({
+        by: ["passengerId"],
+        where: { passengerId: { in: passengerIds }, status: "COMPLETED" },
+        _count: { id: true },
+        _max: { scheduledAt: true },
+      });
+      const rideStatMap = new Map(rideStats.map((r) => [r.passengerId, r]));
+      const ridesCompleted = rideStats.reduce((sum, r) => sum + r._count.id, 0);
+      const estimatedRevenue = ridesCompleted * 45; // flat estimate R$45/ride
+
       return res.status(200).json({
         stats: {
           totalPassengers,
@@ -218,6 +230,8 @@ export class DriverController {
         },
         relations: driverNetwork,
         totalPassengers,
+        ridesCompleted,
+        estimatedRevenue,
         page,
         pageSize,
         passengers: passengers.map((passenger) => ({
@@ -228,6 +242,12 @@ export class DriverController {
           phone: passenger.user.phone,
           referredByDriverId: passenger.referredByDriverId,
           joinedAt: passenger.user.createdAt,
+        })),
+        recentPassengers: passengers.map((passenger) => ({
+          id: passenger.id,
+          name: passenger.user.name,
+          ridesCount: rideStatMap.get(passenger.id)?._count.id ?? 0,
+          lastRideAt: rideStatMap.get(passenger.id)?._max.scheduledAt?.toISOString() ?? null,
         })),
       });
     } catch (error) {
