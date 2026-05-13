@@ -48,7 +48,7 @@ export class DriverController {
         referralCode: driver.referralCode,
         experienceLevel: driver.experienceLevel,
         memberSince: driver.createdAt,
-        regions: driver.regions.map((region) => region.region),
+        regions: driver.regions.map((entry: { region: string }) => entry.region),
         vehicles: driver.vehicles,
       });
     } catch (error) {
