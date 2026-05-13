@@ -1,13 +1,12 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
-import { Region } from "@prisma/client";
 import { app } from "../src/app";
 import { prisma } from "./setup";
 
 async function createDriverWithRegion(params: {
   name: string;
   email: string;
-  region: Region;
+  region: string;
 }) {
   const user = await prisma.user.create({
     data: {
@@ -24,13 +23,7 @@ async function createDriverWithRegion(params: {
       userId: user.id,
       isActive: true,
       experienceLevel: "INTERMEDIARIO",
-    },
-  });
-
-  await prisma.driverRegion.create({
-    data: {
-      driverId: driver.id,
-      region: params.region,
+      regions: [params.region],
     },
   });
 
@@ -42,7 +35,7 @@ describe("POST /auth/register with referralCode", () => {
     const referrer = await createDriverWithRegion({
       name: "Carlos Silva",
       email: "carlos.driver@ref.com",
-      region: Region.ZN,
+      region: "ZN",
     });
 
     const response = await request(app)
@@ -72,7 +65,7 @@ describe("POST /auth/register with referralCode", () => {
     const driver = await createDriverWithRegion({
       name: "Carlos Silva",
       email: "carlos.silva@ref.com",
-      region: Region.ZS,
+      region: "ZS",
     });
 
     const response = await request(app)

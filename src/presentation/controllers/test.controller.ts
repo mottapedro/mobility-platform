@@ -11,7 +11,6 @@ export class TestController {
     await prisma.rideRequest.deleteMany();
     await prisma.driverReferral.deleteMany();
     await prisma.driverAvailability.deleteMany();
-    await prisma.driverRegion.deleteMany();
     await prisma.vehicle.deleteMany();
     await prisma.passenger.deleteMany();
     await prisma.driver.deleteMany();

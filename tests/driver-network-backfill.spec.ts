@@ -21,10 +21,8 @@ describe("backfillDriverNetworkFields", () => {
         isActive: true,
         experienceLevel: "PROFISSIONAL",
         publicSlug: "carlos-silva",
+        regions: ["ZN"],
       },
-    });
-    await prisma.driverRegion.create({
-      data: { driverId: rootDriver.id, region: "ZN" },
     });
 
     const childUser = await prisma.user.create({
@@ -42,12 +40,10 @@ describe("backfillDriverNetworkFields", () => {
         isActive: true,
         experienceLevel: "INTERMEDIARIO",
         networkLevel: 0,
+        regions: ["ZS"],
       },
     });
     const originalReferralCode = childDriver.referralCode;
-    await prisma.driverRegion.create({
-      data: { driverId: childDriver.id, region: "ZS" },
-    });
     await prisma.driverReferral.create({
       data: { driverId: rootDriver.id, referredDriverId: childDriver.id, level: 1 },
     });

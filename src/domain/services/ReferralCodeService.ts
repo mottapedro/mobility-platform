@@ -76,15 +76,16 @@ export async function resolveReferralCodeToDriverId(referralCode: string): Promi
 
   const drivers = await prisma.driver.findMany({
     where: { isActive: true },
-    include: {
+    select: {
+      id: true,
+      regions: true,
       user: {
         select: { name: true },
       },
-      regions: {
-        select: { region: true },
-      },
     },
   });
+
+  const regionLabel = region ? Object.entries(REGION_BY_CODE).find(([, v]) => v === region)?.[0] : null;
 
   const matches = drivers.filter((driver) => {
     const variants = buildDriverNameVariants(driver.user.name);
@@ -93,11 +94,11 @@ export async function resolveReferralCodeToDriverId(referralCode: string): Promi
       return false;
     }
 
-    if (!region) {
+    if (!regionLabel) {
       return true;
     }
 
-    return driver.regions.some((entry) => entry.region === region);
+    return driver.regions.some((r) => normalizeSlugPart(r) === regionLabel);
   });
 
   if (matches.length !== 1) {
@@ -105,4 +106,4 @@ export async function resolveReferralCodeToDriverId(referralCode: string): Promi
   }
 
   return matches[0].id;
-}
+}   

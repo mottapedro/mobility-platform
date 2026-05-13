@@ -16,7 +16,6 @@ beforeEach(async () => {
 
   // Delete in FK-safe order
   await prisma.driverAvailability.deleteMany();
-  await prisma.driverRegion.deleteMany();
   await prisma.vehicle.deleteMany();
   await prisma.rideOffer.deleteMany();
   await prisma.rideRequest.deleteMany();
