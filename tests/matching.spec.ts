@@ -198,9 +198,9 @@ describe("Matching — Contexto VIP", () => {
     // Driver ELITE — deve receber a offer primeiro
     const eliteDriverUser = await prisma.user.create({
       data: {
-        name: "Driver Elite",
-        email: "elite@vip.com",
-        phone: "33000000001",
+        name: "TEST_Driver Elite",
+        email: "TEST_elite@vip.com",
+        phone: "TEST_33000000001",
         role: "DRIVER",
         driver: {
           create: {
@@ -213,11 +213,11 @@ describe("Matching — Contexto VIP", () => {
     });
 
     // Driver INICIANTE — recebe offer depois do ELITE
-    await prisma.user.create({
+    const commonDriverUser = await prisma.user.create({
       data: {
-        name: "Driver Comum",
-        email: "comum@vip.com",
-        phone: "33000000002",
+        name: "TEST_Driver Comum",
+        email: "TEST_comum@vip.com",
+        phone: "TEST_33000000002",
         role: "DRIVER",
         driver: {
           create: {
@@ -226,6 +226,7 @@ describe("Matching — Contexto VIP", () => {
           },
         },
       },
+      include: { driver: true },
     });
 
     // Passageiro sem indicação → matching vai para GENERAL com filtro VIP
@@ -233,14 +234,21 @@ describe("Matching — Contexto VIP", () => {
       data: {
         user: {
           create: {
-            name: "Passageiro VIP",
-            email: "passageiro@vip.com",
-            phone: "33000000003",
+            name: "TEST_Passageiro VIP",
+            email: "TEST_passageiro@vip.com",
+            phone: "TEST_33000000003",
             role: "PASSENGER",
           },
         },
       },
     });
+
+    // Scope matching to only these two test drivers — prevents real drivers
+    // (e.g. Pedro Paulo, who may also be ELITE) from polluting the pool.
+    const candidateDriverIds = [
+      eliteDriverUser.driver!.id,
+      commonDriverUser.driver!.id,
+    ];
 
     const response = await request(app)
       .post("/rides")
@@ -255,6 +263,7 @@ describe("Matching — Contexto VIP", () => {
           pet: false,
           luggage: false,
         },
+        candidateDriverIds,
       });
 
     expect(response.status).toBe(201);

@@ -40,7 +40,7 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt, context: rawContext } = req.body;
+      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds } = req.body;
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
@@ -185,7 +185,7 @@ export class RideController {
         try {
           console.log(`🚀 Iniciando matching para ride ${ride.id}`);
           const matchRideUseCase = new MatchRideUseCase();
-          await matchRideUseCase.execute({ rideId: ride.id });
+          await matchRideUseCase.execute({ rideId: ride.id, candidateDriverIds });
           console.log(`✅ Matching finalizado para ride ${ride.id}`);
         } catch (error) {
           console.error(`🔥 Erro no matching da ride ${ride.id}:`, error);

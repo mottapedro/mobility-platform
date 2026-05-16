@@ -32,6 +32,7 @@ export class MatchingPriorityEngine {
     alreadyOfferedIds: Set<string>;
     excludedDriverIds: string[];
     rideContext: unknown;
+    candidateDriverIds?: string[];
   }): Promise<MatchingCandidate[]> {
     const seen = new Set<string>([
       ...input.alreadyOfferedIds,
@@ -71,6 +72,9 @@ export class MatchingPriorityEngine {
       if (seen.has(match.driverId)) {
         continue;
       }
+      if (input.candidateDriverIds?.length && !input.candidateDriverIds.includes(match.driverId)) {
+        continue;
+      }
       seen.add(match.driverId);
       queue.push({
         driverId: match.driverId,
@@ -82,7 +86,9 @@ export class MatchingPriorityEngine {
     const globalDrivers = await prisma.driver.findMany({
       where: {
         isActive: true,
-        id: { notIn: [...seen] },
+        ...(input.candidateDriverIds?.length
+          ? { id: { in: input.candidateDriverIds.filter((id) => !seen.has(id)) } }
+          : { id: { notIn: [...seen] } }),
       },
       select: { id: true },
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],

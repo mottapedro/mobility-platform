@@ -24,6 +24,7 @@ export interface MatchInput {
   rideId: string;
   level?: MatchLevel;
   excludedDriverIds?: string[];
+  candidateDriverIds?: string[];
 }
 
 // ─── Lógica de prioridade por contexto ─────────────────────────────────────
@@ -129,7 +130,8 @@ export class MatchRideUseCase {
     referredDriverId: string | null,
     alreadyOfferedIds: Set<string>,
     excludedDriverIds: string[],
-    rideContext: RideContext | null
+    rideContext: RideContext | null,
+    candidateDriverIds?: string[]
   ): Promise<{
     drivers: { id: string; experienceLevel: string; vehicles: { category: string }[] }[];
     resultLevel: MatchLevel;
@@ -144,6 +146,7 @@ export class MatchRideUseCase {
       alreadyOfferedIds,
       excludedDriverIds,
       rideContext,
+      candidateDriverIds,
     });
 
     logMatchingEvent({
@@ -212,7 +215,7 @@ export class MatchRideUseCase {
   async execute(
     input: MatchInput
   ): Promise<{ matched: boolean; level: MatchLevel }> {
-    const { rideId, excludedDriverIds = [] } = input;
+    const { rideId, excludedDriverIds = [], candidateDriverIds } = input;
 
     // 1. Buscar corrida e passageiro em leituras sequenciais para evitar fan-out interno no adapter
     const ride = await prisma.rideRequest.findUnique({
@@ -262,11 +265,11 @@ export class MatchRideUseCase {
     // ── Tier 1: REFERRED ─────────────────────────────────────────────────────
     if (level === "REFERRED") {
       if (!referredDriverId) {
-        return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
+        return this.execute({ rideId, level: "GENERAL", excludedDriverIds, candidateDriverIds });
       }
 
       if (alreadyOfferedIds.has(referredDriverId)) {
-        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds });
+        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds, candidateDriverIds });
       }
 
       const referredDriver = await prisma.driver.findFirst({
@@ -275,7 +278,7 @@ export class MatchRideUseCase {
 
       if (!referredDriver) {
         console.log(`⚠️ Driver indicado ${referredDriverId} inativo — escalando para NETWORK_L1`);
-        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds });
+        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds, candidateDriverIds });
       }
 
       // ✅ Modo referral: aguarda 60s antes de abrir para outros
@@ -322,6 +325,7 @@ export class MatchRideUseCase {
             rideId,
             level: "NETWORK_L1",
             excludedDriverIds: [...excludedDriverIds, referredDriverId],
+            candidateDriverIds,
           });
         } catch (err) {
           console.error(`🔥 Erro no timeout referral para corrida ${rideId}:`, err);
@@ -339,7 +343,7 @@ export class MatchRideUseCase {
     // ── Tier 2-4: NETWORK LEVELS ─────────────────────────────────────────────
     if (level === "NETWORK_L1" || level === "NETWORK_L2" || level === "NETWORK_L3") {
       if (!referredDriverId) {
-        return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
+        return this.execute({ rideId, level: "GENERAL", excludedDriverIds, candidateDriverIds });
       }
 
       await prisma.rideRequest.update({
@@ -354,7 +358,8 @@ export class MatchRideUseCase {
         referredDriverId,
         alreadyOfferedIds,
         excludedDriverIds,
-        rideContext
+        rideContext,
+        candidateDriverIds
       );
 
       if (drivers.length === 0) {
@@ -396,7 +401,8 @@ export class MatchRideUseCase {
       referredDriverId,
       alreadyOfferedIds,
       excludedDriverIds,
-      rideContext
+      rideContext,
+      candidateDriverIds
     );
 
     if (generalDrivers.length === 0) {
