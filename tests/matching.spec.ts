@@ -264,14 +264,20 @@ describe("Matching — Contexto VIP", () => {
 
     expect(offers.length).toBeGreaterThan(0);
 
+    // Refetch eliteDriverUser to ensure driver relation is populated
+    const eliteDriver = await prisma.user.findUnique({
+      where: { id: eliteDriverUser.id },
+      include: { driver: true },
+    });
+
     // Driver ELITE deve ter recebido offer
     const eliteOffer = offers.find(
-      (o) => o.driverId === eliteDriverUser.driver!.id
+      (o) => o.driverId === eliteDriver!.driver!.id
     );
     expect(eliteOffer).toBeTruthy();
 
     // Driver ELITE deve ser o PRIMEIRO a receber (prioridade VIP)
-    expect(offers[0].driverId).toBe(eliteDriverUser.driver!.id);
+    expect(offers[0].driverId).toBe(eliteDriver!.driver!.id);
   });
 });
 

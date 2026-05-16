@@ -17,6 +17,9 @@ router.get("/:id/offers", (req, res) => controller.getOffers(req, res));
 // GET /drivers/:id/network — passageiros vinculados ao motorista autenticado
 router.get("/:id/network", requireDriverAuth, (req, res) => controller.getNetwork(req, res));
 
+// GET /drivers/:id/network/hierarchy — árvore de referrals multinível do motorista
+router.get("/:id/network/hierarchy", requireDriverAuth, (req, res) => controller.getNetworkHierarchy(req, res));
+
 // GET /drivers/:driverId/rides  — corridas ACCEPTED do driver
 router.get("/:driverId/rides", (req, res) => controller.listRides(req, res));
 

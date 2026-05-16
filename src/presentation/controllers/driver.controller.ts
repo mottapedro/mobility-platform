@@ -259,6 +259,124 @@ export class DriverController {
     }
   }
 
+  async getNetworkHierarchy(req: AuthenticatedDriverRequest, res: Response) {
+    try {
+      const { id } = req.params;
+      const authDriverId = req.authDriverId;
+
+      if (!id || typeof id !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+
+      if (!authDriverId) {
+        return res.status(401).json({ error: "Driver authentication required" });
+      }
+
+      if (authDriverId !== id) {
+        return res.status(403).json({ error: "Driver cannot access another network" });
+      }
+
+      const validRegions = ["zn", "zs", "zo", "baixada", "inter"];
+      function extractRegion(referralCode: string | null): string | undefined {
+        if (!referralCode) return undefined;
+        const parts = referralCode.split("-");
+        const last = parts[parts.length - 1];
+        return last && validRegions.includes(last) ? last : undefined;
+      }
+
+      interface HierarchyNode {
+        id: string;
+        name: string;
+        region?: string;
+        depth: number;
+        referrals: HierarchyNode[];
+      }
+
+      // 3-level deep include via direct referral relation
+      const driver = await prisma.driver.findUnique({
+        where: { id },
+        include: {
+          user: { select: { name: true } },
+          referredBy: {
+            include: {
+              user: { select: { name: true } },
+            },
+          },
+          referredDrivers: {
+            include: {
+              user: { select: { name: true } },
+              referredDrivers: {
+                include: {
+                  user: { select: { name: true } },
+                  referredDrivers: {
+                    include: {
+                      user: { select: { name: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!driver) {
+        return res.status(404).json({ error: "Driver não encontrado" });
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      function buildNode(d: any, depth: number): HierarchyNode {
+        return {
+          id: d.id as string,
+          name: (d.user?.name ?? "Motorista") as string,
+          region: extractRegion(d.referralCode as string | null),
+          depth,
+          referrals: Array.isArray(d.referredDrivers)
+            ? (d.referredDrivers as any[]).map((child) => buildNode(child, depth + 1))
+            : [],
+        };
+      }
+
+      const me: HierarchyNode = buildNode(driver, 0);
+
+      const referredBy: HierarchyNode | null = driver.referredBy
+        ? {
+            id: driver.referredBy.id,
+            name: driver.referredBy.user.name,
+            region: extractRegion(driver.referredBy.referralCode),
+            depth: -1,
+            referrals: [],
+          }
+        : null;
+
+      function countAll(node: HierarchyNode): number {
+        return node.referrals.reduce((sum, r) => sum + 1 + countAll(r), 0);
+      }
+
+      function maxDepthOf(node: HierarchyNode): number {
+        if (node.referrals.length === 0) return node.depth;
+        return Math.max(...node.referrals.map((r) => maxDepthOf(r)));
+      }
+
+      const totalDrivers = countAll(me);
+      const maxDepth = totalDrivers > 0 ? maxDepthOf(me) : 0;
+
+      return res.status(200).json({
+        me,
+        referredBy,
+        referrals: me.referrals,
+        totalDrivers,
+        maxDepth,
+      });
+    } catch (error) {
+      console.error("Erro ao carregar hierarquia da rede:", error);
+      return res.status(500).json({
+        error: "Erro interno ao carregar hierarquia da rede",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
   async listRides(req: Request, res: Response) {
     try {
       const { driverId } = req.params;
