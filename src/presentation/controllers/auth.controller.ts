@@ -4,6 +4,10 @@ import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain } from "../../domain/services/DriverReferralService";
 import { resolveReferralCodeToDriverId } from "../../domain/services/ReferralCodeService";
 import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityService";
+import {
+  resolvePassengerReferralCode,
+  createPassengerReferral,
+} from "../../domain/services/PassengerReferralService";
 
 export class AuthController {
   async register(req: Request, res: Response) {
@@ -38,11 +42,19 @@ export class AuthController {
 
       let resolvedReferralDriverId: string | null = typeof referredByDriverId === "string" ? referredByDriverId : null;
 
+      let resolvedReferralPassengerId: string | null = null;
+
       if (typeof referralCode === "string" && referralCode.trim()) {
         resolvedReferralDriverId = await resolveReferralCodeToDriverId(referralCode);
 
         if (!resolvedReferralDriverId) {
-          return res.status(400).json({ error: "Referral code inválido ou expirado" });
+          // Not a driver code — try passenger referral code
+          const referrerPassenger = await resolvePassengerReferralCode(referralCode);
+          if (referrerPassenger) {
+            resolvedReferralPassengerId = referrerPassenger.id;
+          } else {
+            return res.status(400).json({ error: "Referral code inválido ou expirado" });
+          }
         }
       }
 
@@ -108,6 +120,10 @@ export class AuthController {
         },
         include: { user: true },
       });
+
+      if (resolvedReferralPassengerId) {
+        await createPassengerReferral(passenger.id, resolvedReferralPassengerId);
+      }
 
       return res.status(201).json({
         user: { id: user.id, name: user.name, email: user.email, role: "passenger" },
