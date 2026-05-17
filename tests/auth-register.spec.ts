@@ -167,3 +167,25 @@ describe("POST /auth/register — passenger referralCode", () => {
     expect(res.body.error).toMatch(/inválido/i);
   });
 });
+
+// ─── auto-generated passenger identity ───────────────────────────────────────
+describe("POST /auth/register — auto-generates passenger identity", () => {
+  it("returns non-null referralCode and publicSlug for every new passenger", async () => {
+    const res = await request(app).post("/auth/register").send({
+      name: "Maria Fernanda",
+      email: "mariaf-identity@ptest.com",
+      phone: "11900000001",
+      role: "passenger",
+      password: "senha123",
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.referralCode).toMatch(/^[a-z0-9-]+-[a-z0-9]{4}$/);
+    expect(res.body.publicSlug).toMatch(/^maria-fernanda/);
+
+    // Verify persisted to DB
+    const p = await prisma.passenger.findUnique({ where: { id: res.body.passengerId } });
+    expect(p?.referralCode).toBe(res.body.referralCode);
+    expect(p?.publicSlug).toBe(res.body.publicSlug);
+  });
+});

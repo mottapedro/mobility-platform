@@ -135,3 +135,58 @@ export async function getPassengerNetwork(
 
   return { level1, level2, level3 };
 }
+
+/**
+ * Generates and persists a unique referralCode and publicSlug for a passenger.
+ *
+ * - publicSlug = normalized slug (e.g. "maria-silva"). On collision, appends
+ *   an incrementing counter ("maria-silva-2", "maria-silva-3", …).
+ * - referralCode = publicSlug + "-" + 4-char random suffix (always unique).
+ * - Idempotent: if both fields are already set, returns existing values without
+ *   touching the database.
+ */
+export async function assignPassengerIdentity(
+  passengerId: string,
+  userName: string,
+  client: typeof prisma = prisma
+): Promise<{ referralCode: string; publicSlug: string }> {
+  // Idempotent: return early if already assigned
+  const existing = await client.passenger.findUnique({
+    where: { id: passengerId },
+    select: { referralCode: true, publicSlug: true },
+  });
+  if (existing?.referralCode && existing?.publicSlug) {
+    return { referralCode: existing.referralCode, publicSlug: existing.publicSlug };
+  }
+
+  const baseSlug = buildDriverPublicSlug(userName);
+
+  // Find a unique publicSlug (append counter on collision)
+  let publicSlug = baseSlug;
+  let counter = 1;
+  while (
+    await client.passenger.findFirst({
+      where: { publicSlug, NOT: { id: passengerId } },
+    })
+  ) {
+    publicSlug = `${baseSlug}-${++counter}`;
+  }
+
+  // Find a unique referralCode (retry random suffix on collision)
+  let referralCode: string;
+  do {
+    const suffix = Math.random().toString(36).slice(2, 6).padEnd(4, "0");
+    referralCode = `${publicSlug}-${suffix}`;
+  } while (
+    await client.passenger.findFirst({
+      where: { referralCode, NOT: { id: passengerId } },
+    })
+  );
+
+  await client.passenger.update({
+    where: { id: passengerId },
+    data: { publicSlug, referralCode },
+  });
+
+  return { referralCode, publicSlug };
+}

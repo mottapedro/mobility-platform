@@ -1,6 +1,9 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
-import { getPassengerNetwork } from "../../domain/services/PassengerReferralService";
+import {
+  getPassengerNetwork,
+  assignPassengerIdentity,
+} from "../../domain/services/PassengerReferralService";
 
 export class PassengerController {
   async create(req: Request, res: Response) {
@@ -56,7 +59,17 @@ export class PassengerController {
         },
       });
 
-      return res.status(201).json(passenger);
+      await assignPassengerIdentity(passenger.id, name);
+
+      const updated = await prisma.passenger.findUniqueOrThrow({
+        where: { id: passenger.id },
+        include: {
+          user: true,
+          referredByDriver: { include: { user: true } },
+        },
+      });
+
+      return res.status(201).json(updated);
     } catch (error) {
       console.error("🔥 Erro ao criar passageiro:", error);
       return res.status(500).json({
@@ -203,6 +216,26 @@ export class PassengerController {
     } catch (error) {
       console.error("🔥 Erro ao buscar hierarquia do passageiro:", error);
       return res.status(500).json({ error: "Erro interno ao buscar hierarquia" });
+    }
+  }
+
+  async resolveBySlug(req: Request, res: Response) {
+    try {
+      const slug = req.params.slug as string;
+
+      const passenger = await prisma.passenger.findFirst({
+        where: { publicSlug: slug },
+        select: { id: true, referralCode: true, publicSlug: true, user: { select: { name: true } } },
+      });
+
+      if (!passenger) {
+        return res.status(404).json({ error: "Passenger not found" });
+      }
+
+      return res.status(200).json(passenger);
+    } catch (error) {
+      console.error("🔥 Erro ao resolver slug do passageiro:", error);
+      return res.status(500).json({ error: "Erro interno ao resolver slug" });
     }
   }
 }

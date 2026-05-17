@@ -5,6 +5,7 @@ import {
   createPassengerReferral,
   getPassengerNetwork,
   validateNoLoop,
+  assignPassengerIdentity,
 } from "../src/domain/services/PassengerReferralService";
 
 jest.setTimeout(15000);
@@ -216,5 +217,41 @@ describe("getPassengerNetwork", () => {
     expect(network.level1).toEqual([l1.id]);
     expect(network.level2).toEqual([l2.id]);
     expect(network.level3).toEqual([l3.id]);
+  });
+});
+
+// ─── assignPassengerIdentity ──────────────────────────────────────────────────
+
+describe("assignPassengerIdentity", () => {
+  it("sets referralCode matching pattern slug-4chars", async () => {
+    const p = await createPassenger("identity-a@ptest.com");
+    await assignPassengerIdentity(p.id, "Maria Silva");
+    const updated = await prisma.passenger.findUniqueOrThrow({ where: { id: p.id } });
+    expect(updated.referralCode).toMatch(/^[a-z0-9-]+-[a-z0-9]{4}$/);
+  });
+
+  it("sets publicSlug as a URL-safe normalized slug (base slug only)", async () => {
+    const p = await createPassenger("identity-b@ptest.com");
+    await assignPassengerIdentity(p.id, "João da Silva");
+    const updated = await prisma.passenger.findUniqueOrThrow({ where: { id: p.id } });
+    expect(updated.publicSlug).toMatch(/^joao-da-silva/);
+  });
+
+  it("two passengers with same name get different referralCodes", async () => {
+    const a = await createPassenger("same-name-a@ptest.com");
+    const b = await createPassenger("same-name-b@ptest.com");
+    await assignPassengerIdentity(a.id, "Same Name");
+    await assignPassengerIdentity(b.id, "Same Name");
+    const ra = await prisma.passenger.findUniqueOrThrow({ where: { id: a.id } });
+    const rb = await prisma.passenger.findUniqueOrThrow({ where: { id: b.id } });
+    expect(ra.referralCode).not.toBe(rb.referralCode);
+  });
+
+  it("is idempotent — calling twice keeps same codes", async () => {
+    const p = await createPassenger("idempotent@ptest.com");
+    const { referralCode, publicSlug } = await assignPassengerIdentity(p.id, "Idempotent User");
+    const again = await assignPassengerIdentity(p.id, "Idempotent User");
+    expect(again.referralCode).toBe(referralCode);
+    expect(again.publicSlug).toBe(publicSlug);
   });
 });

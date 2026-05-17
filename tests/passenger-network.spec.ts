@@ -93,3 +93,28 @@ describe("GET /passengers/:id/network", () => {
     expect(res.body.recentReferrals[0]).toHaveProperty("createdAt");
   });
 });
+
+// ─── GET /passengers/ref/:slug ────────────────────────────────────────────────
+
+describe("GET /passengers/ref/:slug", () => {
+  it("returns 404 for an unknown publicSlug", async () => {
+    const res = await request(app).get("/passengers/ref/no-such-slug-zzzz");
+    expect(res.status).toBe(404);
+    expect(res.body).toHaveProperty("error");
+  });
+
+  it("returns passenger id, referralCode and publicSlug for a valid slug", async () => {
+    const p = await createPassenger("ref-slug-test@ptest.com");
+    await prisma.passenger.update({
+      where: { id: p.id },
+      data: { publicSlug: "ref-slug-test", referralCode: "ref-slug-test-ab12" },
+    });
+
+    const res = await request(app).get("/passengers/ref/ref-slug-test");
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(p.id);
+    expect(res.body.referralCode).toBe("ref-slug-test-ab12");
+    expect(res.body.publicSlug).toBe("ref-slug-test");
+  });
+});

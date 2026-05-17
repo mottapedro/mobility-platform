@@ -7,6 +7,7 @@ import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityServi
 import {
   resolvePassengerReferralCode,
   createPassengerReferral,
+  assignPassengerIdentity,
 } from "../../domain/services/PassengerReferralService";
 
 export class AuthController {
@@ -125,10 +126,17 @@ export class AuthController {
         await createPassengerReferral(passenger.id, resolvedReferralPassengerId);
       }
 
+      const { referralCode: passengerCode, publicSlug } = await assignPassengerIdentity(
+        passenger.id,
+        name
+      );
+
       return res.status(201).json({
         user: { id: user.id, name: user.name, email: user.email, role: "passenger" },
         passengerId: passenger.id,
         referredByDriverId: passenger.referredByDriverId ?? null,
+        referralCode: passengerCode,
+        publicSlug,
       });
     } catch (error: unknown) {
       console.error("🔥 Erro no registro:", error);
