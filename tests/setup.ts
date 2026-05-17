@@ -23,6 +23,7 @@ const TEST_EMAIL_DOMAINS = [
   "@matching.com",
   "@partner.com",
   "@vip.com",
+  "@ptest.com",
 ];
 
 const TEST_USER_WHERE = {
@@ -99,6 +100,12 @@ export async function cleanTestData(): Promise<void> {
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {
+    // Null out self-referential FK before deleting — prevents FK constraint error
+    // when multiple test passengers reference each other within the same batch.
+    await prisma.passenger.updateMany({
+      where: { id: { in: testPassengerIds } },
+      data: { referredByPassengerId: null },
+    });
     await prisma.passenger.deleteMany({ where: { id: { in: testPassengerIds } } });
   }
   if (testDriverIds.length > 0) {

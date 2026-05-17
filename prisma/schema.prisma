@@ -93,13 +93,22 @@ model Driver {
 }
 
 model Passenger {
-  id                 String  @id @default(uuid())
-  userId             String  @unique
-  referredByDriverId String?
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  referredByDriverId    String?
+  referralCode          String?  @unique
+  publicSlug            String?  @unique
+  referredByPassengerId String?
+  networkLevel          Int      @default(0)
+  rootPassengerId       String?
+  lineagePath           String[]
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id])
-
-  referredByDriver Driver? @relation("DriverReferral", fields: [referredByDriverId], references: [id])
+  user                User    @relation(fields: [userId], references: [id])
+  referredByDriver    Driver? @relation("DriverReferral", fields: [referredByDriverId], references: [id])
+  referredByPassenger Passenger?  @relation("PassengerReferrals", fields: [referredByPassengerId], references: [id])
+  referrals           Passenger[] @relation("PassengerReferrals")
 
   rideRequests RideRequest[]
 }
