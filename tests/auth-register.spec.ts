@@ -47,6 +47,7 @@ describe("POST /auth/register with referralCode", () => {
         role: "driver",
         phone: "21988887777",
         referralCode: "carlos-silva-zn",
+        regions: ["ZS"],
       });
 
     expect(response.status).toBe(201);
@@ -58,7 +59,7 @@ describe("POST /auth/register with referralCode", () => {
     expect(driver.referredByDriverId).toBe(referrer.id);
     expect(driver.networkLevel).toBe(1);
     expect(driver.publicSlug).toBe("marcos-lima");
-    expect(driver.referralCode).toBe("marcos-lima");
+    expect(driver.referralCode).toBe("marcos-lima-zs");
   });
 
   it("creates a passenger linked to the resolved driver", async () => {
