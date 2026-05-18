@@ -29,10 +29,18 @@ function loadDriverNetwork(): SeedDriver[] {
   return JSON.parse(content) as SeedDriver[];
 }
 
-export async function runBootstrapNetwork(prisma: PrismaClient) {
+export async function runBootstrapNetwork(
+  prisma: PrismaClient,
+  options: { dryRun?: boolean } = {}
+): Promise<{ createdDrivers: number; updatedDrivers: number; createdEdges: number; createdVehicles: number }> {
+  const { dryRun = false } = options;
   const passwordHash = await bcrypt.hash("123456", 10);
   const driversByReferralCode = new Map<string, string>();
   const driverNetwork = loadDriverNetwork();
+  let createdDrivers = 0;
+  let updatedDrivers = 0;
+  let createdEdges = 0;
+  let createdVehicles = 0;
 
   for (const seedDriver of driverNetwork) {
     const referrerDriverId = seedDriver.parentReferralCode
@@ -49,49 +57,98 @@ export async function runBootstrapNetwork(prisma: PrismaClient) {
       ? await prisma.user.findUnique({ where: { id: existingDriverByReferralCode.userId } })
       : await prisma.user.findUnique({ where: { email: seedDriver.email } });
 
-    const user = existingUser ?? await prisma.user.create({
-      data: {
-        name: seedDriver.name,
-        email: seedDriver.email,
-        phone: seedDriver.phone,
-        role: "DRIVER",
-        passwordHash,
-      },
-    });
+    let user = existingUser;
+    if (!user) {
+      if (dryRun) {
+        console.log(`[DRY-RUN CREATE USER] ${seedDriver.email}`);
+        createdDrivers++;
+        // Use a sentinel so edge counting still works in the second pass
+        driversByReferralCode.set(seedDriver.referralCode, `dry-run-${seedDriver.referralCode}`);
+        continue;
+      }
+      user = await prisma.user.create({
+        data: {
+          name: seedDriver.name,
+          email: seedDriver.email,
+          phone: seedDriver.phone,
+          role: "DRIVER",
+          passwordHash,
+        },
+      });
+    }
 
     const networkLevel = referrerDriverId ? (referrer?.networkLevel ?? 0) + 1 : 0;
 
     const driver = existingDriverByReferralCode
       ? await (async () => {
+          // Preserve live fields — only fill null/missing values
+          const existing = existingDriverByReferralCode;
+          const existingRegions = new Set(existing.regions);
+          const missingRegions = seedDriver.regions.filter((r) => !existingRegions.has(r));
+          const mergedRegions =
+            missingRegions.length > 0
+              ? [...existing.regions, ...missingRegions]
+              : undefined;
+
           console.log(`[UPDATE DRIVER] ${seedDriver.name} (referralCode: ${seedDriver.referralCode})`);
+          if (dryRun) {
+            updatedDrivers++;
+            return existing;
+          }
+          updatedDrivers++;
           const updated = await prisma.driver.update({
-            where: { id: existingDriverByReferralCode.id },
+            where: { id: existing.id },
             data: {
               isActive: true,
-              experienceLevel: seedDriver.experienceLevel,
-              regions: seedDriver.regions,
-              publicSlug: seedDriver.publicSlug,
-              ...(existingDriverByReferralCode.referredByDriverId == null && referrerDriverId ? { referredByDriverId: referrerDriverId } : {}),
-              ...(existingDriverByReferralCode.networkLevel === 0 && referrerDriverId ? { networkLevel } : {}),
+              // Never overwrite experienceLevel or publicSlug — they are live data
+              ...(existing.publicSlug == null ? { publicSlug: seedDriver.publicSlug } : {}),
+              // Only add missing regions, never replace
+              ...(mergedRegions ? { regions: mergedRegions } : {}),
+              // Only fill null referral chain fields
+              ...(existing.referredByDriverId == null && referrerDriverId ? { referredByDriverId: referrerDriverId } : {}),
+              ...(existing.networkLevel === 0 && referrerDriverId ? { networkLevel } : {}),
             },
           });
-          console.log(`[REGIONS UPDATED] ${seedDriver.regions.join(", ")}`);
+          if (mergedRegions) console.log(`[REGIONS ADDED] ${missingRegions.join(", ")}`);
           console.log(`[PUBLIC SLUG] ${updated.publicSlug}`);
           console.log(`[NETWORK LEVEL] ${updated.networkLevel}`);
           return updated;
         })()
       : await (async () => {
-          console.log(`[UPSERT DRIVER] ${seedDriver.name} (referralCode: ${seedDriver.referralCode})`);
-          const created = await prisma.driver.upsert({
-            where: { userId: user.id },
-            update: {
-              isActive: true,
-              experienceLevel: seedDriver.experienceLevel,
-              regions: seedDriver.regions,
-              publicSlug: seedDriver.publicSlug,
-              ...(referrerDriverId ? { referredByDriverId: referrerDriverId, networkLevel } : {}),
-            },
-            create: {
+          // No driver found by referralCode — find or create by userId
+          const existingByUserId = await prisma.driver.findUnique({ where: { userId: user.id } });
+
+          if (existingByUserId) {
+            // Driver exists with a different referralCode — preserve live fields
+            const existingRegions = new Set(existingByUserId.regions);
+            const missingRegions = seedDriver.regions.filter((r) => !existingRegions.has(r));
+            const mergedRegions =
+              missingRegions.length > 0
+                ? [...existingByUserId.regions, ...missingRegions]
+                : undefined;
+
+            console.log(`[UPDATE DRIVER by userId] ${seedDriver.name} (referralCode preserved)`);
+            updatedDrivers++;
+            return await prisma.driver.update({
+              where: { id: existingByUserId.id },
+              data: {
+                isActive: true,
+                ...(existingByUserId.publicSlug == null ? { publicSlug: seedDriver.publicSlug } : {}),
+                ...(mergedRegions ? { regions: mergedRegions } : {}),
+                ...(existingByUserId.referredByDriverId == null && referrerDriverId ? { referredByDriverId: referrerDriverId } : {}),
+                ...(existingByUserId.networkLevel === 0 && referrerDriverId ? { networkLevel } : {}),
+              },
+            });
+          }
+
+          console.log(`[CREATE DRIVER] ${seedDriver.name} (referralCode: ${seedDriver.referralCode})`);
+          if (dryRun) {
+            createdDrivers++;
+            return existingByUserId ?? { id: `dry-run-${seedDriver.referralCode}`, regions: [], referralCode: seedDriver.referralCode } as any;
+          }
+          createdDrivers++;
+          return await prisma.driver.create({
+            data: {
               userId: user.id,
               isActive: true,
               experienceLevel: seedDriver.experienceLevel,
@@ -102,30 +159,29 @@ export async function runBootstrapNetwork(prisma: PrismaClient) {
               regions: seedDriver.regions,
             },
           });
-          console.log(`[REGIONS UPDATED] ${seedDriver.regions.join(", ")}`);
-          console.log(`[PUBLIC SLUG] ${created.publicSlug}`);
-          console.log(`[NETWORK LEVEL] ${created.networkLevel}`);
-          return created;
         })();
 
     driversByReferralCode.set(seedDriver.referralCode, driver.id);
 
-    await prisma.vehicle.upsert({
-      where: { plate: seedDriver.vehicle.plate },
-      update: {
-        driverId: driver.id,
-        model: seedDriver.vehicle.model,
-        brand: seedDriver.vehicle.brand,
-        category: seedDriver.vehicle.category,
-      },
-      create: {
-        driverId: driver.id,
-        model: seedDriver.vehicle.model,
-        brand: seedDriver.vehicle.brand,
-        plate: seedDriver.vehicle.plate,
-        category: seedDriver.vehicle.category,
-      },
-    });
+    if (!dryRun) {
+      await prisma.vehicle.upsert({
+        where: { plate: seedDriver.vehicle.plate },
+        update: {
+          driverId: driver.id,
+          model: seedDriver.vehicle.model,
+          brand: seedDriver.vehicle.brand,
+          category: seedDriver.vehicle.category,
+        },
+        create: {
+          driverId: driver.id,
+          model: seedDriver.vehicle.model,
+          brand: seedDriver.vehicle.brand,
+          plate: seedDriver.vehicle.plate,
+          category: seedDriver.vehicle.category,
+        },
+      });
+      createdVehicles++;
+    }
   }
 
   for (const seedDriver of driverNetwork) {
@@ -144,11 +200,15 @@ export async function runBootstrapNetwork(prisma: PrismaClient) {
         console.log(`[SKIP EXISTING EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
       } else {
         console.log(`[CREATE REFERRAL EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
-        await createDriverReferralChain(referredDriverId, referrerDriverId, prisma as unknown as typeof import("../../src/infra/prisma/client").prisma);
+        if (!dryRun) {
+          await createDriverReferralChain(referredDriverId, referrerDriverId, prisma as unknown as typeof import("../../src/infra/prisma/client").prisma);
+        }
+        createdEdges++;
       }
     }
   }
 
   console.log("\n✅ Bootstrap complete.");
   console.log(`✅ ${driversByReferralCode.size} drivers upserted.`);
+  return { createdDrivers, updatedDrivers, createdEdges, createdVehicles };
 }

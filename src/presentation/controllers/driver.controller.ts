@@ -1,13 +1,17 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
-import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityService";
+import { Region } from "@prisma/client";
+import { buildDriverPublicSlug, buildDriverReferralCode } from "../../domain/services/DriverIdentityService";
 import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 
 export class DriverController {
   async create(req: Request, res: Response) {
     try {
       const { name, email, phone, experienceLevel } = req.body;
+      const regions: Region[] = Array.isArray(req.body.regions)
+        ? (req.body.regions as string[]).filter((r) => Object.values(Region).includes(r as Region)) as Region[]
+        : [];
 
       if (!name || !email || !phone) {
         return res.status(400).json({
@@ -32,13 +36,15 @@ export class DriverController {
         data: { name, email, phone, role: "DRIVER" },
       });
 
+      const publicSlug = buildDriverPublicSlug(name);
+      const referralCode = buildDriverReferralCode(publicSlug, regions);
       const driver = await prisma.driver.create({
         data: {
           userId: user.id,
           isActive: true,
           experienceLevel: level,
-          publicSlug: buildDriverPublicSlug(name),
-          referralCode: buildDriverPublicSlug(name),
+          publicSlug,
+          referralCode,
         },
       });
 

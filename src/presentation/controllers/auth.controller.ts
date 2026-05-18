@@ -3,7 +3,8 @@ import bcrypt from "bcrypt";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain } from "../../domain/services/DriverReferralService";
 import { resolveReferralCodeToDriverId } from "../../domain/services/ReferralCodeService";
-import { buildDriverPublicSlug } from "../../domain/services/DriverIdentityService";
+import { Region } from "@prisma/client";
+import { buildDriverPublicSlug, buildDriverReferralCode } from "../../domain/services/DriverIdentityService";
 import {
   resolvePassengerReferralCode,
   createPassengerReferral,
@@ -14,6 +15,9 @@ export class AuthController {
   async register(req: Request, res: Response) {
     try {
       const { name, email, password, role, phone, referredByDriverId, referralCode } = req.body;
+      const regions: Region[] = Array.isArray(req.body.regions)
+        ? (req.body.regions as string[]).filter((r) => Object.values(Region).includes(r as Region)) as Region[]
+        : [];
 
       if (!name || !email || !password || !role || !phone) {
         return res.status(400).json({
@@ -83,6 +87,7 @@ export class AuthController {
           });
 
           const publicSlug = buildDriverPublicSlug(name);
+          const driverReferralCode = buildDriverReferralCode(publicSlug, regions);
           const driver = await tx.driver.create({
             data: {
               userId: user.id,
@@ -91,7 +96,7 @@ export class AuthController {
               referredByDriverId: resolvedReferralDriverId,
               networkLevel: referrer ? referrer.networkLevel + 1 : 0,
               publicSlug,
-              referralCode: publicSlug,
+              referralCode: driverReferralCode,
             },
           });
 
