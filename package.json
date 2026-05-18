@@ -12,6 +12,7 @@
     "seed:dev": "ts-node -r tsconfig-paths/register prisma/seeds/dev-fixtures.ts",
     "bootstrap:network": "ts-node -r tsconfig-paths/register scripts/network/bootstrap-network.ts",
     "backfill:driver-network": "ts-node -r tsconfig-paths/register scripts/network/backfill-driver-network.ts",
+    "backfill:passenger-network": "ts-node -r tsconfig-paths/register scripts/passenger/backfill-passenger-network.ts",
     "postinstall": "prisma generate",
     "test": "jest --runInBand --forceExit",
     "test:e2e": "playwright test --config playwright.config.ts"
