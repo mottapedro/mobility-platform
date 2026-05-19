@@ -91,6 +91,35 @@ describe("POST /auth/register with referralCode", () => {
     expect(passenger?.referredByDriverId).toBe(driver.id);
   });
 
+  it("links referredByDriverId when a raw driver UUID is supplied as referredByDriverId", async () => {
+    const driver = await createDriverWithRegion({
+      name: "Paula Motorista",
+      email: "paula.motorista@ref.com",
+      region: "ZN",
+    });
+
+    const response = await request(app)
+      .post("/auth/register")
+      .send({
+        name: "Roberto Passageiro",
+        email: "roberto.passageiro@ref.com",
+        password: "123456",
+        role: "passenger",
+        phone: "21966665555",
+        referredByDriverId: driver.id,
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.passengerId).toBeDefined();
+    expect(response.body.referredByDriverId).toBe(driver.id);
+
+    const passenger = await prisma.passenger.findUnique({
+      where: { id: response.body.passengerId },
+    });
+
+    expect(passenger?.referredByDriverId).toBe(driver.id);
+  });
+
   it("returns 400 when the referral code is invalid", async () => {
     const response = await request(app)
       .post("/auth/register")

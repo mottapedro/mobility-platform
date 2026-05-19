@@ -13,6 +13,7 @@
     "bootstrap:network": "ts-node -r tsconfig-paths/register scripts/network/bootstrap-network.ts",
     "backfill:driver-network": "ts-node -r tsconfig-paths/register scripts/network/backfill-driver-network.ts",
     "backfill:passenger-network": "ts-node -r tsconfig-paths/register scripts/passenger/backfill-passenger-network.ts",
+    "backfill:passenger-driver-links": "ts-node -r tsconfig-paths/register scripts/network/backfill-passenger-driver-links.ts",
     "postinstall": "prisma generate",
     "test": "jest --runInBand --forceExit",
     "test:e2e": "playwright test --config playwright.config.ts"
