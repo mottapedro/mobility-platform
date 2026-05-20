@@ -169,6 +169,20 @@ async function getPublicDriverProfile(
   return res.json();
 }
 
+async function resolveReferralSlug(
+  ctx: APIRequestContext,
+  slug: string
+): Promise<{ slug: string; referralCode: string }> {
+  const res = await ctx.get(`${BASE}/r/${slug}`);
+
+  if (!res.ok()) {
+    const body = await res.text();
+    throw new Error(`resolveReferralSlug failed for ${slug}: ${res.status()} — ${body}`);
+  }
+
+  return res.json();
+}
+
 test.beforeAll(async () => {
   passengerCtx = await playwrightRequest.newContext({ baseURL: BASE });
   pedroCtx     = await playwrightRequest.newContext({ baseURL: BASE });
@@ -197,6 +211,8 @@ test.beforeEach(async () => {
 
   const pedroPublicProfile = await getPublicDriverProfile(passengerCtx, pedroReferralCode);
   expect(pedroPublicProfile.referralCode).toBe(pedroReferralCode);
+  const pedroCanonicalProfile = await resolveReferralSlug(passengerCtx, pedroReferralCode);
+  expect(pedroCanonicalProfile.referralCode).toBe(pedroReferralCode);
 
   // 3. Register João as a driver referred by Pedro (creates L1 referral chain)
   const joaoReg = await joaoCtx.post(`${BASE}/auth/register`, {

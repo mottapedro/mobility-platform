@@ -10,6 +10,9 @@ router.post("/", (req, res) => controller.create(req, res));
 // GET /drivers
 router.get("/", (req, res) => controller.list(req, res));
 
+// GET /drivers/:driverId/network — nós por nível + métricas de indicação
+router.get("/:driverId/network", (req, res) => controller.getNetwork(req, res));
+
 // GET /drivers/:driverId/offers  — offers PENDING visíveis para o driver
 router.get("/:driverId/offers", (req, res) => controller.listOffers(req, res));
 
