@@ -17,16 +17,15 @@ export interface DriverNetworkNode {
 
 export interface DriverNetworkSnapshot {
   driverId: string;
-  levels: {
-    level1: DriverNetworkNode[];
-    level2: DriverNetworkNode[];
-    level3: DriverNetworkNode[];
-  };
+  levels: Record<string, DriverNetworkNode[]>;
   summary: {
     referredDrivers: {
       level1: number;
       level2: number;
       level3: number;
+      level4: number;
+      level5: number;
+      byLevel: Record<string, number>;
       total: number;
       maxDepth: number;
     };
@@ -45,14 +44,15 @@ export class ReferralChainError extends Error {
   }
 }
 
-const MAX_REFERRAL_DEPTH = 3;
+// regra de negócio atual; pode evoluir conforme ativação e performance da rede
+const REFERRAL_TREE_MAX_DEPTH = 5;
 
 type ReferralDbClient = Pick<typeof prisma, "driver" | "driverReferral" | "passenger">;
 
 /**
  * Creates the full referral chain when a new driver registers with a referrer.
  * - Creates level-1 edge: referrer → newDriver
- * - Inherits edges from referrer's own referrers (level+1), capped at level 3
+ * - Inherits edges from referrer's own referrers (level+1), capped at business depth
  * - Skips self-referrals and duplicate edges (@@unique in DB)
  */
 export async function createDriverReferralChain(
@@ -107,13 +107,13 @@ export async function createDriverReferralChain(
   const parentReferrals = await db.driverReferral.findMany({
     where: {
       referredDriverId: referrerDriverId,
-      level: { lt: MAX_REFERRAL_DEPTH },
+      level: { lt: REFERRAL_TREE_MAX_DEPTH },
     },
   });
 
   for (const parent of parentReferrals) {
     const inheritedLevel = parent.level + 1;
-    if (inheritedLevel > MAX_REFERRAL_DEPTH) continue;
+    if (inheritedLevel > REFERRAL_TREE_MAX_DEPTH) continue;
     if (parent.referrerDriverId === newDriverId) continue; // prevent cycles
 
     edgesToCreate.push({
@@ -196,11 +196,12 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
       .map((item) => [item.referredByDriverId, item._count._all])
   );
 
-  const levels: DriverNetworkSnapshot["levels"] = {
-    level1: [],
-    level2: [],
-    level3: [],
-  };
+  const levels: DriverNetworkSnapshot["levels"] = Object.fromEntries(
+    Array.from({ length: REFERRAL_TREE_MAX_DEPTH }, (_, index) => [
+      `level${index + 1}`,
+      [] as DriverNetworkNode[],
+    ])
+  );
 
   for (const item of referrals) {
     const node: DriverNetworkNode = {
@@ -212,9 +213,10 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
       referredPassengersCount: passengerCountMap.get(item.referred.id) ?? 0,
     };
 
-    if (item.level === 1) levels.level1.push(node);
-    else if (item.level === 2) levels.level2.push(node);
-    else if (item.level === 3) levels.level3.push(node);
+    const levelKey = `level${item.level}`;
+    if (levelKey in levels) {
+      levels[levelKey].push(node);
+    }
   }
 
   const directPassengers = passengerCountMap.get(driverId) ?? 0;
@@ -223,16 +225,27 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
     0
   );
 
+  const referredDriversByLevel = Object.fromEntries(
+    Array.from({ length: REFERRAL_TREE_MAX_DEPTH }, (_, index) => {
+      const levelKey = `level${index + 1}`;
+      return [levelKey, levels[levelKey].length];
+    })
+  );
+  const totalReferredDrivers = Object.values(referredDriversByLevel).reduce((total, count) => total + count, 0);
+
   return {
     driverId,
     levels,
     summary: {
       referredDrivers: {
-        level1: levels.level1.length,
-        level2: levels.level2.length,
-        level3: levels.level3.length,
-        total: levels.level1.length + levels.level2.length + levels.level3.length,
-        maxDepth: MAX_REFERRAL_DEPTH,
+        level1: referredDriversByLevel.level1 ?? 0,
+        level2: referredDriversByLevel.level2 ?? 0,
+        level3: referredDriversByLevel.level3 ?? 0,
+        level4: referredDriversByLevel.level4 ?? 0,
+        level5: referredDriversByLevel.level5 ?? 0,
+        byLevel: referredDriversByLevel,
+        total: totalReferredDrivers,
+        maxDepth: REFERRAL_TREE_MAX_DEPTH,
       },
       referredPassengers: {
         direct: directPassengers,

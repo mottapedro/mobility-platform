@@ -72,8 +72,17 @@ describe("Driver network read API", () => {
         level1: 1,
         level2: 1,
         level3: 0,
+        level4: 0,
+        level5: 0,
+        byLevel: {
+          level1: 1,
+          level2: 1,
+          level3: 0,
+          level4: 0,
+          level5: 0,
+        },
         total: 2,
-        maxDepth: 3,
+        maxDepth: 5,
       },
       referredPassengers: {
         direct: 1,
