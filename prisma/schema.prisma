@@ -96,6 +96,8 @@ model Passenger {
   referredByDriver Driver? @relation("DriverReferral", fields: [referredByDriverId], references: [id])
 
   rideRequests RideRequest[]
+
+  @@index([referredByDriverId])
 }
 
 model Vehicle {
@@ -180,6 +182,7 @@ model DriverReferral {
 
   @@unique([referrerDriverId, referredDriverId])
   @@index([referredDriverId])
+  @@index([referrerDriverId, level])
 }
 
 model RideOffer {

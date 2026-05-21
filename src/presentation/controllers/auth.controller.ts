@@ -1,7 +1,18 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
-import { createDriverReferralChain } from "../../domain/services/DriverReferralService";
+import { createDriverReferralChain, ReferralChainError } from "../../domain/services/DriverReferralService";
+
+class HttpError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
 
 export class AuthController {
   async register(req: Request, res: Response) {
@@ -12,7 +23,6 @@ export class AuthController {
         password,
         role,
         phone,
-        referredByDriverId,
         referralCode,
       } = req.body;
 
@@ -36,86 +46,92 @@ export class AuthController {
         return res.status(400).json({ error: "A senha precisa ter pelo menos 6 caracteres" });
       }
 
-      if (referredByDriverId && referralCode) {
+      if ("referredByDriverId" in req.body) {
         return res.status(400).json({
-          error: "Use apenas referralCode ou referredByDriverId",
+          error: "Use apenas referralCode para cadastro com indicação",
         });
-      }
-
-      // Check unique email
-      const existing = await prisma.user.findUnique({ where: { email } });
-      if (existing) {
-        return res.status(400).json({ error: "Este email já está cadastrado" });
-      }
-
-      let referrerDriverId: string | null = null;
-
-      if (referralCode !== undefined && referralCode !== null) {
-        if (typeof referralCode !== "string" || !referralCode.trim()) {
-          return res.status(400).json({ error: "referralCode deve ser string não vazia" });
-        }
-
-        const driver = await prisma.driver.findUnique({
-          where: { referralCode: referralCode.trim() },
-        });
-
-        if (!driver || !driver.isActive) {
-          return res.status(400).json({ error: "Motorista indicado não encontrado ou inativo" });
-        }
-
-        referrerDriverId = driver.id;
-      }
-
-      // Backward-compatible internal path while public clients migrate to referralCode
-      if (referredByDriverId) {
-        const driver = await prisma.driver.findUnique({ where: { id: referredByDriverId } });
-        if (!driver || !driver.isActive) {
-          return res.status(400).json({ error: "Motorista indicado não encontrado ou inativo" });
-        }
-
-        referrerDriverId = driver.id;
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
 
-      if (role === "driver") {
-        const user = await prisma.user.create({
+      const payload = await prisma.$transaction(async (tx) => {
+        const existing = await tx.user.findUnique({ where: { email } });
+        if (existing) {
+          throw new HttpError(409, "Este email já está cadastrado");
+        }
+
+        let referrerDriverId: string | null = null;
+
+        if (referralCode !== undefined && referralCode !== null) {
+          if (typeof referralCode !== "string" || !referralCode.trim()) {
+            throw new HttpError(400, "referralCode deve ser string não vazia");
+          }
+
+          const driver = await tx.driver.findUnique({
+            where: { referralCode: referralCode.trim() },
+            select: { id: true, isActive: true },
+          });
+
+          if (!driver || !driver.isActive) {
+            throw new HttpError(400, "Código de referral inválido ou motorista inativo");
+          }
+
+          referrerDriverId = driver.id;
+        }
+
+        if (role === "driver") {
+          const user = await tx.user.create({
+            data: { name, email, phone, role: prismaRole, passwordHash },
+          });
+          const driver = await tx.driver.create({
+            data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
+          });
+
+          if (referrerDriverId) {
+            await createDriverReferralChain(driver.id, referrerDriverId, tx);
+          }
+
+          return {
+            user: { id: user.id, name: user.name, email: user.email, role: "driver" },
+            driverId: driver.id,
+            referralCode: driver.referralCode,
+          };
+        }
+
+        const user = await tx.user.create({
           data: { name, email, phone, role: prismaRole, passwordHash },
         });
-        const driver = await prisma.driver.create({
-          data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
+        const passenger = await tx.passenger.create({
+          data: {
+            user: { connect: { id: user.id } },
+            ...(referrerDriverId
+              ? { referredByDriver: { connect: { id: referrerDriverId } } }
+              : {}),
+          },
+          include: { user: true },
         });
-        // Create referral chain if driver was referred by another driver
-        if (referrerDriverId) {
-          await createDriverReferralChain(driver.id, referrerDriverId);
-        }
-        return res.status(201).json({
-          user: { id: user.id, name: user.name, email: user.email, role: "driver" },
-          driverId: driver.id,
-          referralCode: driver.referralCode,
-        });
+
+        return {
+          user: { id: user.id, name: user.name, email: user.email, role: "passenger" },
+          passengerId: passenger.id,
+          referredByDriverId: passenger.referredByDriverId ?? null,
+        };
+      });
+
+      return res.status(201).json(payload);
+    } catch (error: unknown) {
+      if (error instanceof HttpError) {
+        return res.status(error.statusCode).json({ error: error.message });
       }
 
-      // passenger
-      const user = await prisma.user.create({
-        data: { name, email, phone, role: prismaRole, passwordHash },
-      });
-      const passenger = await prisma.passenger.create({
-        data: {
-          user: { connect: { id: user.id } },
-          ...(referrerDriverId
-            ? { referredByDriver: { connect: { id: referrerDriverId } } }
-            : {}),
-        },
-        include: { user: true },
-      });
+      if (error instanceof ReferralChainError) {
+        return res.status(400).json({ error: error.message });
+      }
 
-      return res.status(201).json({
-        user: { id: user.id, name: user.name, email: user.email, role: "passenger" },
-        passengerId: passenger.id,
-        referredByDriverId: passenger.referredByDriverId ?? null,
-      });
-    } catch (error: unknown) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        return res.status(409).json({ error: "Este email já está cadastrado" });
+      }
+
       console.error("🔥 Erro no registro:", error);
       return res.status(500).json({ error: "Erro interno ao registrar usuário" });
     }

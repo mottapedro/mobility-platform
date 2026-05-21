@@ -6,17 +6,89 @@ export interface DriverNetwork {
   level3: string[];
 }
 
+export interface DriverNetworkNode {
+  driverId: string;
+  name: string;
+  referralCode: string;
+  isActive: boolean;
+  createdAt: Date;
+  referredPassengersCount: number;
+}
+
+export interface DriverNetworkSnapshot {
+  driverId: string;
+  levels: Record<string, DriverNetworkNode[]>;
+  summary: {
+    referredDrivers: {
+      level1: number;
+      level2: number;
+      level3: number;
+      level4: number;
+      level5: number;
+      byLevel: Record<string, number>;
+      total: number;
+      maxDepth: number;
+    };
+    referredPassengers: {
+      direct: number;
+      fromNetwork: number;
+      total: number;
+    };
+  };
+}
+
+export class ReferralChainError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReferralChainError";
+  }
+}
+
+// regra de negócio atual; pode evoluir conforme ativação e performance da rede
+const REFERRAL_TREE_MAX_DEPTH = 5;
+
+type ReferralDbClient = Pick<typeof prisma, "driver" | "driverReferral" | "passenger">;
+
 /**
  * Creates the full referral chain when a new driver registers with a referrer.
  * - Creates level-1 edge: referrer → newDriver
- * - Inherits edges from referrer's own referrers (level+1), capped at level 3
+ * - Inherits edges from referrer's own referrers (level+1), capped at business depth
  * - Skips self-referrals and duplicate edges (@@unique in DB)
  */
 export async function createDriverReferralChain(
   newDriverId: string,
-  referrerDriverId: string
+  referrerDriverId: string,
+  db: ReferralDbClient = prisma
 ): Promise<void> {
-  if (newDriverId === referrerDriverId) return;
+  if (newDriverId === referrerDriverId) {
+    throw new ReferralChainError("Ciclo de referral inválido: autoindicação não permitida");
+  }
+
+  const [newDriver, referrerDriver] = await Promise.all([
+    db.driver.findUnique({ where: { id: newDriverId }, select: { id: true, isActive: true } }),
+    db.driver.findUnique({ where: { id: referrerDriverId }, select: { id: true, isActive: true } }),
+  ]);
+
+  if (!newDriver || !newDriver.isActive) {
+    throw new ReferralChainError("Motorista indicado para vínculo não está ativo");
+  }
+
+  if (!referrerDriver || !referrerDriver.isActive) {
+    throw new ReferralChainError("Código de referral inválido ou motorista inativo");
+  }
+
+  const reverseEdge = await db.driverReferral.findFirst({
+    where: {
+      referrerDriverId: newDriverId,
+      referredDriverId: referrerDriverId,
+    },
+    select: { id: true },
+  });
+
+  if (reverseEdge) {
+    console.warn("[Referral] ciclo detectado e bloqueado", { newDriverId, referrerDriverId });
+    throw new ReferralChainError("Ciclo de referral detectado");
+  }
 
   const edgesToCreate: {
     referrerDriverId: string;
@@ -32,13 +104,16 @@ export async function createDriverReferralChain(
   });
 
   // Inherited levels: find all referrals where the referrer is the referred party
-  const parentReferrals = await prisma.driverReferral.findMany({
-    where: { referredDriverId: referrerDriverId },
+  const parentReferrals = await db.driverReferral.findMany({
+    where: {
+      referredDriverId: referrerDriverId,
+      level: { lt: REFERRAL_TREE_MAX_DEPTH },
+    },
   });
 
   for (const parent of parentReferrals) {
     const inheritedLevel = parent.level + 1;
-    if (inheritedLevel > 3) continue;
+    if (inheritedLevel > REFERRAL_TREE_MAX_DEPTH) continue;
     if (parent.referrerDriverId === newDriverId) continue; // prevent cycles
 
     edgesToCreate.push({
@@ -48,15 +123,10 @@ export async function createDriverReferralChain(
     });
   }
 
-  // Insert all edges, skip duplicates via @@unique constraint
-  for (const edge of edgesToCreate) {
-    try {
-      await prisma.driverReferral.create({ data: edge });
-    } catch (e: unknown) {
-      const err = e as { code?: string };
-      if (err.code !== "P2002") throw e; // re-throw anything that isn't a duplicate
-    }
-  }
+  await db.driverReferral.createMany({
+    data: edgesToCreate,
+    skipDuplicates: true,
+  });
 }
 
 /**
@@ -81,4 +151,107 @@ export async function getDriverNetwork(driverId: string): Promise<DriverNetwork>
   console.log(`[Referral] Level 3 drivers: ${network.level3.length}`);
 
   return network;
+}
+
+export async function getDriverNetworkSnapshot(driverId: string): Promise<DriverNetworkSnapshot> {
+  const referrals = await prisma.driverReferral.findMany({
+    where: { referrerDriverId: driverId },
+    select: {
+      level: true,
+      referred: {
+        select: {
+          id: true,
+          isActive: true,
+          createdAt: true,
+          referralCode: true,
+          user: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
+    },
+    orderBy: [{ level: "asc" }, { createdAt: "desc" }],
+  });
+
+  const referredDriverIds = referrals.map((item) => item.referred.id);
+  const idsForPassengerMetrics = [driverId, ...referredDriverIds];
+
+  const passengerCounts = await prisma.passenger.groupBy({
+    by: ["referredByDriverId"],
+    where: {
+      referredByDriverId: {
+        in: idsForPassengerMetrics,
+      },
+    },
+    _count: {
+      _all: true,
+    },
+  });
+
+  const passengerCountMap = new Map(
+    passengerCounts
+      .filter((item): item is { referredByDriverId: string; _count: { _all: number } } => Boolean(item.referredByDriverId))
+      .map((item) => [item.referredByDriverId, item._count._all])
+  );
+
+  const levels: DriverNetworkSnapshot["levels"] = Object.fromEntries(
+    Array.from({ length: REFERRAL_TREE_MAX_DEPTH }, (_, index) => [
+      `level${index + 1}`,
+      [] as DriverNetworkNode[],
+    ])
+  );
+
+  for (const item of referrals) {
+    const node: DriverNetworkNode = {
+      driverId: item.referred.id,
+      name: item.referred.user.name,
+      referralCode: item.referred.referralCode,
+      isActive: item.referred.isActive,
+      createdAt: item.referred.createdAt,
+      referredPassengersCount: passengerCountMap.get(item.referred.id) ?? 0,
+    };
+
+    const levelKey = `level${item.level}`;
+    if (levelKey in levels) {
+      levels[levelKey].push(node);
+    }
+  }
+
+  const directPassengers = passengerCountMap.get(driverId) ?? 0;
+  const networkPassengers = referredDriverIds.reduce(
+    (total, referredId) => total + (passengerCountMap.get(referredId) ?? 0),
+    0
+  );
+
+  const referredDriversByLevel = Object.fromEntries(
+    Array.from({ length: REFERRAL_TREE_MAX_DEPTH }, (_, index) => {
+      const levelKey = `level${index + 1}`;
+      return [levelKey, levels[levelKey].length];
+    })
+  );
+  const totalReferredDrivers = Object.values(referredDriversByLevel).reduce((total, count) => total + count, 0);
+
+  return {
+    driverId,
+    levels,
+    summary: {
+      referredDrivers: {
+        level1: referredDriversByLevel.level1 ?? 0,
+        level2: referredDriversByLevel.level2 ?? 0,
+        level3: referredDriversByLevel.level3 ?? 0,
+        level4: referredDriversByLevel.level4 ?? 0,
+        level5: referredDriversByLevel.level5 ?? 0,
+        byLevel: referredDriversByLevel,
+        total: totalReferredDrivers,
+        maxDepth: REFERRAL_TREE_MAX_DEPTH,
+      },
+      referredPassengers: {
+        direct: directPassengers,
+        fromNetwork: networkPassengers,
+        total: directPassengers + networkPassengers,
+      },
+    },
+  };
 }

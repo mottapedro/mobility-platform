@@ -56,6 +56,40 @@ describe("Public driver referral flow", () => {
     expect(response.body).toEqual({ error: "Motorista não encontrado" });
   });
 
+  it("resolves canonical public route /r/:slug to a valid referralCode", async () => {
+    const user = await prisma.user.create({
+      data: {
+        name: "Pedro Paulo Motta",
+        email: "pedro-slug@test.com",
+        phone: "11999990020",
+        role: "DRIVER",
+      },
+    });
+
+    await prisma.driver.create({
+      data: {
+        userId: user.id,
+        isActive: true,
+        experienceLevel: "PROFISSIONAL",
+        referralCode: "pedro-paulo-motta",
+      },
+    });
+
+    const response = await request(app).get("/r/pedro-paulo-motta");
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      slug: "pedro-paulo-motta",
+      referralCode: "pedro-paulo-motta",
+      driver: {
+        id: expect.any(String),
+        name: "Pedro Paulo Motta",
+        experienceLevel: "PROFISSIONAL",
+        memberSince: expect.any(String),
+      },
+    });
+  });
+
   it("returns 404 for an inactive driver public referralCode", async () => {
     const user = await prisma.user.create({
       data: {
@@ -121,7 +155,7 @@ describe("Public driver referral flow", () => {
     expect(passenger?.referredByDriverId).toBe(referrerDriver.id);
   });
 
-  it("rejects register when referralCode and referredByDriverId are both provided", async () => {
+  it("rejects register when referredByDriverId is used in auth/register", async () => {
     const response = await request(app)
       .post("/auth/register")
       .send({
@@ -130,13 +164,12 @@ describe("Public driver referral flow", () => {
         password: "123456",
         role: "passenger",
         phone: "11999990017",
-        referralCode: "public-code",
         referredByDriverId: "internal-id",
       });
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
-      error: "Use apenas referralCode ou referredByDriverId",
+      error: "Use apenas referralCode para cadastro com indicação",
     });
   });
 
@@ -154,7 +187,7 @@ describe("Public driver referral flow", () => {
 
     expect(response.status).toBe(400);
     expect(response.body).toEqual({
-      error: "Motorista indicado não encontrado ou inativo",
+      error: "Código de referral inválido ou motorista inativo",
     });
   });
 
@@ -201,5 +234,21 @@ describe("Public driver referral flow", () => {
 
     expect(referralEdge).not.toBeNull();
     expect(referralEdge?.level).toBe(1);
+  });
+
+  it("blocks legacy POST /drivers for referral onboarding", async () => {
+    const response = await request(app)
+      .post("/drivers")
+      .send({
+        name: "Legacy Driver",
+        email: "legacy-driver@test.com",
+        phone: "11999990021",
+        referralCode: "legacy-referral",
+      });
+
+    expect(response.status).toBe(410);
+    expect(response.body).toEqual({
+      error: "Cadastro com referral deve usar POST /auth/register",
+    });
   });
 });

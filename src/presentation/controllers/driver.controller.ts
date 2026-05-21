@@ -1,7 +1,40 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
+import { getDriverNetworkSnapshot } from "../../domain/services/DriverReferralService";
 
 export class DriverController {
+  private async findActivePublicDriver(referralCode: string) {
+    return prisma.driver.findFirst({
+      where: {
+        referralCode,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        referralCode: true,
+        experienceLevel: true,
+        createdAt: true,
+        user: {
+          select: {
+            name: true,
+          },
+        },
+        regions: {
+          select: {
+            region: true,
+          },
+        },
+        vehicles: {
+          select: {
+            brand: true,
+            model: true,
+            category: true,
+          },
+        },
+      },
+    });
+  }
+
   async getPublicProfile(req: Request, res: Response) {
     try {
       const { referralCode } = req.params;
@@ -10,35 +43,7 @@ export class DriverController {
         return res.status(400).json({ error: "referralCode inválido na URL" });
       }
 
-      const driver = await prisma.driver.findFirst({
-        where: {
-          referralCode,
-          isActive: true,
-        },
-        select: {
-          referralCode: true,
-          experienceLevel: true,
-          createdAt: true,
-          user: {
-            select: {
-              name: true,
-            },
-          },
-          regions: {
-            select: {
-              region: true,
-            },
-          },
-          vehicles: {
-            select: {
-              brand: true,
-              model: true,
-              category: true,
-            },
-          },
-        },
-      });
-
+      const driver = await this.findActivePublicDriver(referralCode);
       if (!driver) {
         return res.status(404).json({ error: "Motorista não encontrado" });
       }
@@ -59,9 +64,46 @@ export class DriverController {
     }
   }
 
+  async resolvePublicReferral(req: Request, res: Response) {
+    try {
+      const { slug } = req.params;
+
+      if (!slug || typeof slug !== "string" || !slug.trim()) {
+        return res.status(400).json({ error: "slug inválido na URL" });
+      }
+
+      const driver = await this.findActivePublicDriver(slug.trim());
+      if (!driver) {
+        return res.status(404).json({ error: "Motorista não encontrado" });
+      }
+
+      return res.status(200).json({
+        slug: slug.trim(),
+        referralCode: driver.referralCode,
+        driver: {
+          id: driver.id,
+          name: driver.user.name,
+          experienceLevel: driver.experienceLevel,
+          memberSince: driver.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao resolver slug público de referral:", error);
+      return res.status(500).json({
+        error: "Erro interno ao resolver referral público",
+      });
+    }
+  }
+
   async create(req: Request, res: Response) {
     try {
-      const { name, email, phone, experienceLevel } = req.body;
+      const { name, email, phone, experienceLevel, referralCode, referredByDriverId } = req.body;
+
+      if (referralCode !== undefined || referredByDriverId !== undefined) {
+        return res.status(410).json({
+          error: "Cadastro com referral deve usar POST /auth/register",
+        });
+      }
 
       if (!name || !email || !phone) {
         return res.status(400).json({
@@ -218,6 +260,34 @@ export class DriverController {
       console.error("Erro ao listar corridas do driver:", error);
       return res.status(500).json({
         error: "Erro interno ao listar corridas",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  async getNetwork(req: Request, res: Response) {
+    try {
+      const { driverId } = req.params;
+
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true, isActive: true },
+      });
+
+      if (!driver || !driver.isActive) {
+        return res.status(404).json({ error: "Driver não encontrado ou inativo" });
+      }
+
+      const network = await getDriverNetworkSnapshot(driverId);
+      return res.status(200).json(network);
+    } catch (error) {
+      console.error("Erro ao carregar rede do driver:", error);
+      return res.status(500).json({
+        error: "Erro interno ao carregar rede do driver",
         details: error instanceof Error ? error.message : error,
       });
     }
