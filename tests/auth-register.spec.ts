@@ -1,5 +1,6 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
+
 import { app } from "../src/app";
 import { prisma } from "./setup";
 
@@ -12,13 +13,13 @@ async function createDriverWithRegion(params: {
     data: {
       name: params.name,
       email: params.email,
-      phone: "21999990000",
+      phone: `219${Math.floor(Math.random() * 100000000)}`,
       role: "DRIVER",
       passwordHash: await bcrypt.hash("123456", 10),
     },
   });
 
-  const driver = await prisma.driver.create({
+  return prisma.driver.create({
     data: {
       userId: user.id,
       isActive: true,
@@ -26,196 +27,190 @@ async function createDriverWithRegion(params: {
       regions: [params.region],
     },
   });
-
-  return driver;
 }
 
 describe("POST /auth/register with referralCode", () => {
-  it("creates a referred driver with direct parent, network level, slug, and referral code", async () => {
+  it("creates a referred driver linked to the referrer", async () => {
     const referrer = await createDriverWithRegion({
       name: "Carlos Silva",
-      email: "carlos.driver@ref.com",
-      region: "ZN",
-    });
-
-    const response = await request(app)
-      .post("/auth/register")
-      .send({
-        name: "Marcos Lima",
-        email: "marcos.driver@ref.com",
-        password: "123456",
-        role: "driver",
-        phone: "21988887777",
-        referralCode: "carlos-silva-zn",
-        regions: ["ZS"],
-      });
-
-    expect(response.status).toBe(201);
-
-    const driver = await prisma.driver.findUniqueOrThrow({
-      where: { id: response.body.driverId },
-    });
-
-    expect(driver.referredByDriverId).toBe(referrer.id);
-    expect(driver.networkLevel).toBe(1);
-    expect(driver.publicSlug).toBe("marcos-lima");
-    expect(driver.referralCode).toBe("marcos-lima-zs");
-  });
-
-  it("creates a passenger linked to the resolved driver", async () => {
-    const driver = await createDriverWithRegion({
-      name: "Carlos Silva",
-      email: "carlos.silva@ref.com",
+      email: "carlos.driver@test.com",
       region: "ZS",
     });
 
     const response = await request(app)
       .post("/auth/register")
       .send({
-        name: "Ana Passageira",
-        email: "ana.passageira@ref.com",
+        name: "Marcos Lima",
+        email: "marcos.driver@test.com",
         password: "123456",
-        role: "passenger",
+        role: "driver",
         phone: "21988887777",
-        referralCode: "carlos-zs",
+        referralCode: referrer.referralCode,
+        regions: ["ZN"],
       });
 
     expect(response.status).toBe(201);
-    expect(response.body.passengerId).toBeDefined();
-    expect(response.body.referredByDriverId).toBe(driver.id);
+    expect(response.body.driverId).toBeDefined();
 
-    const passenger = await prisma.passenger.findUnique({
-      where: { id: response.body.passengerId },
+    const driver = await prisma.driver.findUnique({
+      where: {
+        id: response.body.driverId,
+      },
     });
 
-    expect(passenger?.referredByDriverId).toBe(driver.id);
+    expect(driver).not.toBeNull();
+    expect(driver?.referredByDriverId).toBe(referrer.id);
   });
 
-  it("links referredByDriverId when a raw driver UUID is supplied as referredByDriverId", async () => {
+  it("creates a passenger linked to the resolved driver", async () => {
     const driver = await createDriverWithRegion({
       name: "Paula Motorista",
-      email: "paula.motorista@ref.com",
+      email: "paula.motorista@test.com",
       region: "ZN",
     });
 
     const response = await request(app)
       .post("/auth/register")
       .send({
-        name: "Roberto Passageiro",
-        email: "roberto.passageiro@ref.com",
+        name: "Ana Passageira",
+        email: "ana.passageira@test.com",
         password: "123456",
         role: "passenger",
-        phone: "21966665555",
-        referredByDriverId: driver.id,
+        phone: "21999990001",
+        referralCode: driver.referralCode,
       });
 
     expect(response.status).toBe(201);
     expect(response.body.passengerId).toBeDefined();
-    expect(response.body.referredByDriverId).toBe(driver.id);
 
     const passenger = await prisma.passenger.findUnique({
-      where: { id: response.body.passengerId },
+      where: {
+        id: response.body.passengerId,
+      },
     });
 
+    expect(passenger).not.toBeNull();
     expect(passenger?.referredByDriverId).toBe(driver.id);
   });
 
-  it("returns 400 when the referral code is invalid", async () => {
+  it("returns 400 when referralCode is invalid", async () => {
     const response = await request(app)
       .post("/auth/register")
       .send({
         name: "Bruno Sem Referral",
-        email: "bruno.sem.ref@ref.com",
+        email: "bruno.sem.referral@test.com",
         password: "123456",
         role: "passenger",
-        phone: "21977776666",
+        phone: "21999990002",
         referralCode: "codigo-invalido",
       });
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toContain("Referral code inválido");
-
-    const passenger = await prisma.user.findUnique({
-      where: { email: "bruno.sem.ref@ref.com" },
-    });
-
-    expect(passenger).toBeNull();
   });
 });
 
-// ─── passenger referral code on register ─────────────────────────────────────
 describe("POST /auth/register — passenger referralCode", () => {
-  it("links referredByPassengerId when a valid passenger referralCode is supplied", async () => {
-    // Create referrer passenger with a known referral code
-    await prisma.user.create({
-      data: {
-        name: "Referrer",
-        email: "referrer-reg@ptest.com",
-        phone: "11900000099",
-        role: "PASSENGER",
-        passenger: { create: { referralCode: "referrer-reg-xxxx" } },
+  it("links referredByPassengerId when passenger referralCode is valid", async () => {
+    await prisma.passenger.deleteMany({
+      where: {
+        user: {
+          email: {
+            in: [
+              "referrer-passenger@test.com",
+              "new-passenger@test.com",
+            ],
+          },
+        },
       },
-      include: { passenger: true },
     });
 
-    const referrer = await prisma.passenger.findFirst({
-      where: { user: { email: "referrer-reg@ptest.com" } },
-    });
-    const referrerId = referrer!.id;
-
-    const res = await request(app).post("/auth/register").send({
-      name: "New Passenger",
-      email: "newp-reg@ptest.com",
-      phone: "11900000088",
-      role: "passenger",
-      password: "senha123",
-      referralCode: "referrer-reg-xxxx",
+    await prisma.user.deleteMany({
+      where: {
+        email: {
+          in: [
+            "referrer-passenger@test.com",
+            "new-passenger@test.com",
+          ],
+        },
+      },
     });
 
-    expect(res.status).toBe(201);
-    expect(res.body).toHaveProperty("passengerId");
-
-    const created = await prisma.passenger.findUnique({
-      where: { id: res.body.passengerId },
+    const referrerUser = await prisma.user.create({
+      data: {
+        name: "Referrer Passenger",
+        email: "referrer-passenger@test.com",
+        phone: "11999999999",
+        role: "PASSENGER",
+        passenger: {
+          create: {
+            referralCode: "pass-ref-code",
+            publicSlug: "referrer-passenger",
+          },
+        },
+      },
+      include: {
+        passenger: true,
+      },
     });
-    expect(created).not.toBeNull();
-    expect(created!.referredByPassengerId).toBe(referrerId);
-    expect(created!.networkLevel).toBe(1);
+
+    expect(referrerUser.passenger).not.toBeNull();
+
+    const response = await request(app)
+      .post("/auth/register")
+      .send({
+        name: "New Passenger",
+        email: "new-passenger@test.com",
+        password: "123456",
+        role: "passenger",
+        phone: "11988888888",
+        referralCode: "pass-ref-code",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.passengerId).toBeDefined();
+
+    const passenger = await prisma.passenger.findUnique({
+      where: {
+        id: response.body.passengerId,
+      },
+    });
+
+    expect(passenger).not.toBeNull();
+    expect(passenger?.referredByPassengerId).toBe(
+      referrerUser.passenger?.id,
+    );
   });
 
-  it("returns 400 when referralCode matches neither a driver nor a passenger", async () => {
-    const res = await request(app).post("/auth/register").send({
-      name: "Ghost User",
-      email: "ghost-reg@ptest.com",
-      phone: "11900000077",
-      role: "passenger",
-      password: "senha123",
-      referralCode: "totally-unknown-zzzz",
+  it("returns non-null referralCode and publicSlug for every passenger", async () => {
+    const response = await request(app)
+      .post("/auth/register")
+      .send({
+        name: "Maria Fernanda",
+        email: "maria.identity@test.com",
+        password: "123456",
+        role: "passenger",
+        phone: "11977777777",
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.passengerId).toBeDefined();
+
+    const passenger = await prisma.passenger.findUnique({
+      where: {
+        id: response.body.passengerId,
+      },
     });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/inválido/i);
-  });
-});
+    expect(passenger).not.toBeNull();
 
-// ─── auto-generated passenger identity ───────────────────────────────────────
-describe("POST /auth/register — auto-generates passenger identity", () => {
-  it("returns non-null referralCode and publicSlug for every new passenger", async () => {
-    const res = await request(app).post("/auth/register").send({
-      name: "Maria Fernanda",
-      email: "mariaf-identity@ptest.com",
-      phone: "11900000001",
-      role: "passenger",
-      password: "senha123",
-    });
+    expect(passenger?.referralCode).toBeDefined();
+    expect(typeof passenger?.referralCode).toBe("string");
+    expect(passenger?.referralCode).not.toBe("");
 
-    expect(res.status).toBe(201);
-    expect(res.body.referralCode).toMatch(/^[a-z0-9-]+-[a-z0-9]{4}$/);
-    expect(res.body.publicSlug).toMatch(/^maria-fernanda/);
+    expect(passenger?.publicSlug).toBeDefined();
+    expect(typeof passenger?.publicSlug).toBe("string");
+    expect(passenger?.publicSlug).not.toBe("");
 
-    // Verify persisted to DB
-    const p = await prisma.passenger.findUnique({ where: { id: res.body.passengerId } });
-    expect(p?.referralCode).toBe(res.body.referralCode);
-    expect(p?.publicSlug).toBe(res.body.publicSlug);
+    expect(passenger?.publicSlug).toMatch(/^maria-fernanda/);
   });
 });

@@ -112,7 +112,7 @@ export async function cleanTestData(): Promise<void> {
     await prisma.driverReferral.deleteMany({
       where: {
         OR: [
-          { driverId: { in: testDriverIds } },
+          { referrerDriverId: { in: testDriverIds } },
           { referredDriverId: { in: testDriverIds } },
         ],
       },

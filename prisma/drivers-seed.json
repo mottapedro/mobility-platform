@@ -1,111 +1,37 @@
 [
   {
+    "name": "Carlos Silva",
+    "driverId": "1524efa1-088f-4bb7-9358-49578ccfaf61",
+    "email": "carlos@driver.com",
+    "region": "ZN",
+    "referralCode": "cmpfv087m0000c8v4gk1gdig4"
+  },
+  {
+    "name": "Marcos Lima",
+    "driverId": "89b593c4-186b-4da6-bbb9-e9aeb5215af8",
+    "email": "marcos@driver.com",
+    "region": "ZS",
+    "referralCode": "cmpfv08920001c8v4gyaosdk3"
+  },
+  {
+    "name": "Roberto Souza",
+    "driverId": "3d15833a-0dc4-4aa6-86e8-d17f36e9e7a1",
+    "email": "roberto@driver.com",
+    "region": "ZO",
+    "referralCode": "cmpfv08cg0002c8v47wzywo7h"
+  },
+  {
     "name": "Pedro Paulo Motta",
+    "driverId": "9ed7955b-9fc0-45d4-bcf7-b89f90425576",
     "email": "mottapedro01@gmail.com",
-    "phone": "21981722517",
-    "referralCode": "pedro-paulo-motta-zn",
-    "publicSlug": "pedro-paulo-motta",
-    "regions": ["Zona Oeste", "Centro", "Zona Sul", "Intermunicipal"],
-    "experienceLevel": "PROFISSIONAL",
-    "vehicle": { "model": "Onix Plus Turbo", "brand": "Chevrolet", "plate": "RJS1234", "category": "EXECUTIVO" }
+    "region": "ZN",
+    "referralCode": "pedro-paulo-motta-zn"
   },
   {
     "name": "João Luiz Correa de Brito",
+    "driverId": "d33f5ad3-d910-4279-b27b-a77ea6305db6",
     "email": "jlcbrito@driver.com",
-    "phone": "11999990004",
-    "referralCode": "joao-luiz-correa-de-brito-zn",
-    "publicSlug": "joao-luiz-barra",
-    "parentReferralCode": "pedro-paulo-motta-zn",
-    "regions": ["Zona Oeste", "Barra", "Recreio"],
-    "experienceLevel": "PROFISSIONAL",
-    "vehicle": { "model": "Logan", "brand": "Renault", "plate": "UABC1234", "category": "CONFORTO" }
-  },
-  {
-    "name": "Carlinhos",
-    "email": "carlinhos@driver.com",
-    "phone": "21999990011",
-    "referralCode": "carlinhos-zn",
-    "publicSlug": "carlinhos-city",
-    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
-    "regions": ["Zona Sul", "Zona Oeste", "Centro"],
-    "experienceLevel": "INTERMEDIARIO",
-    "vehicle": { "model": "Argo", "brand": "Fiat", "plate": "ALI1001", "category": "CONFORTO" }
-  },
-  {
-    "name": "Jenner",
-    "email": "jenner@driver.com",
-    "phone": "21999990012",
-    "referralCode": "jenner-zn",
-    "publicSlug": "jenner-spin",
-    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
-    "regions": ["Baixada", "Zona Norte", "Centro"],
-    "experienceLevel": "INTERMEDIARIO",
-    "vehicle": { "model": "Cronos", "brand": "Fiat", "plate": "ALI1002", "category": "CONFORTO" }
-  },
-  {
-    "name": "Bira",
-    "email": "bira@driver.com",
-    "phone": "21999990013",
-    "referralCode": "bira-zn",
-    "publicSlug": "bira-onix-ltz",
-    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
-    "regions": ["Zona Norte", "Centro", "Zona Oeste"],
-    "experienceLevel": "INICIANTE",
-    "vehicle": { "model": "Voyage", "brand": "Volkswagen", "plate": "ALI1003", "category": "CONFORTO" }
-  },
-  {
-    "name": "Gisele",
-    "email": "gisele@driver.com",
-    "phone": "21999990014",
-    "referralCode": "gisele-zn",
-    "publicSlug": "gisele-malibu-208",
-    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
-    "regions": ["Zona Sul", "Centro", "Niteroi"],
-    "experienceLevel": "PROFISSIONAL",
-    "vehicle": { "model": "Yaris", "brand": "Toyota", "plate": "ALI1004", "category": "EXECUTIVO" }
-  },
-  {
-    "name": "Fábio",
-    "email": "fabio@driver.com",
-    "phone": "21999990015",
-    "referralCode": "fabio-zn",
-    "publicSlug": "fabio-tcross",
-    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
-    "regions": ["Zona Oeste", "Intermunicipal", "Regiao dos Lagos"],
-    "experienceLevel": "INTERMEDIARIO",
-    "vehicle": { "model": "Polo", "brand": "Volkswagen", "plate": "ALI1005", "category": "CONFORTO" }
-  },
-  {
-    "name": "André Cabral",
-    "email": "andre.cabral@driver.com",
-    "phone": "21999990016",
-    "referralCode": "andre-cabral-zn",
-    "publicSlug": "andre-cabral-etios",
-    "parentReferralCode": "joao-luiz-correa-de-brito-zn",
-    "regions": ["Centro", "Zona Norte", "Sao Goncalo"],
-    "experienceLevel": "PROFISSIONAL",
-    "vehicle": { "model": "Versa", "brand": "Nissan", "plate": "ALI1006", "category": "EXECUTIVO" }
-  },
-  {
-    "name": "Anselmo Valle dos Santos",
-    "email": "anselmo@driver.com",
-    "phone": "21999990017",
-    "referralCode": "anselmo-valle-dos-santos-zn",
-    "publicSlug": "anselmo-valle",
-    "parentReferralCode": "pedro-paulo-motta-zn",
-    "regions": ["Niteroi", "Sao Goncalo", "Intermunicipal"],
-    "experienceLevel": "PROFISSIONAL",
-    "vehicle": { "model": "Kicks", "brand": "Nissan", "plate": "ALI1007", "category": "EXECUTIVO" }
-  },
-  {
-    "name": "Fernando Barreira",
-    "email": "fernando.barreira@driver.com",
-    "phone": "21999990018",
-    "referralCode": "fernando-barreira-zn",
-    "publicSlug": "fernando-barreira",
-    "parentReferralCode": "pedro-paulo-motta-zn",
-    "regions": ["Baixada", "Zona Norte", "Regiao dos Lagos"],
-    "experienceLevel": "PROFISSIONAL",
-    "vehicle": { "model": "Sentra", "brand": "Nissan", "plate": "ALI1008", "category": "EXECUTIVO" }
+    "region": "ZN",
+    "referralCode": "joao-luiz-correa-de-brito-zn"
   }
 ]

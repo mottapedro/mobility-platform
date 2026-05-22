@@ -76,8 +76,14 @@ export class AuthController {
           });
 
           const driver = await tx.driver.create({
-            data: { userId: user.id, isActive: true, experienceLevel: "INICIANTE" },
-          });
+  data: {
+    userId: user.id,
+    isActive: true,
+    experienceLevel: "INICIANTE",
+
+    referredByDriverId: referrerDriverId,
+  },
+});
 
           if (referrerDriverId) {
             await createDriverReferralChain(driver.id, referrerDriverId, tx);

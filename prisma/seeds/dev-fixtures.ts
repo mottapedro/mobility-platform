@@ -19,13 +19,13 @@ export async function runDevFixtures() {
     where: { email: "ana.claudia@email.com" },
     update: {
       name: "Ana Cláudia Elias",
-      phone: "21999999999",
+      phone: "21974771788",
       role: "PASSENGER",
     },
     create: {
       name: "Ana Cláudia Elias",
       email: "ana.claudia@email.com",
-      phone: "21999999999",
+      phone: "21974771788",
       role: "PASSENGER",
       passwordHash,
     },

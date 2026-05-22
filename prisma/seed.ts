@@ -72,7 +72,7 @@ async function main() {
     {
       name: "João Luiz Correa de Brito",
       email: "jlcbrito@driver.com",
-      phone: "11999990004",
+      phone: "21994693673",
       experienceLevel: ExperienceLevel.PROFISSIONAL,
       vehicle: {
         model: "Logan",
@@ -310,7 +310,7 @@ async function main() {
       data: {
         name: "Ana Cláudia Elias",
         email: ANA_CLAUDIA_EMAIL,
-        phone: "21999999999",
+        phone: "21974771788",
         role: "PASSENGER",
         passwordHash: DEFAULT_PASSWORD_HASH,
       },
@@ -340,7 +340,7 @@ async function main() {
     .finally(async () => {
       await closeDevFixturesResources();
     });
-}
+
 
 runDevFixtures()
   .catch((error) => {

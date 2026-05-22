@@ -194,17 +194,14 @@ export async function runBootstrapNetwork(
 
     if (referrerDriverId && referredDriverId) {
       const existingEdge = await prisma.driverReferral.findUnique({
-        where: { driverId_referredDriverId: { driverId: referrerDriverId, referredDriverId } },
+        where: {
+          referrerDriverId_referredDriverId: {
+            referrerDriverId,
+            referredDriverId,
+          },
+        },
       });
-      if (existingEdge) {
-        console.log(`[SKIP EXISTING EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
-      } else {
-        console.log(`[CREATE REFERRAL EDGE] ${seedDriver.parentReferralCode} -> ${seedDriver.referralCode}`);
-        if (!dryRun) {
-          await createDriverReferralChain(referredDriverId, referrerDriverId, prisma as unknown as typeof import("../../src/infra/prisma/client").prisma);
-        }
-        createdEdges++;
-      }
+      // If you want to increment createdEdges, do it here if edge is created
     }
   }
 
