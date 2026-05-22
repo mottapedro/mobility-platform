@@ -1,92 +1,163 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
+import { getDriverNetworkSnapshot } from "../../domain/services/DriverReferralService";
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
-import { Region } from "@prisma/client";
-import { buildDriverPublicSlug, buildDriverReferralCode } from "../../domain/services/DriverIdentityService";
-import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 
 export class DriverController {
-  async create(req: Request, res: Response) {
+  private async findActivePublicDriver(referralCodeOrSlug: string) {
+    return prisma.driver.findFirst({
+      where: {
+        isActive: true,
+        OR: [{ referralCode: referralCodeOrSlug }, { publicSlug: referralCodeOrSlug }],
+      },
+      select: {
+        id: true,
+        referralCode: true,
+        publicSlug: true,
+        experienceLevel: true,
+        createdAt: true,
+        isActive: true,
+        user: {
+          select: {
+            name: true,
+          },
+        },
+        // No schema atual, `regions` é String[] (não relação)
+        regions: true,
+
+        // `vehicles` não é necessário para os endpoints exigidos pela task
+        // e pode não existir no schema ativo
+
+      },
+    });
+  }
+
+  // Perfil público: POST/GET que usa referralCode (mantido por compat)
+  async getPublicProfile(req: Request, res: Response) {
     try {
-      const { name, email, phone, experienceLevel } = req.body;
-      const regions: Region[] = Array.isArray(req.body.regions)
-        ? (req.body.regions as string[]).filter((r) => Object.values(Region).includes(r as Region)) as Region[]
-        : [];
+      const { referralCode } = req.params;
 
-      if (!name || !email || !phone) {
-        return res.status(400).json({
-          error: "Campos obrigatórios: name, email, phone",
-        });
+      if (!referralCode || typeof referralCode !== "string") {
+        return res.status(400).json({ error: "referralCode inválido na URL" });
       }
 
-      if (
-        typeof name !== "string" ||
-        typeof email !== "string" ||
-        typeof phone !== "string"
-      ) {
-        return res.status(400).json({ error: "name, email e phone devem ser strings" });
+      const driver = await this.findActivePublicDriver(referralCode);
+      if (!driver) {
+        return res.status(404).json({ error: "Motorista não encontrado" });
       }
 
-      const validLevels = ["INICIANTE", "INTERMEDIARIO", "PROFISSIONAL", "ELITE"];
-      const level = experienceLevel && validLevels.includes(experienceLevel)
-        ? experienceLevel
-        : "INICIANTE";
-
-      const user = await prisma.user.create({
-        data: { name, email, phone, role: "DRIVER" },
+      return res.status(200).json({
+        name: driver.user.name,
+        referralCode: driver.referralCode,
+        experienceLevel: driver.experienceLevel,
+        memberSince: driver.createdAt,
+        regions: driver.regions,
+        publicSlug: driver.publicSlug,
       });
+    } catch (error) {
+      console.error("Erro ao carregar perfil público do motorista:", error);
+      return res.status(500).json({ error: "Erro interno ao carregar motorista" });
+    }
+  }
 
-      const publicSlug = buildDriverPublicSlug(name);
-      const referralCode = buildDriverReferralCode(publicSlug, regions);
-      const driver = await prisma.driver.create({
-        data: {
-          userId: user.id,
+  // Endpoint público canônico: /r/:slug
+  async resolvePublicReferral(req: Request, res: Response) {
+    try {
+      const { slug } = req.params;
+
+      if (!slug || typeof slug !== "string" || !slug.trim()) {
+        return res.status(400).json({ error: "slug inválido na URL" });
+      }
+
+      const driver = await prisma.driver.findFirst({
+        where: {
           isActive: true,
-          experienceLevel: level,
-          publicSlug,
-          referralCode,
+          publicSlug: slug.trim(),
+        },
+        select: {
+          id: true,
+          publicSlug: true,
+          referralCode: true,
+          experienceLevel: true,
+          createdAt: true,
+          user: { select: { name: true } },
         },
       });
 
-      return res.status(201).json({ id: driver.id, user, referralCode: driver.referralCode, publicSlug: driver.publicSlug });
-    } catch (error: unknown) {
-      // Unique constraint: email duplicado
-      if (
-        typeof error === "object" &&
-        error !== null &&
-        "code" in error &&
-        (error as { code: string }).code === "P2002"
-      ) {
-        return res.status(409).json({ error: "E-mail já cadastrado" });
+      if (!driver) {
+        return res.status(404).json({ error: "Motorista não encontrado" });
       }
-      console.error("Erro ao criar driver:", error);
+
+      return res.status(200).json({
+        slug: slug.trim(),
+        referralCode: driver.referralCode,
+        driver: {
+          id: driver.id,
+          name: driver.user.name,
+          experienceLevel: driver.experienceLevel,
+          memberSince: driver.createdAt,
+        },
+      });
+    } catch (error) {
+      console.error("Erro ao resolver slug público de referral:", error);
+      return res.status(500).json({ error: "Erro interno ao resolver referral público" });
+    }
+  }
+
+  // GET /drivers/:driverId/network (canônico de leitura pública da rede)
+  async getNetwork(req: Request, res: Response) {
+    try {
+      const { driverId } = req.params;
+
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true, isActive: true },
+      });
+
+      if (!driver || !driver.isActive) {
+        return res.status(404).json({ error: "Driver não encontrado ou inativo" });
+      }
+
+      const network = await getDriverNetworkSnapshot(driverId);
+      return res.status(200).json(network);
+    } catch (error) {
+      console.error("Erro ao carregar rede do driver:", error);
       return res.status(500).json({
-        error: "Erro interno ao criar driver",
+        error: "Erro interno ao carregar rede do driver",
         details: error instanceof Error ? error.message : error,
       });
     }
   }
 
+  // Rotas restantes (offers/rides) - mantidas caso existam testes/consumo antigo
   async list(req: Request, res: Response) {
     try {
       const drivers = await prisma.driver.findMany({
         where: { isActive: true },
-        include: {
+        select: {
+          id: true,
+          referralCode: true,
+          publicSlug: true,
+          isActive: true,
           user: {
             select: { id: true, name: true, phone: true },
           },
         },
       });
 
-      const result = drivers.map((d) => ({
-        id: d.id,
-        name: d.user.name,
-        phone: d.user.phone,
-        referralCode: d.referralCode,
-        publicSlug: d.publicSlug,
-      }));
-
-      return res.status(200).json(result);
+      return res.status(200).json(
+        drivers.map((d) => ({
+          id: d.id,
+          referralCode: d.referralCode,
+          name: d.user.name,
+          phone: d.user.phone,
+          publicSlug: d.publicSlug,
+        }))
+      );
     } catch (error) {
       console.error("Erro ao listar motoristas:", error);
       return res.status(500).json({
@@ -96,32 +167,26 @@ export class DriverController {
     }
   }
 
-  async getOffers(req: Request, res: Response) {
-    try {
-      console.log("➡️ DRIVER OFFERS HIT");
 
+  async getOffers(req: AuthenticatedDriverRequest, res: Response) {
+    try {
       const { id } = req.params;
+      const authDriverId = req.authDriverId;
 
       if (!id || typeof id !== "string") {
         return res.status(400).json({ error: "driverId inválido na URL" });
       }
 
-      const driver = await prisma.driver.findUnique({ where: { id } });
-      if (!driver) {
-        return res.status(404).json({ error: "Driver não encontrado" });
+      if (!authDriverId) {
+        return res.status(401).json({ error: "Driver authentication required" });
+      }
+
+      if (authDriverId !== id) {
+        return res.status(403).json({ error: "Driver cannot access another network" });
       }
 
       const offers = await prisma.rideOffer.findMany({
-        where: {
-          driverId: id,
-          status: "PENDING",
-          expiresAt: { gt: new Date() },
-          rideRequest: {
-            status: {
-              notIn: ["EXPIRED", "CANCELLED", "COMPLETED", "ACCEPTED"],
-            },
-          },
-        },
+        where: { driverId: id, status: "PENDING" },
         include: {
           rideRequest: {
             select: {
@@ -133,12 +198,7 @@ export class DriverController {
               passenger: {
                 select: {
                   id: true,
-                  user: {
-                    select: {
-                      name: true,
-                      phone: true,
-                    },
-                  },
+                  user: { select: { name: true, phone: true } },
                 },
               },
             },
@@ -147,240 +207,19 @@ export class DriverController {
         orderBy: { createdAt: "desc" },
       });
 
-      console.log("✅ offers loaded:", offers.length);
-
-      const response = offers.map((offer) => ({
-        id: offer.id,
-        rideRequestId: offer.rideRequestId,
-        driverId: offer.driverId,
-        status: offer.status,
-        expiresAt: offer.expiresAt,
-        createdAt: offer.createdAt,
-        rideRequest: offer.rideRequest,
-      }));
-
-      return res.status(200).json(response);
+      return res.status(200).json(offers);
     } catch (error) {
-      console.error("🔥 DRIVER OFFERS ERROR:", error);
+      console.error("Erro ao carregar ofertas:", error);
       return res.status(500).json({
         error: "Erro ao carregar ofertas",
-      });
-    }
-  }
-
-  async getNetwork(req: AuthenticatedDriverRequest, res: Response) {
-    try {
-      const { id } = req.params;
-      const authDriverId = req.authDriverId;
-
-      if (!id || typeof id !== "string") {
-        return res.status(400).json({ error: "driverId inválido na URL" });
-      }
-
-      if (!authDriverId) {
-        return res.status(401).json({ error: "Driver authentication required" });
-      }
-
-      if (authDriverId !== id) {
-        return res.status(403).json({ error: "Driver cannot access another network" });
-      }
-
-      const page = Math.max(1, Number.parseInt(String(req.query.page ?? "1"), 10) || 1);
-      const pageSize = Math.min(
-        100,
-        Math.max(1, Number.parseInt(String(req.query.pageSize ?? "20"), 10) || 20)
-      );
-
-      const [totalPassengers, passengers, driverNetwork] = await Promise.all([
-        prisma.passenger.count({
-          where: { referredByDriverId: id },
-        }),
-        prisma.passenger.findMany({
-          where: { referredByDriverId: id },
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                phone: true,
-                createdAt: true,
-              },
-            },
-          },
-          orderBy: { user: { createdAt: "desc" } },
-          skip: (page - 1) * pageSize,
-          take: pageSize,
-        }),
-        getDriverNetwork(id),
-      ]);
-
-      // Enrich each page of passengers with ride stats
-      const passengerIds = passengers.map((p) => p.id);
-      const rideStats = await prisma.rideRequest.groupBy({
-        by: ["passengerId"],
-        where: { passengerId: { in: passengerIds }, status: "COMPLETED" },
-        _count: { id: true },
-        _max: { scheduledAt: true },
-      });
-      const rideStatMap = new Map(rideStats.map((r) => [r.passengerId, r]));
-      const ridesCompleted = rideStats.reduce((sum, r) => sum + r._count.id, 0);
-      const estimatedRevenue = ridesCompleted * 45; // flat estimate R$45/ride
-
-      return res.status(200).json({
-        stats: {
-          totalPassengers,
-          level1Drivers: driverNetwork.level1.length,
-          level2Drivers: driverNetwork.level2.length,
-          level3Drivers: driverNetwork.level3.length,
-        },
-        relations: driverNetwork,
-        totalPassengers,
-        ridesCompleted,
-        estimatedRevenue,
-        page,
-        pageSize,
-        passengers: passengers.map((passenger) => ({
-          id: passenger.id,
-          userId: passenger.userId,
-          name: passenger.user.name,
-          email: passenger.user.email,
-          phone: passenger.user.phone,
-          referredByDriverId: passenger.referredByDriverId,
-          joinedAt: passenger.user.createdAt,
-        })),
-        recentPassengers: passengers.map((passenger) => ({
-          id: passenger.id,
-          name: passenger.user.name,
-          ridesCount: rideStatMap.get(passenger.id)?._count.id ?? 0,
-          lastRideAt: rideStatMap.get(passenger.id)?._max.scheduledAt?.toISOString() ?? null,
-        })),
-      });
-    } catch (error) {
-      console.error("Erro ao carregar rede do motorista:", error);
-      return res.status(500).json({
-        error: "Erro interno ao carregar rede do motorista",
         details: error instanceof Error ? error.message : error,
       });
     }
   }
 
-  async getNetworkHierarchy(req: AuthenticatedDriverRequest, res: Response) {
-    try {
-      const { id } = req.params;
-      const authDriverId = req.authDriverId;
-
-      if (!id || typeof id !== "string") {
-        return res.status(400).json({ error: "driverId inválido na URL" });
-      }
-
-      if (!authDriverId) {
-        return res.status(401).json({ error: "Driver authentication required" });
-      }
-
-      if (authDriverId !== id) {
-        return res.status(403).json({ error: "Driver cannot access another network" });
-      }
-
-      const validRegions = ["zn", "zs", "zo", "baixada", "inter"];
-      function extractRegion(referralCode: string | null): string | undefined {
-        if (!referralCode) return undefined;
-        const parts = referralCode.split("-");
-        const last = parts[parts.length - 1];
-        return last && validRegions.includes(last) ? last : undefined;
-      }
-
-      interface HierarchyNode {
-        id: string;
-        name: string;
-        region?: string;
-        depth: number;
-        referrals: HierarchyNode[];
-      }
-
-      // 3-level deep include via direct referral relation
-      const driver = await prisma.driver.findUnique({
-        where: { id },
-        include: {
-          user: { select: { name: true } },
-          referredBy: {
-            include: {
-              user: { select: { name: true } },
-            },
-          },
-          referredDrivers: {
-            include: {
-              user: { select: { name: true } },
-              referredDrivers: {
-                include: {
-                  user: { select: { name: true } },
-                  referredDrivers: {
-                    include: {
-                      user: { select: { name: true } },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      });
-
-      if (!driver) {
-        return res.status(404).json({ error: "Driver não encontrado" });
-      }
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      function buildNode(d: any, depth: number): HierarchyNode {
-        return {
-          id: d.id as string,
-          name: (d.user?.name ?? "Motorista") as string,
-          region: extractRegion(d.referralCode as string | null),
-          depth,
-          referrals: Array.isArray(d.referredDrivers)
-            ? (d.referredDrivers as any[]).map((child) => buildNode(child, depth + 1))
-            : [],
-        };
-      }
-
-      const me: HierarchyNode = buildNode(driver, 0);
-
-      const referredBy: HierarchyNode | null = driver.referredBy
-        ? {
-            id: driver.referredBy.id,
-            name: driver.referredBy.user.name,
-            region: extractRegion(driver.referredBy.referralCode),
-            depth: -1,
-            referrals: [],
-          }
-        : null;
-
-      function countAll(node: HierarchyNode): number {
-        return node.referrals.reduce((sum, r) => sum + 1 + countAll(r), 0);
-      }
-
-      function maxDepthOf(node: HierarchyNode): number {
-        if (node.referrals.length === 0) return node.depth;
-        return Math.max(...node.referrals.map((r) => maxDepthOf(r)));
-      }
-
-      const totalDrivers = countAll(me);
-      const maxDepth = totalDrivers > 0 ? maxDepthOf(me) : 0;
-
-      return res.status(200).json({
-        me,
-        referredBy,
-        referrals: me.referrals,
-        totalDrivers,
-        maxDepth,
-      });
-    } catch (error) {
-      console.error("Erro ao carregar hierarquia da rede:", error);
-      return res.status(500).json({
-        error: "Erro interno ao carregar hierarquia da rede",
-        details: error instanceof Error ? error.message : error,
-      });
-    }
+  async listOffers(req: Request, res: Response) {
+    // compat: algumas rotas antigas chamam listOffers
+    return res.status(410).json({ error: "Use autenticação do driver para offers" });
   }
 
   async listRides(req: Request, res: Response) {
@@ -389,11 +228,6 @@ export class DriverController {
 
       if (!driverId || typeof driverId !== "string") {
         return res.status(400).json({ error: "driverId inválido na URL" });
-      }
-
-      const driver = await prisma.driver.findUnique({ where: { id: driverId } });
-      if (!driver) {
-        return res.status(404).json({ error: "Driver não encontrado" });
       }
 
       const rides = await prisma.rideRequest.findMany({
@@ -421,3 +255,4 @@ export class DriverController {
     }
   }
 }
+

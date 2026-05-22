@@ -64,12 +64,14 @@ describe("createDriverReferralChain", () => {
     expect(level2!.level).toBe(2);
   });
 
-  it("herda nível 3 e NÃO cria nível 4", async () => {
+  it("herda até nível 5 e NÃO cria nível 6", async () => {
     const driverA = await createDriver("a3@ref.com");
     const driverB = await createDriver("b3@ref.com");
     const driverC = await createDriver("c3@ref.com");
     const driverD = await createDriver("d3@ref.com");
     const driverE = await createDriver("e3@ref.com");
+    const driverF = await createDriver("f3@ref.com");
+    const driverG = await createDriver("g3@ref.com");
 
     await createDriverReferralChain(driverB.id, driverA.id);
     await createDriverReferralChain(driverC.id, driverB.id);
@@ -80,12 +82,26 @@ describe("createDriverReferralChain", () => {
     });
     expect(level3!.level).toBe(3);
 
-    await createDriverReferralChain(driverE.id, driverD.id); // A→E would be level 4 — must NOT exist
+    await createDriverReferralChain(driverE.id, driverD.id); // A→E level 4
+    await createDriverReferralChain(driverF.id, driverE.id); // A→F level 5
+    await createDriverReferralChain(driverG.id, driverF.id); // A→G would be level 6 — must NOT exist
 
     const level4 = await prisma.driverReferral.findFirst({
       where: { driverId: driverA.id, referredDriverId: driverE.id },
     });
-    expect(level4).toBeNull();
+    expect(level4).not.toBeNull();
+    expect(level4!.level).toBe(4);
+
+    const level5 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverF.id },
+    });
+    expect(level5).not.toBeNull();
+    expect(level5!.level).toBe(5);
+
+    const level6 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverG.id },
+    });
+    expect(level6).toBeNull();
   });
 
   it("não cria duplicidade quando chamado duas vezes", async () => {

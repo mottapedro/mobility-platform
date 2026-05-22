@@ -35,6 +35,7 @@ describe("POST /auth/login", () => {
     expect(res.status).toBe(200);
     expect(res.body.user.email).toBe(TEST_EMAIL);
     expect(res.body.driverId).toBeDefined();
+    expect(res.body.referralCode).toBeDefined();
   });
 
   it("❌ returns 401 on wrong password", async () => {
