@@ -27,16 +27,21 @@ describe("Global CORS", () => {
       },
     });
 
+    const passengerUser = await prisma.user.create({
+      data: {
+        name: "CORS Passenger",
+        email: "cors-passenger@test.com",
+        phone: "11999990002",
+        role: "PASSENGER",
+      },
+    });
+
+    const slug = `cors-passenger-${Date.now()}`;
     const passenger = await prisma.passenger.create({
       data: {
-        user: {
-          create: {
-            name: "CORS Passenger",
-            email: "cors-passenger@test.com",
-            phone: "11999990002",
-            role: "PASSENGER",
-          },
-        },
+        referralCode: slug,
+        publicSlug: slug,
+        userId: passengerUser.id,
       },
       include: {
         user: true,

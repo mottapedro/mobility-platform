@@ -6,11 +6,14 @@ const router = Router();
 const controller = new DriverController();
 
 // POST /drivers (legado: se controller.create não existir, rota não é usada nos testes atuais)
-router.post("/", (req, res) => res.status(410).json({ error: "Legacy endpoint" }));
+router.post("/", (req, res) => res.status(410).json({ error: "Cadastro com referral deve usar POST /auth/register" }));
 
 
 // GET /drivers
 router.get("/", (req, res) => controller.list(req, res));
+
+// GET /drivers/:driverId/network/hierarchy — driver + tree (must be registered before /:driverId/network)
+router.get("/:driverId/network/hierarchy", (req, res) => controller.getNetworkHierarchy(req, res));
 
 // GET /drivers/:driverId/network — nós por nível + métricas de indicação (canônico)
 router.get("/:driverId/network", (req, res) => controller.getNetwork(req, res));

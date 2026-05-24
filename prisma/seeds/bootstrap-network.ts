@@ -7,19 +7,37 @@ import { createDriverReferralChain } from "../../src/domain/services/DriverRefer
 type SeedDriver = {
   name: string;
   email: string;
-  phone: string;
+  phone?: string;
   referralCode: string;
   publicSlug: string;
   parentReferralCode?: string;
-  experienceLevel: ExperienceLevel;
-  regions: string[];
-  vehicle: {
+  experienceLevel?: ExperienceLevel;
+  region?: string;
+  regions?: string[];
+  vehicle?: {
     model: string;
     brand: string;
     plate: string;
     category: VehicleCategory;
   };
 };
+
+const REGION_CODE_MAP: Record<string, string> = {
+  ZN: "Zona Norte",
+  ZS: "Zona Sul",
+  ZL: "Zona Leste",
+  ZO: "Zona Oeste",
+  CN: "Centro",
+  BC: "Barra da Tijuca",
+  NI: "Niterói",
+  SG: "São Gonçalo",
+};
+
+function resolveRegions(seed: SeedDriver): string[] {
+  if (seed.regions && seed.regions.length > 0) return seed.regions;
+  if (seed.region) return [REGION_CODE_MAP[seed.region] ?? seed.region];
+  return [];
+}
 
 function loadDriverNetwork(): SeedDriver[] {
   const content = fs.readFileSync(
@@ -70,7 +88,7 @@ export async function runBootstrapNetwork(
         data: {
           name: seedDriver.name,
           email: seedDriver.email,
-          phone: seedDriver.phone,
+          phone: seedDriver.phone ?? "00000000000",
           role: "DRIVER",
           passwordHash,
         },
@@ -84,7 +102,7 @@ export async function runBootstrapNetwork(
           // Preserve live fields — only fill null/missing values
           const existing = existingDriverByReferralCode;
           const existingRegions = new Set(existing.regions);
-          const missingRegions = seedDriver.regions.filter((r) => !existingRegions.has(r));
+          const missingRegions = resolveRegions(seedDriver).filter((r) => !existingRegions.has(r));
           const mergedRegions =
             missingRegions.length > 0
               ? [...existing.regions, ...missingRegions]
@@ -121,7 +139,7 @@ export async function runBootstrapNetwork(
           if (existingByUserId) {
             // Driver exists with a different referralCode — preserve live fields
             const existingRegions = new Set(existingByUserId.regions);
-            const missingRegions = seedDriver.regions.filter((r) => !existingRegions.has(r));
+            const missingRegions = resolveRegions(seedDriver).filter((r) => !existingRegions.has(r));
             const mergedRegions =
               missingRegions.length > 0
                 ? [...existingByUserId.regions, ...missingRegions]
@@ -151,19 +169,19 @@ export async function runBootstrapNetwork(
             data: {
               userId: user.id,
               isActive: true,
-              experienceLevel: seedDriver.experienceLevel,
+              experienceLevel: seedDriver.experienceLevel ?? "PROFISSIONAL",
               referredByDriverId: referrerDriverId,
               networkLevel,
               publicSlug: seedDriver.publicSlug,
               referralCode: seedDriver.referralCode,
-              regions: seedDriver.regions,
+              regions: resolveRegions(seedDriver),
             },
           });
         })();
 
     driversByReferralCode.set(seedDriver.referralCode, driver.id);
 
-    if (!dryRun) {
+    if (!dryRun && seedDriver.vehicle) {
       await prisma.vehicle.upsert({
         where: { plate: seedDriver.vehicle.plate },
         update: {
@@ -184,26 +202,22 @@ export async function runBootstrapNetwork(
     }
   }
 
+  // Pass 2: materialize the full multi-level referral chain.
+  // `getDriverNetworkSnapshot()` expects `driverReferral` edges already stored with correct `level` values
+  // relative to each upstream referrer.
   for (const seedDriver of driverNetwork) {
-    if (!seedDriver.parentReferralCode) {
-      continue;
-    }
+    if (!seedDriver.parentReferralCode) continue;
 
     const referrerDriverId = driversByReferralCode.get(seedDriver.parentReferralCode);
     const referredDriverId = driversByReferralCode.get(seedDriver.referralCode);
 
-    if (referrerDriverId && referredDriverId) {
-      const existingEdge = await prisma.driverReferral.findUnique({
-        where: {
-          referrerDriverId_referredDriverId: {
-            referrerDriverId,
-            referredDriverId,
-          },
-        },
-      });
-      // If you want to increment createdEdges, do it here if edge is created
-    }
+    if (!referrerDriverId || !referredDriverId) continue;
+
+    if (dryRun) continue;
+
+    await createDriverReferralChain(referredDriverId, referrerDriverId, prisma);
   }
+
 
   console.log("\n✅ Bootstrap complete.");
   console.log(`✅ ${driversByReferralCode.size} drivers upserted.`);

@@ -13,8 +13,11 @@ jest.setTimeout(15000);
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async function createPassenger(email: string) {
+  const slug = `pref-${email.replace(/[@.]/g, "-")}-${Date.now()}`;
   return prisma.passenger.create({
     data: {
+      referralCode: slug,
+      publicSlug: slug,
       user: {
         create: {
           name: email,

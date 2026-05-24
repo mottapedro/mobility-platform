@@ -26,21 +26,24 @@ async function validateNetwork() {
   const edges = await prisma.driverReferral.findMany({
     select: {
       level: true,
-      driver: { select: { user: { select: { name: true } } } },
+      isDirect: true,
+      referrer: { select: { user: { select: { name: true } } } },
       referred: { select: { user: { select: { name: true } } } },
     },
-    orderBy: [{ level: "asc" }],
+    orderBy: [{ level: "asc" }, { referrer: { user: { name: "asc" } } }],
   });
 
   console.log(`\n=== REFERRAL EDGES (${edges.length}) ===`);
   for (const e of edges) {
-    const referrer = e.driver.user.name;
+    const referrer = e.referrer.user.name;
     const referred = e.referred.user.name;
-    console.log(`  L${e.level} | ${referrer} -> ${referred}`);
+    const flag = e.isDirect ? "DIRECT" : "INHERITED";
+    console.log(`  L${e.level} [${flag}] | ${referrer} -> ${referred}`);
   }
 
-  const directEdges = edges.filter((e) => e.level === 1).length;
-  console.log(`\n✅ ${drivers.length} drivers | ${directEdges} direct edges | ${edges.length} total edges`);
+  const directEdges = edges.filter((e) => e.isDirect).length;
+  const maxLevel = edges.reduce((m, e) => Math.max(m, e.level), 0);
+  console.log(`\n✅ ${drivers.length} drivers | ${directEdges} direct edges | ${edges.length} total edges | maxLevel=${maxLevel}`);
 }
 
 validateNetwork()

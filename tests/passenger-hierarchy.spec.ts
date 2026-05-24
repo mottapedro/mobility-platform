@@ -5,9 +5,14 @@ import { createPassengerReferral } from "../src/domain/services/PassengerReferra
 
 jest.setTimeout(15000);
 
+import { randomBytes } from "crypto";
+
 async function createPassenger(email: string, name = email) {
+  const tmpSlug = `p-${randomBytes(8).toString("hex")}`;
   return prisma.passenger.create({
     data: {
+      referralCode: tmpSlug,
+      publicSlug: tmpSlug,
       user: {
         create: {
           name,

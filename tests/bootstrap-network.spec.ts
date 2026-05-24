@@ -82,7 +82,7 @@ describe("runBootstrapNetwork", () => {
     expect(reloadedDriver.experienceLevel).toBe("ELITE");
 
     // Missing regions from the seed should be added
-    expect(reloadedDriver.regions).toContain("Zona Oeste");
+    expect(reloadedDriver.regions).toContain("Zona Norte");
   });
 
   it("links referredByDriverId when a valid referral code is provided", async () => {
@@ -111,7 +111,7 @@ describe("runBootstrapNetwork", () => {
       name: "Alice Referral",
       email: "alice-referral@test.com",
       password: "123456",
-      role: "PASSENGER",
+      role: "passenger",
       phone: "21999999998",
       referralCode: driver.referralCode,
     });
@@ -119,11 +119,11 @@ describe("runBootstrapNetwork", () => {
   console.log("REGISTER RESPONSE:", response.status, response.body);
 
   expect(response.status).toBe(201);
-  expect(response.body.passenger).toBeDefined();
+  expect(response.body.passengerId).toBeDefined();
 
   const passenger = await prisma.passenger.findUnique({
     where: {
-      id: response.body.passenger.id,
+      id: response.body.passengerId,
     },
   });
 

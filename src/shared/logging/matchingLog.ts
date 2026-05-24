@@ -7,7 +7,14 @@ export type MatchingLogEvent = {
     | "candidate_stage_built"
     | "offers_prepared"
     | "fallback_triggered"
-    | "matching_finished";
+    | "matching_finished"
+    // Acceptance policy events
+    | "OFFER_CREATED"
+    | "OFFER_EXPIRED"
+    | "OFFER_REJECTED"
+    | "OFFER_REDISTRIBUTED"
+    | "OPERATIONAL_CUTOFF_REACHED"
+    | "ACCEPTANCE_WINDOW_CALCULATED";
   stage?: MatchingLogStage;
   candidateDriverIds?: string[];
   excludedDriverIds?: string[];

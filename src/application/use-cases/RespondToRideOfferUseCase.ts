@@ -1,5 +1,7 @@
 ﻿import { prisma } from "../../infra/prisma/client";
 import { MatchRideUseCase } from "./MatchRideUseCase";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
 export class OfferResponseError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -65,6 +67,8 @@ export class RespondToRideOfferUseCase {
         where: { id: offer.rideRequestId },
         select: {
           status: true,
+          scheduledAt: true,
+          operationalCutoffAt: true,
           passenger: { select: { referredByDriverId: true } },
         },
       });
@@ -74,7 +78,27 @@ export class RespondToRideOfferUseCase {
         data: { status: "REJECTED", respondedAt: now },
       });
 
+      logMatchingEvent({
+        rideId: offer.rideRequestId,
+        event: "OFFER_REJECTED",
+        metadata: { driverId: offer.driverId },
+      });
       console.log("Driver " + offer.driverId + " rejeitou a corrida " + offer.rideRequestId);
+
+      // Check operational cutoff before redistribution.
+      const policy = AcceptancePolicyEngine.computePolicy(ride?.scheduledAt ?? null);
+      if (AcceptancePolicyEngine.isBeyondCutoff(new Date(), policy)) {
+        logMatchingEvent({
+          rideId: offer.rideRequestId,
+          event: "OPERATIONAL_CUTOFF_REACHED",
+          metadata: { operationalCutoffAt: policy.operationalCutoffAt?.toISOString() },
+        });
+        await prisma.rideRequest.update({
+          where: { id: offer.rideRequestId },
+          data: { status: "EXPIRED" },
+        });
+        return { accepted: false };
+      }
 
       const isWaitingReferral = ride?.status === "WAITING_REFERRAL";
       const isReferredDriver  = ride?.passenger?.referredByDriverId === offer.driverId;
@@ -92,6 +116,12 @@ export class RespondToRideOfferUseCase {
           excludedDriverIds: [offer.driverId],
         });
 
+        logMatchingEvent({
+          rideId: offer.rideRequestId,
+          event: "OFFER_REDISTRIBUTED",
+          metadata: { matched, fromLevel: "WAITING_REFERRAL" },
+        });
+
         if (!matched) {
           await prisma.rideRequest.update({
             where: { id: offer.rideRequestId },
@@ -106,6 +136,12 @@ export class RespondToRideOfferUseCase {
         if (pendingCount === 0) {
           const matchRide = new MatchRideUseCase();
           const { matched } = await matchRide.execute({ rideId: offer.rideRequestId });
+
+          logMatchingEvent({
+            rideId: offer.rideRequestId,
+            event: "OFFER_REDISTRIBUTED",
+            metadata: { matched },
+          });
 
           if (!matched) {
             await prisma.rideRequest.update({

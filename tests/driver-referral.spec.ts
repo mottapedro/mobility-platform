@@ -22,18 +22,19 @@ async function createDriver(email: string) {
 
 // ─── createDriverReferralChain ────────────────────────────────────────────
 describe("createDriverReferralChain", () => {
-  it("persists the direct parent edge using the rollout-safe driverId field", async () => {
+  it("persists the direct parent edge with referrerDriverId and isDirect=true", async () => {
     const driverA = await createDriver("direct-parent-a@ref.com");
     const driverB = await createDriver("direct-parent-b@ref.com");
 
     await createDriverReferralChain(driverB.id, driverA.id);
 
     const chain = await prisma.driverReferral.findFirst({
-      where: { driverId: driverA.id, referredDriverId: driverB.id },
+      where: { referrerDriverId: driverA.id, referredDriverId: driverB.id },
     });
 
     expect(chain).not.toBeNull();
     expect(chain!.level).toBe(1);
+    expect(chain!.isDirect).toBe(true);
   });
 
   it("cria vínculo level 1 entre referrer e novo driver", async () => {
@@ -43,10 +44,11 @@ describe("createDriverReferralChain", () => {
     await createDriverReferralChain(driverB.id, driverA.id);
 
     const chain = await prisma.driverReferral.findFirst({
-      where: { driverId: driverA.id, referredDriverId: driverB.id },
+      where: { referrerDriverId: driverA.id, referredDriverId: driverB.id },
     });
     expect(chain).not.toBeNull();
     expect(chain!.level).toBe(1);
+    expect(chain!.isDirect).toBe(true);
   });
 
   it("herda nível 2 quando referrer já tem um nível 1", async () => {
@@ -54,14 +56,15 @@ describe("createDriverReferralChain", () => {
     const driverB = await createDriver("b2@ref.com");
     const driverC = await createDriver("c2@ref.com");
 
-    await createDriverReferralChain(driverB.id, driverA.id); // A→B level 1
-    await createDriverReferralChain(driverC.id, driverB.id); // B→C, herda A→C level 2
+    await createDriverReferralChain(driverB.id, driverA.id); // A→B level 1 (direct)
+    await createDriverReferralChain(driverC.id, driverB.id); // B→C level 1 (direct), A→C level 2 (inherited)
 
     const level2 = await prisma.driverReferral.findFirst({
-      where: { driverId: driverA.id, referredDriverId: driverC.id },
+      where: { referrerDriverId: driverA.id, referredDriverId: driverC.id },
     });
     expect(level2).not.toBeNull();
     expect(level2!.level).toBe(2);
+    expect(level2!.isDirect).toBe(false);
   });
 
   it("herda até nível 5 e NÃO cria nível 6", async () => {
@@ -78,16 +81,17 @@ describe("createDriverReferralChain", () => {
     await createDriverReferralChain(driverD.id, driverC.id); // A→D level 3
 
     const level3 = await prisma.driverReferral.findFirst({
-      where: { driverId: driverA.id, referredDriverId: driverD.id },
+      where: { referrerDriverId: driverA.id, referredDriverId: driverD.id },
     });
     expect(level3!.level).toBe(3);
+    expect(level3!.isDirect).toBe(false);
 
     await createDriverReferralChain(driverE.id, driverD.id); // A→E level 4
     await createDriverReferralChain(driverF.id, driverE.id); // A→F level 5
     await createDriverReferralChain(driverG.id, driverF.id); // A→G would be level 6 — must NOT exist
 
     const level4 = await prisma.driverReferral.findFirst({
-      where: { driverId: driverA.id, referredDriverId: driverE.id },
+      where: { referrerDriverId: driverA.id, referredDriverId: driverE.id },
     });
     expect(level4).not.toBeNull();
     expect(level4!.level).toBe(4);
@@ -112,20 +116,22 @@ describe("createDriverReferralChain", () => {
     await createDriverReferralChain(driverB.id, driverA.id); // duplicata — deve ser ignorada
 
     const count = await prisma.driverReferral.count({
-      where: { driverId: driverA.id, referredDriverId: driverB.id },
+      where: { referrerDriverId: driverA.id, referredDriverId: driverB.id },
     });
     expect(count).toBe(1);
   });
 
-  it("não cria self-referral", async () => {
+  it("não cria self-referral — lança ReferralChainError", async () => {
     const driverA = await createDriver("self@ref.com");
 
-    await createDriverReferralChain(driverA.id, driverA.id);
+    await expect(
+      createDriverReferralChain(driverA.id, driverA.id)
+    ).rejects.toThrow("autoindicação");
 
-    const self = await prisma.driverReferral.findFirst({
-      where: { driverId: driverA.id, referredDriverId: driverA.id },
+    const count = await prisma.driverReferral.count({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverA.id },
     });
-    expect(self).toBeNull();
+    expect(count).toBe(0);
   });
 });
 

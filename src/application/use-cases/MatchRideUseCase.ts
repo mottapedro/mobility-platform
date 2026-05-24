@@ -5,11 +5,13 @@ import { MatchingCandidate, MatchingPriorityEngine } from "../../domain/services
 import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 import { RegionResolver } from "../../domain/services/RegionResolver";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 
 export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
 
 // Tempo de exclusividade do motorista indicado antes do fallback para MATCHING geral
-const REFERRAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos
+// For scheduled rides this is overridden dynamically by AcceptancePolicyEngine.
+const REFERRAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos (immediate rides)
 const pendingReferralFallbacks = new Set<NodeJS.Timeout>();
 
 export function clearPendingReferralFallbacks() {
@@ -239,6 +241,43 @@ export class MatchRideUseCase {
     const rideContext = (ride.context ?? null) as RideContext | null;
     const priority = calculatePriority(rideContext);
 
+    // Acceptance policy: compute offer TTL and cutoff from ride data.
+    const policy = AcceptancePolicyEngine.computePolicy(
+      ride.scheduledAt ?? null
+    );
+    const now = new Date();
+
+    // Operational cutoff guard: if the redistribution deadline has passed, expire immediately.
+    if (AcceptancePolicyEngine.isBeyondCutoff(now, policy)) {
+      logMatchingEvent({
+        rideId,
+        event: "OPERATIONAL_CUTOFF_REACHED",
+        metadata: {
+          operationalCutoffAt: policy.operationalCutoffAt?.toISOString(),
+          rideStatus: ride.status,
+        },
+      });
+      await prisma.rideRequest.update({
+        where: { id: rideId },
+        data: { status: "EXPIRED" },
+      });
+      return { matched: false, level: "GENERAL" };
+    }
+
+    const expiresAt = AcceptancePolicyEngine.computeOfferExpiry(now, policy);
+    const referralWindowMs = policy.referralWindowMs;
+
+    logMatchingEvent({
+      rideId,
+      event: "ACCEPTANCE_WINDOW_CALCULATED",
+      metadata: {
+        isScheduled: policy.isScheduled,
+        operationalCutoffAt: policy.operationalCutoffAt?.toISOString() ?? null,
+        offerExpiresAt: expiresAt.toISOString(),
+        referralWindowMs,
+      },
+    });
+
     // 2. Derivar nível se não fornecido
     const level = input.level ?? (await this.deriveLevel(rideId, referredDriverId));
 
@@ -260,7 +299,7 @@ export class MatchRideUseCase {
       ...excludedDriverIds,
     ]);
 
-    const expiresAt = new Date(Date.now() + 2 * 60 * 1000);
+    // expiresAt and referralWindowMs now come from AcceptancePolicyEngine (computed above).
 
     // ── Tier 1: REFERRED ─────────────────────────────────────────────────────
     if (level === "REFERRED") {
@@ -290,14 +329,21 @@ export class MatchRideUseCase {
       await this.createOffer(rideId, referredDriverId, expiresAt);
       logMatchingEvent({
         rideId,
+        event: "OFFER_CREATED",
+        stage: "REFERRAL_DIRECT",
+        candidateDriverIds: [referredDriverId],
+        metadata: { expiresAt: expiresAt.toISOString() },
+      });
+      logMatchingEvent({
+        rideId,
         event: "offers_prepared",
         stage: "REFERRAL_DIRECT",
         candidateDriverIds: [referredDriverId],
         excludedDriverIds,
-        metadata: { timeoutSeconds: REFERRAL_TIMEOUT_MS / 1000 },
+        metadata: { timeoutSeconds: referralWindowMs / 1000 },
       });
 
-      // Timeout: se ainda WAITING_REFERRAL após REFERRAL_TIMEOUT_MS → escalar para rede antes do pool geral
+      // Timeout: if still WAITING_REFERRAL after referralWindowMs → escalate
       const timeoutHandle = setTimeout(async () => {
         try {
           // Atomic check-and-update: only proceeds if status is still WAITING_REFERRAL
@@ -332,7 +378,7 @@ export class MatchRideUseCase {
         } finally {
           pendingReferralFallbacks.delete(timeoutHandle);
         }
-      }, REFERRAL_TIMEOUT_MS);
+      }, referralWindowMs);
 
       timeoutHandle.unref?.();
       pendingReferralFallbacks.add(timeoutHandle);

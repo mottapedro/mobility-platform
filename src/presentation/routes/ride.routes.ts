@@ -1,6 +1,8 @@
 import { Router } from "express";
+import { randomBytes } from "crypto";
 import { RideController } from "../controllers/ride.controller";
 import { prisma } from "../../infra/prisma/client";
+import { assignPassengerIdentity } from "../../domain/services/PassengerReferralService";
 
 const router = Router();
 const controller = new RideController();
@@ -44,8 +46,12 @@ router.post("/passengers", async (req, res) => {
       }
     }
 
+    const tmpSlug = `p-${randomBytes(8).toString("hex")}`;
+
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: tmpSlug,
+        publicSlug: tmpSlug,
         ...(referredByDriverId
           ? { referredByDriver: { connect: { id: referredByDriverId } } }
           : {}),
@@ -63,7 +69,14 @@ router.post("/passengers", async (req, res) => {
       },
     });
 
-    return res.status(201).json(passenger);
+    await assignPassengerIdentity(passenger.id, name).catch(() => {});
+
+    const updated = await prisma.passenger.findUniqueOrThrow({
+      where: { id: passenger.id },
+      include: { user: true },
+    });
+
+    return res.status(201).json(updated);
   } catch (error) {
     console.error("🔥 ERRO REAL PASSENGER:", error);
 

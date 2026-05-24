@@ -6,8 +6,11 @@ import { createPassengerReferral } from "../src/domain/services/PassengerReferra
 jest.setTimeout(15000);
 
 async function createPassenger(email: string) {
+  const slug = `pnet-${email.replace(/[@.]/g, "-")}-${Date.now()}`;
   return prisma.passenger.create({
     data: {
+      referralCode: slug,
+      publicSlug: slug,
       user: {
         create: {
           name: email,

@@ -12,6 +12,8 @@ export interface DriverNetworkNode {
 export interface DriverNetworkSnapshot {
   driverId: string;
   levels: Record<string, DriverNetworkNode[]>;
+  /** Flat convenience field = summary.referredPassengers.total */
+  totalPassengers: number;
   summary: {
     referredDrivers: {
       level1: number;
@@ -77,16 +79,18 @@ export async function createDriverReferralChain(
     throw new ReferralChainError("Código de referral inválido ou motorista inativo");
   }
 
-  const reverseEdge = await db.driverReferral.findFirst({
+  // Ciclo REAL: newDriver já tem referrerDriver na sua sub-rede (closure table completa é a source of truth).
+  // Se existe edge (newDriverId → referrerDriverId) em qualquer nível, adicionar o inverso cria ciclo.
+  const cycleEdge = await db.driverReferral.findFirst({
     where: {
-      referredDriverId: newDriverId,
-      referrerDriverId: referrerDriverId,
+      referrerDriverId: newDriverId,
+      referredDriverId: referrerDriverId,
     },
     select: { id: true },
   });
 
-  if (reverseEdge) {
-    console.warn("[Referral] ciclo detectado e bloqueado", { newDriverId, referrerDriverId });
+  if (cycleEdge) {
+    console.warn("[Referral] CYCLE_BLOCKED", { newDriverId, referrerDriverId });
     throw new ReferralChainError("Ciclo de referral detectado");
   }
 
@@ -94,19 +98,21 @@ export async function createDriverReferralChain(
     referrerDriverId: string;
     referredDriverId: string;
     level: number;
+    isDirect: boolean;
   }[] = [];
 
-  // Level 1: direct referrer → newDriver
+  // Level 1: edge direta — isDirect=true
   edgesToCreate.push({
     referrerDriverId: referrerDriverId,
     referredDriverId: newDriverId,
     level: 1,
+    isDirect: true,
   });
 
   // Inherited levels: find all referrals where the referrer is the referred party
   const parentReferrals = await db.driverReferral.findMany({
     where: {
-      referrerDriverId: referrerDriverId,
+      referredDriverId: referrerDriverId,
       level: { lt: REFERRAL_TREE_MAX_DEPTH },
     },
     select: {
@@ -120,16 +126,59 @@ export async function createDriverReferralChain(
     const inheritedLevel = parent.level + 1;
     if (inheritedLevel > REFERRAL_TREE_MAX_DEPTH) continue;
 
-    // prevent cycles: parent.referrerDriverId (um possível upstream) não pode virar newDriver
+    // Regra de materialização correta:
+    // se o upstream (pai) indicou `parent.referredDriverId` no `parent.level`,
+    // então para o novo nó devemos criar a aresta `parent.referredDriverId -> newDriver`.
+    // Isso preserva a cadeia real parent -> child e permite que o snapshot por referrerDriverId
+    // encontre level2/level3 corretamente.
+
+    // Evita edge auto-referencial nos herdados
     if (parent.referrerDriverId === newDriverId) continue;
 
+    // BUG FIX: usa parent.referrerDriverId (o ancestral real), não parent.referredDriverId.
+    // Exemplo: para edge {referrerDriverId=Pedro, referredDriverId=João, level=1},
+    // cria {referrerDriverId=Pedro, referredDriverId=Carlinhos, level=2, isDirect=false}
+    // e NÃO {referrerDriverId=João, referredDriverId=Carlinhos, level=2} (duplicata silenciosa).
     edgesToCreate.push({
       referrerDriverId: parent.referrerDriverId,
       referredDriverId: newDriverId,
       level: inheritedLevel,
+      isDirect: false,
     });
   }
 
+  const directEdge = edgesToCreate.find((e) => e.isDirect);
+  const inheritedEdges = edgesToCreate.filter((e) => !e.isDirect);
+
+  if (directEdge) {
+    console.info("[Referral] DIRECT_EDGE_CREATED", {
+      referrerDriverId: directEdge.referrerDriverId,
+      referredDriverId: directEdge.referredDriverId,
+      level: directEdge.level,
+    });
+  }
+
+  for (const edge of inheritedEdges) {
+    console.info("[Referral] INHERITED_EDGE_CREATED", {
+      referrerDriverId: edge.referrerDriverId,
+      referredDriverId: edge.referredDriverId,
+      level: edge.level,
+    });
+    console.info("[Referral] LEVEL_PROPAGATED", {
+      ancestorDriverId: edge.referrerDriverId,
+      newDriverId: edge.referredDriverId,
+      level: edge.level,
+    });
+  }
+
+  if (inheritedEdges.length > 0) {
+    console.info("[Referral] ANCESTRY_EXPANDED", {
+      newDriverId,
+      referrerDriverId,
+      ancestorsFound: inheritedEdges.length,
+      levels: inheritedEdges.map((e) => e.level),
+    });
+  }
 
   await db.driverReferral.createMany({
     data: edgesToCreate,
@@ -225,9 +274,12 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
   );
   const totalReferredDrivers = Object.values(referredDriversByLevel).reduce((total, count) => total + count, 0);
 
+  const totalPassengers = directPassengers + networkPassengers;
+
   return {
     driverId,
     levels,
+    totalPassengers,
     summary: {
       referredDrivers: {
         level1: referredDriversByLevel.level1 ?? 0,
@@ -242,7 +294,7 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
       referredPassengers: {
         direct: directPassengers,
         fromNetwork: networkPassengers,
-        total: directPassengers + networkPassengers,
+        total: totalPassengers,
       },
     },
   };

@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
 // ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
@@ -148,12 +150,15 @@ export class RideController {
         isLuggage: context.isLuggage ?? false,
       };
 
+      const policy = AcceptancePolicyEngine.computePolicy(date);
+
       const ride = await prisma.rideRequest.create({
         data: {
           passengerId,
           origin: originTrimmed,
           destination: destinationTrimmed,
           scheduledAt: date,
+          operationalCutoffAt: policy.operationalCutoffAt,
           status: initialStatus,
           distanceKm,
           durationMin,
@@ -171,6 +176,17 @@ export class RideController {
               user: true,
             },
           },
+        },
+      });
+
+      logMatchingEvent({
+        rideId: ride.id,
+        event: "ACCEPTANCE_WINDOW_CALCULATED",
+        metadata: {
+          isScheduled: policy.isScheduled,
+          operationalCutoffAt: policy.operationalCutoffAt?.toISOString() ?? null,
+          offerResponseTimeoutMs: policy.offerResponseTimeoutMs,
+          referralWindowMs: policy.referralWindowMs,
         },
       });
 

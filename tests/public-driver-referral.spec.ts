@@ -20,9 +20,7 @@ describe("Public driver referral flow", () => {
         isActive: true,
         experienceLevel: "PROFISSIONAL",
         referralCode: "pedro-publico",
-        regions: {
-          create: [{ region: "ZN" }],
-        },
+        regions: ["ZN"],
         vehicles: {
           create: [{ brand: "Chevrolet", model: "Onix", plate: "PUB1234", category: "CONFORTO" }],
         },
@@ -57,10 +55,11 @@ describe("Public driver referral flow", () => {
   });
 
   it("resolves canonical public route /r/:slug to a valid referralCode", async () => {
+    const ts = Date.now();
     const user = await prisma.user.create({
       data: {
         name: "Pedro Paulo Motta",
-        email: "pedro-slug@test.com",
+        email: `pedro-slug-${ts}@test.com`,
         phone: "11999990020",
         role: "DRIVER",
       },
@@ -71,16 +70,17 @@ describe("Public driver referral flow", () => {
         userId: user.id,
         isActive: true,
         experienceLevel: "PROFISSIONAL",
-        referralCode: "pedro-paulo-motta",
+        referralCode: `pedro-paulo-motta-${ts}`,
+        publicSlug: `pedro-paulo-motta-${ts}`,
       },
     });
 
-    const response = await request(app).get("/r/pedro-paulo-motta");
+    const response = await request(app).get(`/r/pedro-paulo-motta-${ts}`);
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
-      slug: "pedro-paulo-motta",
-      referralCode: "pedro-paulo-motta",
+      slug: `pedro-paulo-motta-${ts}`,
+      referralCode: `pedro-paulo-motta-${ts}`,
       driver: {
         id: expect.any(String),
         name: "Pedro Paulo Motta",

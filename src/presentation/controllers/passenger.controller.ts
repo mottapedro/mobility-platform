@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { randomBytes } from "crypto";
 import { prisma } from "../../infra/prisma/client";
 import {
   getPassengerNetwork,
@@ -35,8 +36,12 @@ export class PassengerController {
         }
       }
 
+      const tmpSlug = `p-${randomBytes(8).toString("hex")}`;
+
       const passenger = await prisma.passenger.create({
         data: {
+          referralCode: tmpSlug,
+          publicSlug: tmpSlug,
           user: {
             create: {
               name,

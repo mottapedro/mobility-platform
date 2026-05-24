@@ -1,8 +1,10 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
+import { randomBytes } from "crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain, ReferralChainError } from "../../domain/services/DriverReferralService";
+import { assignPassengerIdentity, createPassengerReferral } from "../../domain/services/PassengerReferralService";
 
 class HttpError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -45,6 +47,8 @@ export class AuthController {
 
       const passwordHash = await bcrypt.hash(password, 10);
 
+      let referrerPassengerIdOuter: string | null = null;
+
       const payload = await prisma.$transaction(async (tx) => {
         const existing = await tx.user.findUnique({ where: { email } });
         if (existing) {
@@ -52,6 +56,7 @@ export class AuthController {
         }
 
         let referrerDriverId: string | null = null;
+        let referrerPassengerId: string | null = null;
 
         if (referralCode !== undefined && referralCode !== null) {
           if (typeof referralCode !== "string" || !referralCode.trim()) {
@@ -63,11 +68,19 @@ export class AuthController {
             select: { id: true, isActive: true },
           });
 
-          if (!driver || !driver.isActive) {
-            throw new HttpError(400, "Código de referral inválido ou motorista inativo");
+          if (driver && driver.isActive) {
+            referrerDriverId = driver.id;
+          } else {
+            // Try passenger referral code (passenger-to-passenger referral)
+            const referrerPassenger = await tx.passenger.findFirst({
+              where: { referralCode: referralCode.trim() },
+              select: { id: true },
+            });
+            if (!referrerPassenger) {
+              throw new HttpError(400, "Código de referral inválido ou motorista inativo");
+            }
+            referrerPassengerId = referrerPassenger.id;
           }
-
-          referrerDriverId = driver.id;
         }
 
         if (role === "driver") {
@@ -76,14 +89,14 @@ export class AuthController {
           });
 
           const driver = await tx.driver.create({
-  data: {
-    userId: user.id,
-    isActive: true,
-    experienceLevel: "INICIANTE",
-
-    referredByDriverId: referrerDriverId,
-  },
-});
+            data: {
+              userId: user.id,
+              isActive: true,
+              experienceLevel: "INICIANTE",
+              regions: ["ZN"],
+              referredByDriverId: referrerDriverId,
+            },
+          });
 
           if (referrerDriverId) {
             await createDriverReferralChain(driver.id, referrerDriverId, tx);
@@ -100,15 +113,25 @@ export class AuthController {
           data: { name, email, phone, role: prismaRole, passwordHash },
         });
 
+        const tmpSlug = `p-${randomBytes(8).toString("hex")}`;
+
         const passenger = await tx.passenger.create({
           data: {
+            referralCode: tmpSlug,
+            publicSlug: tmpSlug,
             user: { connect: { id: user.id } },
             ...(referrerDriverId
               ? { referredByDriver: { connect: { id: referrerDriverId } } }
               : {}),
+            ...(referrerPassengerId
+              ? { referredByPassenger: { connect: { id: referrerPassengerId } } }
+              : {}),
           },
           include: { user: true },
         });
+
+        // Capture for use after transaction (createPassengerReferral needs to run outside tx)
+        referrerPassengerIdOuter = referrerPassengerId;
 
         return {
           user: { id: user.id, name: user.name, email: user.email, role: "passenger" },
@@ -116,6 +139,21 @@ export class AuthController {
           referredByDriverId: passenger.referredByDriverId ?? null,
         };
       });
+
+      // Assign a name-based slug after the transaction so the tmp placeholder is replaced.
+      if (payload.passengerId) {
+        const identity = await assignPassengerIdentity(payload.passengerId, name).catch(() => null);
+        if (identity) {
+          (payload as Record<string, unknown>).referralCode = identity.referralCode;
+          (payload as Record<string, unknown>).publicSlug = identity.publicSlug;
+        }
+        // Wire passenger-to-passenger referral hierarchy (networkLevel, lineagePath, etc.)
+        if (referrerPassengerIdOuter) {
+          await createPassengerReferral(payload.passengerId, referrerPassengerIdOuter).catch(() => {
+            // Non-fatal: referral chain creation failed, passenger is still registered
+          });
+        }
+      }
 
       return res.status(201).json(payload);
     } catch (error: unknown) {

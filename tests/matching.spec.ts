@@ -74,6 +74,8 @@ describe("Matching — Tier 1 (REFERRED)", () => {
     const passenger = await prisma.passenger.create({
       data: {
         userId: passengerUser.id,
+        referralCode: "ref-t1-" + Date.now(),
+        publicSlug:   "slug-t1-" + Date.now(),
         referredByDriverId: driverAUser.driver!.id,
       },
     });
@@ -84,7 +86,7 @@ describe("Matching — Tier 1 (REFERRED)", () => {
         passengerId: passenger.id,
         origin: "Barra da Tijuca",
         destination: "Centro",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
       });
 
     expect(response.status).toBe(201);
@@ -148,6 +150,8 @@ describe("Matching — Tier 2 (PARTNER)", () => {
     const passenger = await prisma.passenger.create({
       data: {
         userId: passengerUser.id,
+        referralCode: "ref-t2-" + Date.now(),
+        publicSlug:   "slug-t2-" + Date.now(),
         referredByDriverId: driverAUser.driver!.id,
       },
     });
@@ -159,7 +163,7 @@ describe("Matching — Tier 2 (PARTNER)", () => {
         passengerId: passenger.id,
         origin: "Barra da Tijuca",
         destination: "Centro",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
       });
 
     expect(rideResponse.status).toBe(201);
@@ -232,6 +236,8 @@ describe("Matching — Contexto VIP", () => {
     // Passageiro sem indicação → matching vai para GENERAL com filtro VIP
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: "ref-vip-" + Date.now(),
+        publicSlug:   "slug-vip-" + Date.now(),
         user: {
           create: {
             name: "TEST_Passageiro VIP",
@@ -256,7 +262,7 @@ describe("Matching — Contexto VIP", () => {
         passengerId: passenger.id,
         origin: "Barra da Tijuca",
         destination: "Centro",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
         context: {
           vip: true,
           airport: false,

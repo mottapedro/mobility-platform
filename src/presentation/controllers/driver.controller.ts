@@ -17,17 +17,9 @@ export class DriverController {
         experienceLevel: true,
         createdAt: true,
         isActive: true,
-        user: {
-          select: {
-            name: true,
-          },
-        },
-        // No schema atual, `regions` é String[] (não relação)
+        user: { select: { name: true } },
         regions: true,
-
-        // `vehicles` não é necessário para os endpoints exigidos pela task
-        // e pode não existir no schema ativo
-
+        vehicles: { select: { brand: true, model: true, category: true } },
       },
     });
   }
@@ -52,7 +44,7 @@ export class DriverController {
         experienceLevel: driver.experienceLevel,
         memberSince: driver.createdAt,
         regions: driver.regions,
-        publicSlug: driver.publicSlug,
+        vehicles: driver.vehicles,
       });
     } catch (error) {
       console.error("Erro ao carregar perfil público do motorista:", error);
@@ -128,6 +120,51 @@ export class DriverController {
       console.error("Erro ao carregar rede do driver:", error);
       return res.status(500).json({
         error: "Erro interno ao carregar rede do driver",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  async getNetworkHierarchy(req: Request, res: Response) {
+    try {
+      const { driverId } = req.params;
+
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: {
+          id: true,
+          isActive: true,
+          referralCode: true,
+          publicSlug: true,
+          user: { select: { name: true } },
+        },
+      });
+
+      if (!driver || !driver.isActive) {
+        return res.status(404).json({ error: "Driver não encontrado ou inativo" });
+      }
+
+      const snapshot = await getDriverNetworkSnapshot(driverId);
+
+      return res.status(200).json({
+        me: {
+          id: driver.id,
+          name: driver.user.name,
+          referralCode: driver.referralCode,
+          publicSlug: driver.publicSlug ?? null,
+        },
+        levels: snapshot.levels,
+        summary: snapshot.summary,
+        totalPassengers: snapshot.totalPassengers,
+      });
+    } catch (error) {
+      console.error("Erro ao carregar hierarquia do driver:", error);
+      return res.status(500).json({
+        error: "Erro interno ao carregar hierarquia do driver",
         details: error instanceof Error ? error.message : error,
       });
     }

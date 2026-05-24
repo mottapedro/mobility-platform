@@ -41,6 +41,9 @@ model Driver {
   offers                                         RideOffer[]
   selectedRides                                  RideRequest[]
   vehicles                                       Vehicle[]
+  /// Extensible JSON metadata (skills, badges, tier, etc.)
+  /// Example: { "skills": ["Colecionador"], "badges": [], "tier": null }
+  metadata                                       Json?
 }
 
 model Passenger {
@@ -87,10 +90,11 @@ model RideRequest {
   passengerId      String
   origin           String
   destination      String
-  scheduledAt      DateTime
-  status           RideStatus  @default(PENDING)
-  selectedDriverId String?
-  createdAt        DateTime    @default(now())
+  scheduledAt           DateTime
+  operationalCutoffAt   DateTime?
+  status                RideStatus  @default(PENDING)
+  selectedDriverId      String?
+  createdAt             DateTime    @default(now())
   destinationLat   Float?
   destinationLng   Float?
   distanceKm       Float?
@@ -114,6 +118,9 @@ model DriverReferral {
   referrerDriverId String
   referredDriverId String
   level Int
+  // isDirect=true  → edge estrutural direta (A indicou B pessoalmente)
+  // isDirect=false → edge herdada/transitiva (closure propagation)
+  isDirect Boolean @default(true)
   createdAt DateTime @default(now())
 
   // Relations
@@ -124,6 +131,7 @@ model DriverReferral {
   @@unique([referrerDriverId, referredDriverId])
   @@index([referredDriverId])
   @@index([referrerDriverId, level])
+  @@index([referrerDriverId, isDirect])
 }
 
 

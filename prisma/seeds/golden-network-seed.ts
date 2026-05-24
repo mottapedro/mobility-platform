@@ -1,7 +1,33 @@
 import bcrypt from "bcryptjs";
 import { PrismaClient, ExperienceLevel, VehicleCategory, Region, RideStatus, RideOfferStatus } from "@prisma/client";
 import { createDriverReferralChain } from "../../src/domain/services/DriverReferralService";
+import { prisma as sharedPrisma } from "../../src/infra/prisma/client";
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GOLDEN NETWORK OFICIAL — Pedro Paulo Motta como raiz
+// Real credentials provided by the operator.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REAL_NETWORK = {
+  PEDRO:   { email: "mottapedro01@gmail.com",         phone: "21981722517" },
+  JOAO:    { email: "jln@gmail.com",                   phone: "21994693673" },
+  // Level-1 via Pedro (sem dados reais — placeholder)
+  ANSELMO: { email: "anselmo.valle@aliado.mobility",   phone: "21900001001" },
+  FERNANDO:{ email: "fernando.barreira@aliado.mobility",phone: "21900001002" },
+  CARLOS:  { email: "carlos.henrique@aliado.mobility", phone: "21900001003" },
+  // Level-1 via João (level-2 via Pedro)
+  CARLINHOS:{ email: "carlinhos.city@aliado.mobility", phone: "21900001004" },
+  JENNER:  { email: "jenner.spin@aliado.mobility",     phone: "21900001005" },
+  BIRA:    { email: "bira.onix@aliado.mobility",       phone: "21900001006" },
+  GISELE:  { email: "gisele.colecionador@aliado.mobility", phone: "21900001007" },
+  FABIO:   { email: "fabio.tcross@aliado.mobility",    phone: "21900001008" },
+  ANDRE:   { email: "andre.cabral@aliado.mobility",    phone: "21900001009" },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY DRIVER EMAILS — kept for backward compatibility with existing tests
+// ─────────────────────────────────────────────────────────────────────────────
 const DRIVER_EMAIL = {
   PEDRO: "pedro.paulo.motta@mobility.com",
   JOAO: "joao.luiz.brito@mobility.com",
@@ -68,6 +94,7 @@ async function upsertDriverWithVehicleAndRegions(
     publicSlug: string;
     regions: Region[];
     vehicle: { plate: string; model: string; brand: string; category: VehicleCategory };
+    metadata?: Record<string, unknown>;
   }
 ) {
   const user = await upsertUser(prisma, { email: params.email, name: params.name, phone: params.phone, role: "DRIVER" });
@@ -79,6 +106,7 @@ async function upsertDriverWithVehicleAndRegions(
       experienceLevel: params.experienceLevel,
       referralCode: params.referralCode,
       publicSlug: params.publicSlug,
+      ...(params.metadata !== undefined ? { metadata: params.metadata as any } : {}),
       // keep existing regions, add missing
       regions: Array.from(
         new Set([
@@ -96,8 +124,9 @@ async function upsertDriverWithVehicleAndRegions(
       referralCode: params.referralCode,
       publicSlug: params.publicSlug,
       regions: params.regions,
+      ...(params.metadata !== undefined ? { metadata: params.metadata as any } : {}),
     },
-    select: { id: true, userId: true, regions: true, referralCode: true, publicSlug: true, isActive: true, experienceLevel: true, networkLevel: true, referredByDriverId: true },
+    select: { id: true, userId: true, regions: true, referralCode: true, publicSlug: true, isActive: true, experienceLevel: true, networkLevel: true, referredByDriverId: true, metadata: true },
   });
 
   await prisma.vehicle.upsert({
@@ -226,6 +255,209 @@ async function upsertRide(
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// GOLDEN NETWORK OFICIAL — uses real operational data
+// Structure:
+//   Pedro Paulo Motta (root)
+//     ├─ João Luiz Correa de Brito  [level-1]
+//     │   ├─ Carlinhos (Honda City)     [level-1 João / level-2 Pedro]
+//     │   ├─ Jenner (Spin)              [level-1 João / level-2 Pedro]
+//     │   ├─ Bira (Onix LTZ)           [level-1 João / level-2 Pedro]
+//     │   ├─ Gisele (Peugeot 208)      [level-1 João / level-2 Pedro] — skill: Colecionador
+//     │   ├─ Fábio (T-Cross)           [level-1 João / level-2 Pedro]
+//     │   └─ André Cabral (Etios)      [level-1 João / level-2 Pedro]
+//     ├─ Anselmo Valle                  [level-1]
+//     ├─ Fernando Barreira              [level-1]
+//     └─ Carlos Henrique               [level-1]
+// ─────────────────────────────────────────────────────────────────────────────
+export async function runOfficialGoldenNetworkSeed(prisma: PrismaClient) {
+  console.log("🌟 Seeding Golden Network Oficial — Pedro Paulo Motta como raiz...");
+
+  // ── Root: Pedro Paulo Motta ──────────────────────────────────────────────
+  const pedro = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.PEDRO.email,
+    name: "Pedro Paulo Motta",
+    phone: REAL_NETWORK.PEDRO.phone,
+    experienceLevel: ExperienceLevel.ELITE,
+    isActive: true,
+    referralCode: "pedro-motta-zn-elite",
+    publicSlug: "pedro-motta",
+    regions: [Region.ZN],
+    vehicle: { plate: "PPM-0001", model: "Accord", brand: "Honda", category: VehicleCategory.EXECUTIVO },
+  });
+  console.log(`  ✅ Pedro Paulo Motta — driver.id=${pedro.id}`);
+
+  // ── Level-1: João Luiz Correa de Brito ──────────────────────────────────
+  const joao = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.JOAO.email,
+    name: "João Luiz Correa de Brito",
+    phone: REAL_NETWORK.JOAO.phone,
+    experienceLevel: ExperienceLevel.PROFISSIONAL,
+    isActive: true,
+    referralCode: "joao-luiz-correa-brito-zn",
+    publicSlug: "joao-luiz-correa-brito",
+    regions: [Region.ZN],
+    vehicle: { plate: "JLB-0002", model: "Corolla", brand: "Toyota", category: VehicleCategory.EXECUTIVO },
+  });
+
+  // ── Level-1: Anselmo Valle ───────────────────────────────────────────────
+  const anselmo = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.ANSELMO.email,
+    name: "Anselmo Valle",
+    phone: REAL_NETWORK.ANSELMO.phone,
+    experienceLevel: ExperienceLevel.INTERMEDIARIO,
+    isActive: true,
+    referralCode: "anselmo-valle-zn",
+    publicSlug: "anselmo-valle",
+    regions: [Region.ZN],
+    vehicle: { plate: "ANS-0003", model: "Onix", brand: "Chevrolet", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1: Fernando Barreira ───────────────────────────────────────────
+  const fernando = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.FERNANDO.email,
+    name: "Fernando Barreira",
+    phone: REAL_NETWORK.FERNANDO.phone,
+    experienceLevel: ExperienceLevel.INTERMEDIARIO,
+    isActive: true,
+    referralCode: "fernando-barreira-zn",
+    publicSlug: "fernando-barreira",
+    regions: [Region.ZN],
+    vehicle: { plate: "FEB-0004", model: "HB20", brand: "Hyundai", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1: Carlos Henrique ─────────────────────────────────────────────
+  const carlosH = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.CARLOS.email,
+    name: "Carlos Henrique",
+    phone: REAL_NETWORK.CARLOS.phone,
+    experienceLevel: ExperienceLevel.INICIANTE,
+    isActive: true,
+    referralCode: "carlos-henrique-zn",
+    publicSlug: "carlos-henrique",
+    regions: [Region.ZN],
+    vehicle: { plate: "CAH-0005", model: "Gol", brand: "Volkswagen", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1 via João (level-2 via Pedro): Carlinhos ─────────────────────
+  const carlinhos = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.CARLINHOS.email,
+    name: "Carlinhos",
+    phone: REAL_NETWORK.CARLINHOS.phone,
+    experienceLevel: ExperienceLevel.INTERMEDIARIO,
+    isActive: true,
+    referralCode: "carlinhos-city-zn",
+    publicSlug: "carlinhos-city",
+    regions: [Region.ZN],
+    vehicle: { plate: "CAR-0006", model: "City", brand: "Honda", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1 via João (level-2 via Pedro): Jenner ─────────────────────────
+  const jenner = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.JENNER.email,
+    name: "Jenner",
+    phone: REAL_NETWORK.JENNER.phone,
+    experienceLevel: ExperienceLevel.INTERMEDIARIO,
+    isActive: true,
+    referralCode: "jenner-spin-zn",
+    publicSlug: "jenner-spin",
+    regions: [Region.ZN],
+    vehicle: { plate: "JEN-0007", model: "Spin", brand: "Chevrolet", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1 via João (level-2 via Pedro): Bira ───────────────────────────
+  const bira = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.BIRA.email,
+    name: "Bira",
+    phone: REAL_NETWORK.BIRA.phone,
+    experienceLevel: ExperienceLevel.INTERMEDIARIO,
+    isActive: true,
+    referralCode: "bira-onix-ltz-zn",
+    publicSlug: "bira-onix",
+    regions: [Region.ZN],
+    vehicle: { plate: "BIR-0008", model: "Onix LTZ", brand: "Chevrolet", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1 via João (level-2 via Pedro): Gisele — skill: Colecionador ──
+  // metadata.skills: ["Colecionador"] — estrutura extensível, sem tabela própria por enquanto
+  const gisele = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.GISELE.email,
+    name: "Gisele",
+    phone: REAL_NETWORK.GISELE.phone,
+    experienceLevel: ExperienceLevel.PROFISSIONAL,
+    isActive: true,
+    referralCode: "gisele-colecionador-zn",
+    publicSlug: "gisele-colecionador",
+    regions: [Region.ZN],
+    vehicle: { plate: "GIS-0009", model: "208", brand: "Peugeot", category: VehicleCategory.CONFORTO },
+    metadata: { skills: ["Colecionador"], badges: [], tier: null },
+  });
+
+  // ── Level-1 via João (level-2 via Pedro): Fábio ──────────────────────────
+  const fabio = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.FABIO.email,
+    name: "Fábio",
+    phone: REAL_NETWORK.FABIO.phone,
+    experienceLevel: ExperienceLevel.INTERMEDIARIO,
+    isActive: true,
+    referralCode: "fabio-tcross-zn",
+    publicSlug: "fabio-tcross",
+    regions: [Region.ZN],
+    vehicle: { plate: "FAB-0010", model: "T-Cross", brand: "Volkswagen", category: VehicleCategory.CONFORTO },
+  });
+
+  // ── Level-1 via João (level-2 via Pedro): André Cabral ───────────────────
+  const andre = await upsertDriverWithVehicleAndRegions(prisma, {
+    email: REAL_NETWORK.ANDRE.email,
+    name: "André Cabral",
+    phone: REAL_NETWORK.ANDRE.phone,
+    experienceLevel: ExperienceLevel.INICIANTE,
+    isActive: true,
+    referralCode: "andre-cabral-etios-zn",
+    publicSlug: "andre-cabral",
+    regions: [Region.ZN],
+    vehicle: { plate: "AND-0011", model: "Etios", brand: "Toyota", category: VehicleCategory.CONFORTO },
+  });
+
+  console.log("  ✅ 10 drivers criados/atualizados (Pedro + 9 aliados)");
+
+  // ── Referral chains ─────────────────────────────────────────────────────
+  // Pedro → João (direct, level 1)
+  await createDriverReferralChain(joao.id, pedro.id, prisma);
+  // Pedro → Anselmo (direct, level 1)
+  await createDriverReferralChain(anselmo.id, pedro.id, prisma);
+  // Pedro → Fernando (direct, level 1)
+  await createDriverReferralChain(fernando.id, pedro.id, prisma);
+  // Pedro → Carlos Henrique (direct, level 1)
+  await createDriverReferralChain(carlosH.id, pedro.id, prisma);
+  console.log("  ✅ Pedro: 4 indicações diretas criadas (level 1)");
+
+  // João → Carlinhos (direct, level 1 João / level 2 Pedro inherited)
+  await createDriverReferralChain(carlinhos.id, joao.id, prisma);
+  // João → Jenner
+  await createDriverReferralChain(jenner.id, joao.id, prisma);
+  // João → Bira
+  await createDriverReferralChain(bira.id, joao.id, prisma);
+  // João → Gisele
+  await createDriverReferralChain(gisele.id, joao.id, prisma);
+  // João → Fábio
+  await createDriverReferralChain(fabio.id, joao.id, prisma);
+  // João → André Cabral
+  await createDriverReferralChain(andre.id, joao.id, prisma);
+  console.log("  ✅ João: 6 indicações diretas criadas (level 1 João / level 2 Pedro herdado)");
+
+  console.log("🌟 Golden Network Oficial concluída!");
+  console.log("   Pedro nível 1: João, Anselmo, Fernando, Carlos Henrique (4)");
+  console.log("   Pedro nível 2 (herdado): Carlinhos, Jenner, Bira, Gisele, Fábio, André (6)");
+  console.log("   João nível 1: Carlinhos, Jenner, Bira, Gisele, Fábio, André (6)");
+  console.log("   Gisele metadata.skills: ['Colecionador']");
+
+  return { pedro, joao, anselmo, fernando, carlosH, carlinhos, jenner, bira, gisele, fabio, andre };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY SEED — kept for backward compatibility with existing tests/fixtures
+// ─────────────────────────────────────────────────────────────────────────────
 export async function runGoldenNetworkSeed(prisma: PrismaClient) {
   // Ensure base tables exist via upsert.
 
@@ -404,10 +636,11 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
 }
 
 export async function main() {
-  const prisma = new PrismaClient();
+  const prisma: PrismaClient = sharedPrisma;
   try {
     await runGoldenNetworkSeed(prisma);
-    console.log("✅ Golden network seed complete");
+    await runOfficialGoldenNetworkSeed(prisma);
+    console.log("✅ Golden network seed (legacy + oficial) complete");
   } finally {
     await prisma.$disconnect();
   }
@@ -419,4 +652,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-

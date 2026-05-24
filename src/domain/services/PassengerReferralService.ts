@@ -150,12 +150,20 @@ export async function assignPassengerIdentity(
   userName: string,
   client: typeof prisma = prisma
 ): Promise<{ referralCode: string; publicSlug: string }> {
-  // Idempotent: return early if already assigned
+  // Check if this passenger already has a name-based identity.
+  // Placeholder slugs (set at create time) always have publicSlug === referralCode.
+  // After assignPassengerIdentity runs, publicSlug is the base slug and
+  // referralCode is publicSlug + "-" + 4-char suffix, so they differ.
   const existing = await client.passenger.findUnique({
     where: { id: passengerId },
     select: { referralCode: true, publicSlug: true },
   });
-  if (existing?.referralCode && existing?.publicSlug) {
+  if (
+    existing &&
+    existing.referralCode &&
+    existing.publicSlug &&
+    existing.referralCode !== existing.publicSlug
+  ) {
     return { referralCode: existing.referralCode, publicSlug: existing.publicSlug };
   }
 

@@ -22,10 +22,12 @@ describe("PATCH /offers/respond", () => {
 
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: `p-offers-1-${Date.now()}`,
+        publicSlug: `p-offers-1-${Date.now()}`,
         user: {
           create: {
             name: "Passageiro",
-            email: "p@test.com",
+            email: `p-offers-1-${Date.now()}@test.com`,
             phone: "111",
             role: "PASSENGER",
           },
@@ -84,10 +86,12 @@ describe("PATCH /offers/respond", () => {
 
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: `p-offers-2-${Date.now()}`,
+        publicSlug: `p-offers-2-${Date.now()}`,
         user: {
           create: {
             name: "Passageiro2",
-            email: "p2@test.com",
+            email: `p-offers-2-${Date.now()}@test.com`,
             phone: "111",
             role: "PASSENGER",
           },
