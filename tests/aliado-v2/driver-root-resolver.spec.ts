@@ -1,5 +1,5 @@
 import bcrypt from "bcrypt";
-import { ActorType } from "@prisma/client";
+import { ActorType } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { createDriverReferralChain } from "../../src/domain/services/DriverReferralService";
 import { resolveDriverRoot } from "../../src/domain/referral-network/DriverRootResolverService";

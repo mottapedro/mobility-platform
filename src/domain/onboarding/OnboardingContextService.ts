@@ -1,10 +1,5 @@
-import {
-  ActorType,
-  Driver,
-  Invite,
-  Passenger,
-  ReferralFlowType,
-} from "@prisma/client";
+import type { Driver, Invite, Passenger } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { resolveReferralFlowType } from "../referral-network/ReferralFlowResolverService";
 import { resolveDriverRoot } from "../referral-network/DriverRootResolverService";

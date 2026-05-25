@@ -1,8 +1,5 @@
-import {
-  DomainEventType,
-  PaymentIntent,
-  PaymentStatus,
-} from "@prisma/client";
+import type { PaymentIntent } from "@prisma/client";
+import { DomainEventType, PaymentStatus } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import {
   EventBus,

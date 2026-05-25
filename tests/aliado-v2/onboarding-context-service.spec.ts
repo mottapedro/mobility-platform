@@ -1,5 +1,5 @@
 import bcrypt from "bcrypt";
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { resolveOnboardingContext } from "../../src/domain/onboarding/OnboardingContextService";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";

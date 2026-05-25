@@ -11,7 +11,7 @@
  *       spec in the SAME commit, with a note in the PR description.
  */
 import request from "supertest";
-import { DriverSkillCode } from "@prisma/client";
+import { DriverSkillCode } from "../../src/shared/enums";
 import { app } from "../../src/app";
 import { prisma } from "../setup";
 import { assertConformance, GOD_NETWORK } from "../../src/domain/godnetwork/GodNetworkService";

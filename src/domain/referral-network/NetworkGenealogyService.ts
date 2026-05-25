@@ -1,4 +1,4 @@
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { listRelationshipsForRoot } from "./ReferralRelationshipService";
 

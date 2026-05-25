@@ -1,5 +1,5 @@
 import { prisma } from "../setup";
-import { DomainEventType } from "@prisma/client";
+import { DomainEventType } from "../../src/shared/enums";
 import {
   createEventBus,
   recordAndPublish,

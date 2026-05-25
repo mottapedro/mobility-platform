@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import request from "supertest";
-import { PaymentStatus, RideStatus } from "@prisma/client";
+import { PaymentStatus, RideStatus } from "../../src/shared/enums";
 import { app } from "../../src/app";
 import { prisma } from "../setup";
 

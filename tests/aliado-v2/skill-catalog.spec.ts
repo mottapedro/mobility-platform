@@ -1,4 +1,4 @@
-import { DriverSkillCode } from "@prisma/client";
+import { DriverSkillCode } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import {
   findSkillByCode,

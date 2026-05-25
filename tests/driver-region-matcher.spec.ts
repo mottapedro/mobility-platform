@@ -1,4 +1,4 @@
-import { Region } from "@prisma/client";
+import { Region } from "../src/shared/enums";
 import { DriverRegionMatcher } from "../src/domain/services/DriverRegionMatcher";
 
 const findManyMock = jest.fn();

@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import request from "supertest";
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../src/shared/enums";
 import { app } from "../../src/app";
 import { prisma } from "../setup";
 

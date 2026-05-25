@@ -1,4 +1,4 @@
-import { ActorType } from "@prisma/client";
+import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { DriverRootResolutionError } from "./errors";
 

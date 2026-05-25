@@ -1,4 +1,5 @@
-import { DomainEvent, DomainEventType, Prisma } from "@prisma/client";
+import { Prisma, type DomainEvent } from "@prisma/client";
+import { DomainEventType } from "../../../shared/enums";
 import { prisma } from "../../../infra/prisma/client";
 
 /**

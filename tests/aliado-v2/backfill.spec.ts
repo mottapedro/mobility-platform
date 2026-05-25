@@ -7,7 +7,7 @@
  *   second pass over the same legacy edges produces zero new rows.
  */
 import bcrypt from "bcrypt";
-import { ActorType } from "@prisma/client";
+import { ActorType } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";
 
