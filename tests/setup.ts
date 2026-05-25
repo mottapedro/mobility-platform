@@ -98,6 +98,56 @@ export async function cleanTestData(): Promise<void> {
 
   // Safe to delete ride requests now that all child offers are gone
   if (testRideRequestIds.length > 0) {
+    // V2 PR-2 — delete payment-domain rows attached to these rides BEFORE the
+    // rideRequest deleteMany (RevenueSplit → Settlement → PaymentIntent).
+    const testPaymentIntentIds = (
+      await prisma.paymentIntent.findMany({
+        where: { rideRequestId: { in: testRideRequestIds } },
+        select: { id: true },
+      })
+    ).map((p) => p.id);
+
+    if (testPaymentIntentIds.length > 0) {
+      const testSettlementIds = (
+        await prisma.settlement.findMany({
+          where: { paymentIntentId: { in: testPaymentIntentIds } },
+          select: { id: true },
+        })
+      ).map((s) => s.id);
+
+      if (testSettlementIds.length > 0) {
+        await prisma.revenueSplit.deleteMany({
+          where: { settlementId: { in: testSettlementIds } },
+        });
+        await prisma.settlement.deleteMany({
+          where: { id: { in: testSettlementIds } },
+        });
+        // Also wipe DomainEvents bound to those settlements.
+        await prisma.domainEvent.deleteMany({
+          where: {
+            aggregateType: "Settlement",
+            aggregateId: { in: testSettlementIds },
+          },
+        });
+      }
+
+      await prisma.paymentIntent.deleteMany({
+        where: { id: { in: testPaymentIntentIds } },
+      });
+
+      await prisma.domainEvent.deleteMany({
+        where: {
+          aggregateType: "PaymentIntent",
+          aggregateId: { in: testPaymentIntentIds },
+        },
+      });
+    }
+
+    // Ride-scoped DomainEvents.
+    await prisma.domainEvent.deleteMany({
+      where: { aggregateType: "Ride", aggregateId: { in: testRideRequestIds } },
+    });
+
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {

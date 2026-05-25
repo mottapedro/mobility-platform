@@ -119,6 +119,10 @@ model RideRequest {
   // V2 — operational root in the driver network (nullable during rollout)
   rootDriverId String?
 
+  // V2 — payment domain (PR-2)
+  paymentIntent PaymentIntent?
+  settlement    Settlement?
+
   @@index([scheduledAt])
 }
 
@@ -195,6 +199,7 @@ enum RideStatus {
   COMPLETED
   CANCELLED
   WAITING_REFERRAL
+  PAID
 }
 
 enum RideOfferStatus {
@@ -284,4 +289,107 @@ model DriverSkill {
 
   @@unique([driverId, skillId])
   @@index([skillId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// V2 PR-2 — Payment domain (PaymentIntent → Settlement → RevenueSplit)
+// + lightweight event sourcing via DomainEvent
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PaymentMethod {
+  PIX
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  CANCELLED
+}
+
+enum SplitBeneficiaryType {
+  DRIVER
+  PLATFORM
+  ROOT_DRIVER
+}
+
+enum DomainEventType {
+  PAYMENT_INTENT_CREATED
+  PIX_QRCODE_GENERATED
+  PAYMENT_CONFIRMED
+  PAYMENT_FAILED
+  RIDE_SETTLED
+  REWARD_DISTRIBUTED
+}
+
+/// Payment intent for a ride. One-to-one with RideRequest.
+/// externalId is the provider's reference; doubles as idempotency key for webhooks.
+model PaymentIntent {
+  id            String        @id @default(uuid())
+  rideRequestId String        @unique
+  amountCents   Int
+  method        PaymentMethod @default(PIX)
+  status        PaymentStatus @default(PENDING)
+  externalId    String?       @unique
+  qrCode        String?
+  qrCodeImage   String?
+  confirmedAt   DateTime?
+  failedAt      DateTime?
+  failureReason String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  rideRequest RideRequest @relation(fields: [rideRequestId], references: [id])
+  settlement  Settlement?
+
+  @@index([status])
+}
+
+/// Settlement record produced once a PaymentIntent is confirmed.
+model Settlement {
+  id              String   @id @default(uuid())
+  paymentIntentId String   @unique
+  rideRequestId   String   @unique
+  totalCents      Int
+  driverCents     Int
+  platformCents   Int
+  rootDriverCents Int
+  rootDriverId    String?
+  settledAt       DateTime @default(now())
+
+  paymentIntent PaymentIntent  @relation(fields: [paymentIntentId], references: [id])
+  rideRequest   RideRequest    @relation(fields: [rideRequestId], references: [id])
+  splits        RevenueSplit[]
+}
+
+/// Per-beneficiary split row attached to a Settlement.
+/// percentBps stores basis points (8000 = 80.00%).
+model RevenueSplit {
+  id                  String               @id @default(uuid())
+  settlementId        String
+  beneficiaryType     SplitBeneficiaryType
+  beneficiaryDriverId String?
+  amountCents         Int
+  percentBps          Int
+  createdAt           DateTime             @default(now())
+
+  settlement Settlement @relation(fields: [settlementId], references: [id])
+
+  @@index([settlementId])
+  @@index([beneficiaryDriverId])
+}
+
+/// Lightweight event sourcing. Every domain-relevant transition is recorded
+/// here BEFORE being dispatched in-process by the EventBus.
+model DomainEvent {
+  id            String          @id @default(uuid())
+  type          DomainEventType
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  occurredAt    DateTime        @default(now())
+
+  @@index([type])
+  @@index([aggregateType, aggregateId])
+  @@index([occurredAt])
 }
