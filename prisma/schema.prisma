@@ -320,6 +320,21 @@ enum DomainEventType {
   PAYMENT_FAILED
   RIDE_SETTLED
   REWARD_DISTRIBUTED
+  OFFER_CREATED
+  RIDE_FINALIZED
+  SETTLEMENT_CONFIRMED
+  LINEAGE_RESOLVED
+  SKILL_ASSIGNED
+}
+
+/// Canonical taxonomy of how a node participates in a driver's network.
+/// Used by NetworkOwnershipService projections and downstream analytics.
+enum OwnershipType {
+  ROOT_DRIVER
+  INHERITED_DRIVER
+  DIRECT_PASSENGER
+  INHERITED_PASSENGER
+  LATERAL
 }
 
 /// Payment intent for a ride. One-to-one with RideRequest.
