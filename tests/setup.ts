@@ -107,6 +107,54 @@ export async function cleanTestData(): Promise<void> {
       where: { id: { in: testPassengerIds } },
       data: { referredByPassengerId: null },
     });
+  }
+
+  // V2 — delete relational referral graph BEFORE passenger/driver deletes
+  if (testDriverIds.length > 0 || testPassengerIds.length > 0) {
+    await prisma.referralRelationship.deleteMany({
+      where: {
+        OR: [
+          ...(testDriverIds.length > 0
+            ? [{ inviterDriverId: { in: testDriverIds } }]
+            : []),
+          ...(testDriverIds.length > 0
+            ? [{ rootDriverId: { in: testDriverIds } }]
+            : []),
+          ...(testDriverIds.length > 0
+            ? [{
+                AND: [
+                  { invitedActorType: "DRIVER" as const },
+                  { invitedId: { in: testDriverIds } },
+                ],
+              }]
+            : []),
+          ...(testPassengerIds.length > 0
+            ? [{
+                AND: [
+                  { invitedActorType: "PASSENGER" as const },
+                  { invitedId: { in: testPassengerIds } },
+                ],
+              }]
+            : []),
+          ...(testPassengerIds.length > 0
+            ? [{
+                AND: [
+                  { inviterActorType: "PASSENGER" as const },
+                  { inviterId: { in: testPassengerIds } },
+                ],
+              }]
+            : []),
+        ],
+      },
+    });
+  }
+
+  // V2 — delete DriverSkill for test drivers BEFORE driver deletes
+  if (testDriverIds.length > 0) {
+    await prisma.driverSkill.deleteMany({ where: { driverId: { in: testDriverIds } } });
+  }
+
+  if (testPassengerIds.length > 0) {
     await prisma.passenger.deleteMany({ where: { id: { in: testPassengerIds } } });
   }
   if (testDriverIds.length > 0) {

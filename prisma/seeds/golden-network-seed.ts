@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
-import { PrismaClient, ExperienceLevel, VehicleCategory, Region, RideStatus, RideOfferStatus } from "@prisma/client";
+import { PrismaClient, ExperienceLevel, VehicleCategory, Region, RideStatus, RideOfferStatus, DriverSkillCode } from "@prisma/client";
 import { createDriverReferralChain } from "../../src/domain/services/DriverReferralService";
+import { assignSkill } from "../../src/domain/skills/DriverSkillService";
 import { prisma as sharedPrisma } from "../../src/infra/prisma/client";
 
 
@@ -445,6 +446,13 @@ export async function runOfficialGoldenNetworkSeed(prisma: PrismaClient) {
   // João → André Cabral
   await createDriverReferralChain(andre.id, joao.id, prisma);
   console.log("  ✅ João: 6 indicações diretas criadas (level 1 João / level 2 Pedro herdado)");
+
+  // V2 — assign relational skill catalogue entry to Gisele
+  await assignSkill(
+    { driverId: gisele.id, code: DriverSkillCode.COLECIONADOR },
+    prisma as any
+  );
+  console.log("  ✅ Gisele: skill COLECIONADOR registrada (DriverSkill V2)");
 
   console.log("🌟 Golden Network Oficial concluída!");
   console.log("   Pedro nível 1: João, Anselmo, Fernando, Carlos Henrique (4)");

@@ -10,6 +10,7 @@ import { driverRoutes } from "./presentation/routes/driver.routes";
 import { canonicalPublicRoutes, publicRoutes } from "./presentation/routes/public.routes";
 import { authRoutes } from "./presentation/routes/auth.routes";
 import { testRoutes } from "./presentation/routes/test.routes";
+import { godnetworkRoutes } from "./presentation/routes/godnetwork.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
 
@@ -61,6 +62,7 @@ app.use("/rides", rideRoutes);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
 app.use("/drivers", driverRoutes);
+app.use("/godnetwork", godnetworkRoutes);
 
 if (process.env.NODE_ENV !== "production") {
   app.use("/test", testRoutes);

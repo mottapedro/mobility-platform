@@ -1,10 +1,12 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
-import { Prisma } from "@prisma/client";
+import { ActorType, Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain, ReferralChainError } from "../../domain/services/DriverReferralService";
 import { assignPassengerIdentity, createPassengerReferral } from "../../domain/services/PassengerReferralService";
+import { recordRelationship } from "../../domain/referral-network/ReferralRelationshipService";
+import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
 
 class HttpError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -100,6 +102,18 @@ export class AuthController {
 
           if (referrerDriverId) {
             await createDriverReferralChain(driver.id, referrerDriverId, tx);
+            // V2 — record relational referral graph (idempotent)
+            await recordRelationship(
+              {
+                inviterActorType: ActorType.DRIVER,
+                inviterId: referrerDriverId,
+                invitedActorType: ActorType.DRIVER,
+                invitedId: driver.id,
+              },
+              tx
+            ).catch((err) => {
+              console.warn("[ReferralRelationship] driver→driver record failed:", err?.message);
+            });
           }
 
           return {
@@ -129,6 +143,51 @@ export class AuthController {
           },
           include: { user: true },
         });
+
+        // V2 — set rootDriverId on Passenger + record relational graph
+        let resolvedRootDriverId: string | null = null;
+        if (referrerDriverId) {
+          resolvedRootDriverId = await resolveDriverRoot(
+            ActorType.DRIVER,
+            referrerDriverId,
+            tx
+          ).catch(() => null);
+          await recordRelationship(
+            {
+              inviterActorType: ActorType.DRIVER,
+              inviterId: referrerDriverId,
+              invitedActorType: ActorType.PASSENGER,
+              invitedId: passenger.id,
+            },
+            tx
+          ).catch((err) => {
+            console.warn("[ReferralRelationship] driver→passenger record failed:", err?.message);
+          });
+        } else if (referrerPassengerId) {
+          resolvedRootDriverId = await resolveDriverRoot(
+            ActorType.PASSENGER,
+            referrerPassengerId,
+            tx
+          ).catch(() => null);
+          await recordRelationship(
+            {
+              inviterActorType: ActorType.PASSENGER,
+              inviterId: referrerPassengerId,
+              invitedActorType: ActorType.PASSENGER,
+              invitedId: passenger.id,
+            },
+            tx
+          ).catch((err) => {
+            console.warn("[ReferralRelationship] passenger→passenger record failed:", err?.message);
+          });
+        }
+
+        if (resolvedRootDriverId) {
+          await tx.passenger.update({
+            where: { id: passenger.id },
+            data: { rootDriverId: resolvedRootDriverId },
+          });
+        }
 
         // Capture for use after transaction (createPassengerReferral needs to run outside tx)
         referrerPassengerIdOuter = referrerPassengerId;

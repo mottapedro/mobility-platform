@@ -15,6 +15,12 @@ router.get("/", (req, res) => controller.list(req, res));
 // GET /drivers/:driverId/network/hierarchy — driver + tree (must be registered before /:driverId/network)
 router.get("/:driverId/network/hierarchy", (req, res) => controller.getNetworkHierarchy(req, res));
 
+// V2: GET /drivers/:driverId/network/relationships — relational referral graph (must precede /:driverId/network)
+router.get("/:driverId/network/relationships", (req, res) => controller.getNetworkRelationships(req, res));
+
+// V2: GET /drivers/:driverId/skills — driver skill assignments
+router.get("/:driverId/skills", (req, res) => controller.getDriverSkills(req, res));
+
 // GET /drivers/:driverId/network — nós por nível + métricas de indicação (canônico)
 router.get("/:driverId/network", (req, res) => controller.getNetwork(req, res));
 

@@ -2,6 +2,9 @@ import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 import { getDriverNetworkSnapshot } from "../../domain/services/DriverReferralService";
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
+import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
+import { listDriverSkills } from "../../domain/skills/DriverSkillService";
+import { ReferralFlowType } from "@prisma/client";
 
 export class DriverController {
   private async findActivePublicDriver(referralCodeOrSlug: string) {
@@ -125,6 +128,7 @@ export class DriverController {
     }
   }
 
+  // Rotas restantes (offers/rides) - mantidas caso existam testes/consumo antigo
   async getNetworkHierarchy(req: Request, res: Response) {
     try {
       const { driverId } = req.params;
@@ -170,7 +174,67 @@ export class DriverController {
     }
   }
 
-  // Rotas restantes (offers/rides) - mantidas caso existam testes/consumo antigo
+  // V2: GET /drivers/:driverId/network/relationships
+  async getNetworkRelationships(req: Request, res: Response) {
+    try {
+      const { driverId } = req.params;
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true, isActive: true },
+      });
+      if (!driver || !driver.isActive) {
+        return res.status(404).json({ error: "Driver não encontrado ou inativo" });
+      }
+
+      const flowTypeParam = typeof req.query.flowType === "string" ? req.query.flowType : undefined;
+      let flowType: ReferralFlowType | undefined;
+      if (flowTypeParam) {
+        if (!Object.values(ReferralFlowType).includes(flowTypeParam as ReferralFlowType)) {
+          return res.status(400).json({ error: `flowType inválido. Use: ${Object.values(ReferralFlowType).join(", ")}` });
+        }
+        flowType = flowTypeParam as ReferralFlowType;
+      }
+
+      const response = await getNetworkRelationships(driverId, { flowType });
+      return res.status(200).json(response);
+    } catch (error) {
+      console.error("Erro ao carregar relationships V2:", error);
+      return res.status(500).json({
+        error: "Erro interno ao carregar relationships",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  // V2: GET /drivers/:driverId/skills
+  async getDriverSkills(req: Request, res: Response) {
+    try {
+      const { driverId } = req.params;
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId inválido na URL" });
+      }
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true, isActive: true },
+      });
+      if (!driver || !driver.isActive) {
+        return res.status(404).json({ error: "Driver não encontrado ou inativo" });
+      }
+      const skills = await listDriverSkills(driverId);
+      return res.status(200).json({ driverId, skills });
+    } catch (error) {
+      console.error("Erro ao listar skills do driver:", error);
+      return res.status(500).json({
+        error: "Erro interno ao listar skills",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
   async list(req: Request, res: Response) {
     try {
       const drivers = await prisma.driver.findMany({
