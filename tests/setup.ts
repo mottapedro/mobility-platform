@@ -204,6 +204,22 @@ export async function cleanTestData(): Promise<void> {
     await prisma.driverSkill.deleteMany({ where: { driverId: { in: testDriverIds } } });
   }
 
+  // V2.1 (PR-3) — delete Invite rows owned by test actors BEFORE deletes.
+  if (testDriverIds.length > 0 || testPassengerIds.length > 0) {
+    await prisma.invite.deleteMany({
+      where: {
+        OR: [
+          ...(testDriverIds.length > 0
+            ? [{ AND: [{ ownerActorType: "DRIVER" as const }, { ownerId: { in: testDriverIds } }] }]
+            : []),
+          ...(testPassengerIds.length > 0
+            ? [{ AND: [{ ownerActorType: "PASSENGER" as const }, { ownerId: { in: testPassengerIds } }] }]
+            : []),
+        ],
+      },
+    });
+  }
+
   if (testPassengerIds.length > 0) {
     await prisma.passenger.deleteMany({ where: { id: { in: testPassengerIds } } });
   }

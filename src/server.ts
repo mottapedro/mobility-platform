@@ -12,6 +12,11 @@ import { authRoutes } from "./presentation/routes/auth.routes";
 import { testRoutes } from "./presentation/routes/test.routes";
 import { godnetworkRoutes } from "./presentation/routes/godnetwork.routes";
 import { ridesPaymentRouter, pixWebhookRouter } from "./presentation/routes/payment.routes";
+import {
+  onboardingRouter,
+  passengersNetworkRouter,
+  driversNetworkRouter,
+} from "./presentation/routes/network-v2.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
 
@@ -64,7 +69,10 @@ app.use("/rides", ridesPaymentRouter);
 app.use("/webhooks", pixWebhookRouter);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
+app.use("/passengers", passengersNetworkRouter);
 app.use("/drivers", driverRoutes);
+app.use("/drivers", driversNetworkRouter);
+app.use("/onboarding", onboardingRouter);
 app.use("/godnetwork", godnetworkRoutes);
 
 if (process.env.NODE_ENV !== "production") {
