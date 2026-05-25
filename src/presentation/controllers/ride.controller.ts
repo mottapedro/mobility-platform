@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
 // ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
@@ -40,7 +42,7 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt, context: rawContext } = req.body;
+      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds } = req.body;
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
@@ -148,12 +150,15 @@ export class RideController {
         isLuggage: context.isLuggage ?? false,
       };
 
+      const policy = AcceptancePolicyEngine.computePolicy(date);
+
       const ride = await prisma.rideRequest.create({
         data: {
           passengerId,
           origin: originTrimmed,
           destination: destinationTrimmed,
           scheduledAt: date,
+          operationalCutoffAt: policy.operationalCutoffAt,
           status: initialStatus,
           distanceKm,
           durationMin,
@@ -174,6 +179,17 @@ export class RideController {
         },
       });
 
+      logMatchingEvent({
+        rideId: ride.id,
+        event: "ACCEPTANCE_WINDOW_CALCULATED",
+        metadata: {
+          isScheduled: policy.isScheduled,
+          operationalCutoffAt: policy.operationalCutoffAt?.toISOString() ?? null,
+          offerResponseTimeoutMs: policy.offerResponseTimeoutMs,
+          referralWindowMs: policy.referralWindowMs,
+        },
+      });
+
       // 🚀 Dispara o matching em background (não bloqueia HTTP)
       console.log("RIDE CREATED:", {
         id: ride.id,
@@ -185,7 +201,7 @@ export class RideController {
         try {
           console.log(`🚀 Iniciando matching para ride ${ride.id}`);
           const matchRideUseCase = new MatchRideUseCase();
-          await matchRideUseCase.execute({ rideId: ride.id });
+          await matchRideUseCase.execute({ rideId: ride.id, candidateDriverIds });
           console.log(`✅ Matching finalizado para ride ${ride.id}`);
         } catch (error) {
           console.error(`🔥 Erro no matching da ride ${ride.id}:`, error);

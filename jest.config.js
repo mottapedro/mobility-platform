@@ -12,5 +12,4 @@ module.exports = {
         tsconfig: "./tsconfig.jest.json",
       },
     ],
-  },
-};
+  },  testTimeout: 15000,};

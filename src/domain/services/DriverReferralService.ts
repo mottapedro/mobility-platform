@@ -1,11 +1,5 @@
 import { prisma } from "../../infra/prisma/client";
 
-export interface DriverNetwork {
-  level1: string[];
-  level2: string[];
-  level3: string[];
-}
-
 export interface DriverNetworkNode {
   driverId: string;
   name: string;
@@ -18,6 +12,8 @@ export interface DriverNetworkNode {
 export interface DriverNetworkSnapshot {
   driverId: string;
   levels: Record<string, DriverNetworkNode[]>;
+  /** Flat convenience field = summary.referredPassengers.total */
+  totalPassengers: number;
   summary: {
     referredDrivers: {
       level1: number;
@@ -35,6 +31,12 @@ export interface DriverNetworkSnapshot {
       total: number;
     };
   };
+}
+
+export interface DriverNetworkLevels {
+  level1: string[];
+  level2: string[];
+  level3: string[];
 }
 
 export class ReferralChainError extends Error {
@@ -77,7 +79,9 @@ export async function createDriverReferralChain(
     throw new ReferralChainError("Código de referral inválido ou motorista inativo");
   }
 
-  const reverseEdge = await db.driverReferral.findFirst({
+  // Ciclo REAL: newDriver já tem referrerDriver na sua sub-rede (closure table completa é a source of truth).
+  // Se existe edge (newDriverId → referrerDriverId) em qualquer nível, adicionar o inverso cria ciclo.
+  const cycleEdge = await db.driverReferral.findFirst({
     where: {
       referrerDriverId: newDriverId,
       referredDriverId: referrerDriverId,
@@ -85,8 +89,8 @@ export async function createDriverReferralChain(
     select: { id: true },
   });
 
-  if (reverseEdge) {
-    console.warn("[Referral] ciclo detectado e bloqueado", { newDriverId, referrerDriverId });
+  if (cycleEdge) {
+    console.warn("[Referral] CYCLE_BLOCKED", { newDriverId, referrerDriverId });
     throw new ReferralChainError("Ciclo de referral detectado");
   }
 
@@ -94,13 +98,15 @@ export async function createDriverReferralChain(
     referrerDriverId: string;
     referredDriverId: string;
     level: number;
+    isDirect: boolean;
   }[] = [];
 
-  // Level 1: direct referrer → newDriver
+  // Level 1: edge direta — isDirect=true
   edgesToCreate.push({
-    referrerDriverId,
+    referrerDriverId: referrerDriverId,
     referredDriverId: newDriverId,
     level: 1,
+    isDirect: true,
   });
 
   // Inherited levels: find all referrals where the referrer is the referred party
@@ -109,17 +115,68 @@ export async function createDriverReferralChain(
       referredDriverId: referrerDriverId,
       level: { lt: REFERRAL_TREE_MAX_DEPTH },
     },
+    select: {
+      level: true,
+      referrerDriverId: true,
+      referredDriverId: true,
+    },
   });
 
   for (const parent of parentReferrals) {
     const inheritedLevel = parent.level + 1;
     if (inheritedLevel > REFERRAL_TREE_MAX_DEPTH) continue;
-    if (parent.referrerDriverId === newDriverId) continue; // prevent cycles
 
+    // Regra de materialização correta:
+    // se o upstream (pai) indicou `parent.referredDriverId` no `parent.level`,
+    // então para o novo nó devemos criar a aresta `parent.referredDriverId -> newDriver`.
+    // Isso preserva a cadeia real parent -> child e permite que o snapshot por referrerDriverId
+    // encontre level2/level3 corretamente.
+
+    // Evita edge auto-referencial nos herdados
+    if (parent.referrerDriverId === newDriverId) continue;
+
+    // BUG FIX: usa parent.referrerDriverId (o ancestral real), não parent.referredDriverId.
+    // Exemplo: para edge {referrerDriverId=Pedro, referredDriverId=João, level=1},
+    // cria {referrerDriverId=Pedro, referredDriverId=Carlinhos, level=2, isDirect=false}
+    // e NÃO {referrerDriverId=João, referredDriverId=Carlinhos, level=2} (duplicata silenciosa).
     edgesToCreate.push({
       referrerDriverId: parent.referrerDriverId,
       referredDriverId: newDriverId,
       level: inheritedLevel,
+      isDirect: false,
+    });
+  }
+
+  const directEdge = edgesToCreate.find((e) => e.isDirect);
+  const inheritedEdges = edgesToCreate.filter((e) => !e.isDirect);
+
+  if (directEdge) {
+    console.info("[Referral] DIRECT_EDGE_CREATED", {
+      referrerDriverId: directEdge.referrerDriverId,
+      referredDriverId: directEdge.referredDriverId,
+      level: directEdge.level,
+    });
+  }
+
+  for (const edge of inheritedEdges) {
+    console.info("[Referral] INHERITED_EDGE_CREATED", {
+      referrerDriverId: edge.referrerDriverId,
+      referredDriverId: edge.referredDriverId,
+      level: edge.level,
+    });
+    console.info("[Referral] LEVEL_PROPAGATED", {
+      ancestorDriverId: edge.referrerDriverId,
+      newDriverId: edge.referredDriverId,
+      level: edge.level,
+    });
+  }
+
+  if (inheritedEdges.length > 0) {
+    console.info("[Referral] ANCESTRY_EXPANDED", {
+      newDriverId,
+      referrerDriverId,
+      ancestorsFound: inheritedEdges.length,
+      levels: inheritedEdges.map((e) => e.level),
     });
   }
 
@@ -129,53 +186,31 @@ export async function createDriverReferralChain(
   });
 }
 
-/**
- * Returns the IDs of all drivers in the network of a given driver, grouped by level.
- */
-export async function getDriverNetwork(driverId: string): Promise<DriverNetwork> {
-  const referrals = await prisma.driverReferral.findMany({
-    where: { referrerDriverId: driverId },
-    select: { referredDriverId: true, level: true },
-  });
-
-  const network: DriverNetwork = { level1: [], level2: [], level3: [] };
-
-  for (const r of referrals) {
-    if (r.level === 1) network.level1.push(r.referredDriverId);
-    else if (r.level === 2) network.level2.push(r.referredDriverId);
-    else if (r.level === 3) network.level3.push(r.referredDriverId);
-  }
-
-  console.log(`[Referral] Level 1 drivers: ${network.level1.length}`);
-  console.log(`[Referral] Level 2 drivers: ${network.level2.length}`);
-  console.log(`[Referral] Level 3 drivers: ${network.level3.length}`);
-
-  return network;
-}
-
 export async function getDriverNetworkSnapshot(driverId: string): Promise<DriverNetworkSnapshot> {
   const referrals = await prisma.driverReferral.findMany({
     where: { referrerDriverId: driverId },
     select: {
       level: true,
-      referred: {
-        select: {
-          id: true,
-          isActive: true,
-          createdAt: true,
-          referralCode: true,
-          user: {
-            select: {
-              name: true,
-            },
-          },
-        },
-      },
+      referredDriverId: true,
+      // não usamos include de relações aqui porque o schema do merge atual está inconsistente
     },
     orderBy: [{ level: "asc" }, { createdAt: "desc" }],
   });
 
-  const referredDriverIds = referrals.map((item) => item.referred.id);
+  const referredDrivers = await prisma.driver.findMany({
+    where: { id: { in: referrals.map((r) => r.referredDriverId) } },
+    select: {
+      id: true,
+      isActive: true,
+      createdAt: true,
+      referralCode: true,
+      user: { select: { name: true } },
+    },
+  });
+
+  const referredDriverMap = new Map(referredDrivers.map((d) => [d.id, d]));
+
+  const referredDriverIds = referrals.map((item) => item.referredDriverId);
   const idsForPassengerMetrics = [driverId, ...referredDriverIds];
 
   const passengerCounts = await prisma.passenger.groupBy({
@@ -192,7 +227,10 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
 
   const passengerCountMap = new Map(
     passengerCounts
-      .filter((item): item is { referredByDriverId: string; _count: { _all: number } } => Boolean(item.referredByDriverId))
+      .filter(
+        (item): item is { referredByDriverId: string; _count: { _all: number } } =>
+          Boolean(item.referredByDriverId)
+      )
       .map((item) => [item.referredByDriverId, item._count._all])
   );
 
@@ -204,13 +242,16 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
   );
 
   for (const item of referrals) {
+    const referred = referredDriverMap.get(item.referredDriverId);
+    if (!referred) continue;
+
     const node: DriverNetworkNode = {
-      driverId: item.referred.id,
-      name: item.referred.user.name,
-      referralCode: item.referred.referralCode,
-      isActive: item.referred.isActive,
-      createdAt: item.referred.createdAt,
-      referredPassengersCount: passengerCountMap.get(item.referred.id) ?? 0,
+      driverId: referred.id,
+      name: referred.user.name,
+      referralCode: referred.referralCode,
+      isActive: referred.isActive,
+      createdAt: referred.createdAt,
+      referredPassengersCount: passengerCountMap.get(referred.id) ?? 0,
     };
 
     const levelKey = `level${item.level}`;
@@ -233,9 +274,12 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
   );
   const totalReferredDrivers = Object.values(referredDriversByLevel).reduce((total, count) => total + count, 0);
 
+  const totalPassengers = directPassengers + networkPassengers;
+
   return {
     driverId,
     levels,
+    totalPassengers,
     summary: {
       referredDrivers: {
         level1: referredDriversByLevel.level1 ?? 0,
@@ -250,8 +294,21 @@ export async function getDriverNetworkSnapshot(driverId: string): Promise<Driver
       referredPassengers: {
         direct: directPassengers,
         fromNetwork: networkPassengers,
-        total: directPassengers + networkPassengers,
+        total: totalPassengers,
       },
     },
   };
 }
+
+// Compat layer para código legado que ainda espera level1/level2/level3 como arrays de IDs.
+// Mantém o domínio novo (snapshot 5 níveis) como fonte de verdade.
+export async function getDriverNetwork(driverId: string): Promise<DriverNetworkLevels> {
+  const snapshot = await getDriverNetworkSnapshot(driverId);
+
+  return {
+    level1: (snapshot.levels.level1 ?? []).map((n) => n.driverId),
+    level2: (snapshot.levels.level2 ?? []).map((n) => n.driverId),
+    level3: (snapshot.levels.level3 ?? []).map((n) => n.driverId),
+  };
+}
+

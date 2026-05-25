@@ -7,6 +7,13 @@ const controller = new PassengerController();
 // POST /passengers
 router.post("/", (req, res) => controller.create(req, res));
 
+// GET /passengers/ref/:slug — public referral URL (must come before /:id)
+router.get("/ref/:slug", (req, res) => controller.resolveBySlug(req, res));
+
+// Specific routes MUST come before /:id to avoid /:id consuming "network" as an id
+router.get("/:id/network/hierarchy", (req, res) => controller.getHierarchy(req, res));
+router.get("/:id/network", (req, res) => controller.getNetwork(req, res));
+
 // GET /passengers/:id
 router.get("/:id", (req, res) => controller.getById(req, res));
 

@@ -1,32 +1,37 @@
 [
   {
     "name": "Carlos Silva",
-    "driverId": "e27ed162-7fd0-4eee-87bb-c502d8d63e45",
+    "driverId": "1524efa1-088f-4bb7-9358-49578ccfaf61",
     "email": "carlos@driver.com",
-    "region": "ZN"
+    "region": "ZN",
+    "referralCode": "cmpfv087m0000c8v4gk1gdig4"
   },
   {
     "name": "Marcos Lima",
-    "driverId": "ba395ecc-dd02-4a79-83b3-9579cfba92c6",
+    "driverId": "89b593c4-186b-4da6-bbb9-e9aeb5215af8",
     "email": "marcos@driver.com",
-    "region": "ZS"
+    "region": "ZS",
+    "referralCode": "cmpfv08920001c8v4gyaosdk3"
   },
   {
     "name": "Roberto Souza",
-    "driverId": "f0db1960-6915-46ec-8b41-834e73665dcb",
+    "driverId": "3d15833a-0dc4-4aa6-86e8-d17f36e9e7a1",
     "email": "roberto@driver.com",
-    "region": "ZO"
+    "region": "ZO",
+    "referralCode": "cmpfv08cg0002c8v47wzywo7h"
   },
   {
     "name": "Pedro Paulo Motta",
-    "driverId": "fb18b98e-105b-4fbd-8230-895c3ad1f7e2",
+    "driverId": "9ed7955b-9fc0-45d4-bcf7-b89f90425576",
     "email": "mottapedro01@gmail.com",
-    "region": "ZN"
+    "region": "ZN",
+    "referralCode": "pedro-paulo-motta-zn"
   },
   {
     "name": "João Luiz Correa de Brito",
-    "driverId": "60c0dd6e-074a-47be-a200-0ab045223cfb",
+    "driverId": "d33f5ad3-d910-4279-b27b-a77ea6305db6",
     "email": "jlcbrito@driver.com",
-    "region": "ZN"
+    "region": "ZN",
+    "referralCode": "joao-luiz-correa-de-brito-zn"
   }
 ]

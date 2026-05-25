@@ -1,9 +1,10 @@
 import "dotenv/config";
-import fs from "fs";
-import bcrypt from "bcryptjs";
-import { PrismaClient, ExperienceLevel, VehicleCategory, Region } from "@prisma/client";
-import { PrismaPg } from "@prisma/adapter-pg";
+import { closeDevFixturesResources, runDevFixtures } from "./seeds/dev-fixtures";
 import { Pool } from "pg";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient, ExperienceLevel, VehicleCategory, Region } from "@prisma/client";
+import bcrypt from "bcrypt";
+import fs from "fs";
 import { createDriverReferralChain } from "../src/domain/services/DriverReferralService";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -71,7 +72,7 @@ async function main() {
     {
       name: "João Luiz Correa de Brito",
       email: "jlcbrito@driver.com",
-      phone: "11999990004",
+      phone: "21994693673",
       experienceLevel: ExperienceLevel.PROFISSIONAL,
       vehicle: {
         model: "Logan",
@@ -142,9 +143,7 @@ async function main() {
             vehicles: {
               create: [data.vehicle],
             },
-            regions: {
-              create: [{ region: data.region }],
-            },
+            regions: [data.region],
           },
         },
       },
@@ -198,7 +197,7 @@ async function main() {
       where: { referrerDriverId: carlosId, referredDriverId: marcosId },
     });
     if (!existing) {
-      await createDriverReferralChain(marcosId, carlosId);
+      await createDriverReferralChain(marcosId, carlosId, prisma);
       console.log(`🔗 Rede: Carlos Silva → Marcos Lima`);
     } else {
       console.log(`⚠️  Marcos Lima já tem referência, pulando...`);
@@ -210,7 +209,7 @@ async function main() {
       where: { referrerDriverId: carlosId, referredDriverId: robertoId },
     });
     if (!existing) {
-      await createDriverReferralChain(robertoId, carlosId);
+      await createDriverReferralChain(robertoId, carlosId, prisma);
       console.log(`🔗 Rede: Carlos Silva → Roberto Souza`);
     } else {
       console.log(`⚠️  Roberto Souza já tem referência, pulando...`);
@@ -222,7 +221,7 @@ async function main() {
       where: { referrerDriverId: pedroId, referredDriverId: joaoId },
     });
     if (!existing) {
-      await createDriverReferralChain(joaoId, pedroId);
+      await createDriverReferralChain(joaoId, pedroId, prisma);
       console.log(`🔗 Rede: Pedro Paulo Motta → João Luiz Correa de Brito`);
     } else {
       console.log(`⚠️  João Luiz já tem referência, pulando...`);
@@ -311,7 +310,7 @@ async function main() {
       data: {
         name: "Ana Cláudia Elias",
         email: ANA_CLAUDIA_EMAIL,
-        phone: "21999999999",
+        phone: "21974771788",
         role: "PASSENGER",
         passwordHash: DEFAULT_PASSWORD_HASH,
       },
@@ -330,14 +329,25 @@ async function main() {
     console.log(`⚠️  Ana Cláudia já existe, pulando...`);
   }
 
-  console.log("🌱 Seed concluído!");
-}
+    console.log("🌱 Seed concluído!");
+  }
 
-main()
-  .catch((e) => {
-    console.error("🔥 Erro no seed:", e);
+  main()
+    .catch((error) => {
+      console.error("🔥 Erro no seed:", error);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await closeDevFixturesResources();
+    });
+
+
+runDevFixtures()
+  .catch((error) => {
+    console.error("🔥 Erro no seed:", error);
     process.exit(1);
   })
   .finally(async () => {
-    await prisma.$disconnect();
+    await closeDevFixturesResources();
   });
+

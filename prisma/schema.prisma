@@ -6,6 +6,159 @@ datasource db {
   provider = "postgresql"
 }
 
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  phone        String
+  role         UserRole
+  createdAt    DateTime   @default(now())
+  passwordHash String?
+  driver       Driver?
+  passenger    Passenger?
+}
+
+model Driver {
+  id                 String               @id @default(uuid())
+  userId             String               @unique
+  experienceLevel    ExperienceLevel
+  isActive           Boolean              @default(true)
+  createdAt          DateTime             @default(now())
+  referralCode       String               @unique @default(cuid())
+  networkLevel       Int                  @default(0)
+  referredByDriverId String?
+  publicSlug         String?              @unique
+  regions            String[]
+  referredBy         Driver?              @relation("DriverDirectReferral", fields: [referredByDriverId], references: [id])
+  referredDrivers    Driver[]             @relation("DriverDirectReferral")
+  user               User                 @relation(fields: [userId], references: [id])
+  availability       DriverAvailability[]
+  // Multi-level referral network via join table
+  referralsMade      DriverReferral[]     @relation("Referrer")
+  referralsReceived  DriverReferral[]     @relation("Referred")
+
+  referredPassengers Passenger[]   @relation("DriverReferral")
+  offers             RideOffer[]
+  selectedRides      RideRequest[]
+  vehicles           Vehicle[]
+  /// Extensible JSON metadata (skills, badges, tier, etc.)
+  /// Example: { "skills": ["Colecionador"], "badges": [], "tier": null }
+  metadata           Json?
+
+  // V2 — Aliado Nacional relational network
+  invitedByRelationships ReferralRelationship[] @relation("InviterDriver")
+  rootRelationships      ReferralRelationship[] @relation("RootDriver")
+  skills                 DriverSkill[]
+}
+
+model Passenger {
+  id                    String        @id @default(uuid())
+  userId                String        @unique
+  referredByDriverId    String?
+  referralCode          String?       @unique
+  publicSlug            String?       @unique
+  referredByPassengerId String?
+  networkLevel          Int           @default(0)
+  rootPassengerId       String?
+  lineagePath           String[]      @default([])
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @default(now()) @updatedAt
+  referredByDriver      Driver?       @relation("DriverReferral", fields: [referredByDriverId], references: [id])
+  referredByPassenger   Passenger?    @relation("PassengerReferrals", fields: [referredByPassengerId], references: [id])
+  referrals             Passenger[]   @relation("PassengerReferrals")
+  user                  User          @relation(fields: [userId], references: [id])
+  rideRequests          RideRequest[]
+
+  // V2 — operational root in the driver network (nullable during rollout)
+  rootDriverId String?
+}
+
+model Vehicle {
+  id        String          @id @default(uuid())
+  driverId  String
+  model     String
+  brand     String
+  plate     String          @unique
+  category  VehicleCategory
+  createdAt DateTime        @default(now())
+  driver    Driver          @relation(fields: [driverId], references: [id])
+}
+
+model DriverAvailability {
+  id        String @id @default(uuid())
+  driverId  String
+  dayOfWeek Int
+  startTime String
+  endTime   String
+  driver    Driver @relation(fields: [driverId], references: [id])
+}
+
+model RideRequest {
+  id                  String      @id @default(uuid())
+  passengerId         String
+  origin              String
+  destination         String
+  scheduledAt         DateTime
+  operationalCutoffAt DateTime?
+  status              RideStatus  @default(PENDING)
+  selectedDriverId    String?
+  createdAt           DateTime    @default(now())
+  destinationLat      Float?
+  destinationLng      Float?
+  distanceKm          Float?
+  durationMin         Int?
+  originLat           Float?
+  originLng           Float?
+  priceEstimated      Float?
+  priceOffered        Float?
+  context             Json?
+  offers              RideOffer[]
+  passenger           Passenger   @relation(fields: [passengerId], references: [id])
+  selectedDriver      Driver?     @relation(fields: [selectedDriverId], references: [id])
+
+  // V2 — operational root in the driver network (nullable during rollout)
+  rootDriverId String?
+
+  @@index([scheduledAt])
+}
+
+model DriverReferral {
+  id String @id @default(uuid())
+
+  // Canonical naming (new referral/network domain)
+  referrerDriverId String
+  referredDriverId String
+  level            Int
+  // isDirect=true  → edge estrutural direta (A indicou B pessoalmente)
+  // isDirect=false → edge herdada/transitiva (closure propagation)
+  isDirect         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  // Relations
+  referrer Driver @relation("Referrer", fields: [referrerDriverId], references: [id])
+  referred Driver @relation("Referred", fields: [referredDriverId], references: [id])
+
+  @@unique([referrerDriverId, referredDriverId])
+  @@index([referredDriverId])
+  @@index([referrerDriverId, level])
+  @@index([referrerDriverId, isDirect])
+}
+
+model RideOffer {
+  id            String          @id @default(uuid())
+  rideRequestId String
+  driverId      String
+  status        RideOfferStatus @default(PENDING)
+  expiresAt     DateTime
+  respondedAt   DateTime?
+  createdAt     DateTime        @default(now())
+  driver        Driver          @relation(fields: [driverId], references: [id])
+  rideRequest   RideRequest     @relation(fields: [rideRequestId], references: [id])
+
+  @@unique([rideRequestId, driverId])
+  @@index([driverId, status])
+}
+
 enum UserRole {
   DRIVER
   PASSENGER
@@ -34,7 +187,6 @@ enum Region {
 enum RideStatus {
   PENDING
   MATCHING
-  WAITING_REFERRAL
   WAITING_DRIVER
   ACCEPTED
   REJECTED
@@ -42,6 +194,7 @@ enum RideStatus {
   IN_PROGRESS
   COMPLETED
   CANCELLED
+  WAITING_REFERRAL
 }
 
 enum RideOfferStatus {
@@ -51,152 +204,84 @@ enum RideOfferStatus {
   EXPIRED
 }
 
-model User {
-  id           String   @id @default(uuid())
-  name         String
-  email        String   @unique
-  phone        String
-  role         UserRole
-  passwordHash String?
-  createdAt    DateTime @default(now())
+// ─────────────────────────────────────────────────────────────────────────────
+// V2 — Aliado Nacional relational network + first-class driver skills
+// ─────────────────────────────────────────────────────────────────────────────
 
-  driver    Driver?
-  passenger Passenger?
+enum ReferralFlowType {
+  DRIVER_TO_DRIVER
+  DRIVER_TO_PASSENGER
+  PASSENGER_TO_PASSENGER
 }
 
-model Driver {
-  id              String          @id @default(uuid())
-  userId          String          @unique
-  referralCode    String          @unique @default(cuid())
-  experienceLevel ExperienceLevel
-  isActive        Boolean         @default(true)
-  createdAt       DateTime        @default(now())
-  selectedRides RideRequest[]
-
-  user        User                 @relation(fields: [userId], references: [id])
-  vehicles    Vehicle[]
-  regions     DriverRegion[]
-  offers      RideOffer[]
-  availability DriverAvailability[]
-
-  referredPassengers Passenger[]  @relation("DriverReferral")
-
-  // Multi-level referral network via join table
-  referralsMade     DriverReferral[] @relation("Referrer")
-  referralsReceived DriverReferral[] @relation("Referred")
+enum ActorType {
+  DRIVER
+  PASSENGER
 }
 
-model Passenger {
-  id                 String   @id @default(uuid())
-  userId             String   @unique
-  referredByDriverId String?
-
-  user User @relation(fields: [userId], references: [id])
-
-  referredByDriver Driver? @relation("DriverReferral", fields: [referredByDriverId], references: [id])
-
-  rideRequests RideRequest[]
-
-  @@index([referredByDriverId])
+enum DriverSkillCode {
+  COLECIONADOR
+  EXECUTIVO
+  TRANSPORTE_ASSISTIDO
+  AEROPORTO
+  LONG_DISTANCE
+  PREMIUM
+  VIP
 }
 
-model Vehicle {
-  id        String          @id @default(uuid())
-  driverId  String
-  model     String
-  brand     String
-  plate     String          @unique
-  category  VehicleCategory
-  createdAt DateTime        @default(now())
+/// Polymorphic referral graph — captures inviter→invited across actor types.
+/// Single source of truth for the relational network; integrity enforced at
+/// the service layer plus @@unique([invitedActorType, invitedId]).
+model ReferralRelationship {
+  id       String           @id @default(uuid())
+  flowType ReferralFlowType
+
+  inviterActorType ActorType
+  inviterId        String
+
+  invitedActorType ActorType
+  invitedId        String
+
+  /// Operational root driver in the Aliado network (denormalized for fast reads).
+  rootDriverId String
+  rootDriver   Driver @relation("RootDriver", fields: [rootDriverId], references: [id])
+
+  /// Optional FK back to the inviter Driver when inviter is a DRIVER.
+  inviterDriverId String?
+  inviterDriver   Driver? @relation("InviterDriver", fields: [inviterDriverId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([invitedActorType, invitedId])
+  @@index([rootDriverId])
+  @@index([inviterActorType, inviterId])
+  @@index([flowType])
+}
+
+/// Catalogue of operational skills a driver can hold.
+model Skill {
+  id          String          @id @default(uuid())
+  code        DriverSkillCode @unique
+  displayName String
+  description String?
+  isActive    Boolean         @default(true)
+  createdAt   DateTime        @default(now())
+
+  drivers DriverSkill[]
+}
+
+/// Join table — a driver's skill assignment.
+model DriverSkill {
+  id         String   @id @default(uuid())
+  driverId   String
+  skillId    String
+  level      Int      @default(1)
+  unlockedAt DateTime @default(now())
+  metadata   Json?
 
   driver Driver @relation(fields: [driverId], references: [id])
-}
+  skill  Skill  @relation(fields: [skillId], references: [id])
 
-model DriverRegion {
-  id       String @id @default(uuid())
-  driverId String
-  region   Region
-
-  driver Driver @relation(fields: [driverId], references: [id])
-
-  @@unique([driverId, region])
-}
-
-model DriverAvailability {
-  id        String @id @default(uuid())
-  driverId  String
-  dayOfWeek Int
-  startTime String
-  endTime   String
-
-  driver Driver @relation(fields: [driverId], references: [id])
-}
-
-model RideRequest {
-  id               String      @id @default(uuid())
-  passengerId      String
-  origin           String
-  destination      String
-
-  // 🚀 NOVOS CAMPOS (V2 READY)
-  originLat        Float?
-  originLng        Float?
-  destinationLat   Float?
-  destinationLng   Float?
-
-  distanceKm       Float?
-  durationMin      Int?
-
-  priceEstimated   Float?
-  priceOffered     Float?
-
-  // 🎯 V1.3 — Contexto da corrida
-  context          Json?
-
-  scheduledAt      DateTime
-  status           RideStatus  @default(PENDING)
-  selectedDriverId String?
-  createdAt        DateTime    @default(now())
-
-  passenger Passenger @relation(fields: [passengerId], references: [id])
-
-  offers RideOffer[]
-
-  selectedDriver Driver? @relation(fields: [selectedDriverId], references: [id])
-
-  @@index([scheduledAt])
-}
-
-model DriverReferral {
-  id               String   @id @default(uuid())
-
-  referrerDriverId String
-  referrer         Driver   @relation("Referrer", fields: [referrerDriverId], references: [id])
-
-  referredDriverId String
-  referred         Driver   @relation("Referred", fields: [referredDriverId], references: [id])
-
-  level            Int
-
-  createdAt        DateTime @default(now())
-
-  @@unique([referrerDriverId, referredDriverId])
-  @@index([referredDriverId])
-  @@index([referrerDriverId, level])
-}
-
-model RideOffer {
-  id            String          @id @default(uuid())
-  rideRequestId String
-  driverId      String
-  status        RideOfferStatus @default(PENDING)
-  expiresAt     DateTime
-  respondedAt   DateTime?
-  createdAt     DateTime        @default(now())
-
-  rideRequest RideRequest @relation(fields: [rideRequestId], references: [id])
-  driver      Driver      @relation(fields: [driverId], references: [id])
-
-  @@unique([rideRequestId, driverId])
-  @@index([driverId, status])
+  @@unique([driverId, skillId])
+  @@index([skillId])
 }

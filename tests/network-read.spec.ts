@@ -19,6 +19,7 @@ describe("Driver network read API", () => {
         isActive: true,
         experienceLevel: "PROFISSIONAL",
         referralCode: "root-network",
+        regions: ["ZN"],
       },
     });
 

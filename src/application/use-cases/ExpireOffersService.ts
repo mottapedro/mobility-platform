@@ -1,5 +1,7 @@
 import { prisma } from "../../infra/prisma/client";
 import { MatchRideUseCase } from "./MatchRideUseCase";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
 export class ExpireOffersService {
   async execute(): Promise<void> {
@@ -21,6 +23,11 @@ export class ExpireOffersService {
     await prisma.rideOffer.updateMany({
       where: { id: { in: offerIds } },
       data: { status: "EXPIRED" },
+    });
+
+    offerIds.forEach((id) => {
+      const rideId = expiredOffers.find((o) => o.id === id)!.rideRequestId;
+      logMatchingEvent({ rideId, event: "OFFER_EXPIRED", metadata: { offerId: id } });
     });
 
     console.log(`⏱️ ${offerIds.length} offer(s) expirada(s)`);
@@ -58,7 +65,28 @@ export class ExpireOffersService {
     const expiredRideIds: string[] = [];
 
     for (const rideId of rematchCandidates) {
+      // Check operational cutoff before attempting re-match.
+      const ride = await prisma.rideRequest.findUnique({
+        where: { id: rideId },
+        select: { scheduledAt: true, operationalCutoffAt: true },
+      });
+
+      const policy = AcceptancePolicyEngine.computePolicy(
+        ride?.scheduledAt ?? null
+      );
+
+      if (AcceptancePolicyEngine.isBeyondCutoff(now, policy)) {
+        logMatchingEvent({
+          rideId,
+          event: "OPERATIONAL_CUTOFF_REACHED",
+          metadata: { operationalCutoffAt: policy.operationalCutoffAt?.toISOString() },
+        });
+        expiredRideIds.push(rideId);
+        continue;
+      }
+
       console.log(`🔄 Re-match automático para corrida ${rideId}...`);
+      logMatchingEvent({ rideId, event: "OFFER_REDISTRIBUTED" });
       const { matched } = await matchRide.execute({ rideId });
 
       if (!matched) {
