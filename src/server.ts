@@ -7,9 +7,16 @@ import { rideRoutes } from "./presentation/routes/ride.routes";
 import { offerRoutes } from "./presentation/routes/offer.routes";
 import { passengerRoutes } from "./presentation/routes/passenger.routes";
 import { driverRoutes } from "./presentation/routes/driver.routes";
-import { publicRoutes } from "./presentation/routes/public.routes";
+import { canonicalPublicRoutes, publicRoutes } from "./presentation/routes/public.routes";
 import { authRoutes } from "./presentation/routes/auth.routes";
 import { testRoutes } from "./presentation/routes/test.routes";
+import { godnetworkRoutes } from "./presentation/routes/godnetwork.routes";
+import { ridesPaymentRouter, pixWebhookRouter } from "./presentation/routes/payment.routes";
+import {
+  onboardingRouter,
+  passengersNetworkRouter,
+  driversNetworkRouter,
+} from "./presentation/routes/network-v2.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
 
@@ -54,12 +61,19 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
+app.use("/", canonicalPublicRoutes);
 app.use("/public", publicRoutes);
 app.use("/auth", authRoutes);
 app.use("/rides", rideRoutes);
+app.use("/rides", ridesPaymentRouter);
+app.use("/webhooks", pixWebhookRouter);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
+app.use("/passengers", passengersNetworkRouter);
 app.use("/drivers", driverRoutes);
+app.use("/drivers", driversNetworkRouter);
+app.use("/onboarding", onboardingRouter);
+app.use("/godnetwork", godnetworkRoutes);
 
 if (process.env.NODE_ENV !== "production") {
   app.use("/test", testRoutes);
