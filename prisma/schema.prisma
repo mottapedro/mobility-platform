@@ -393,3 +393,30 @@ model DomainEvent {
   @@index([aggregateType, aggregateId])
   @@index([occurredAt])
 }
+
+/// Operational invite slugs used to onboard new drivers/passengers under a
+/// referrer. Polymorphic owner (DRIVER or PASSENGER). Consumed once.
+model Invite {
+  id String @id @default(uuid())
+
+  /// Public, URL-safe slug shared with the invitee.
+  slug String @unique
+  /// Optional opaque token (private deep-link). Unique when present.
+  token String? @unique
+
+  ownerActorType    ActorType
+  ownerId           String
+  /// Flow this invite is meant to produce (e.g. DRIVER_TO_PASSENGER).
+  expectedFlowType  ReferralFlowType
+  /// Actor type the consumer is expected to register as.
+  expectedActorType ActorType
+
+  expiresAt        DateTime?
+  consumedAt       DateTime?
+  consumedByUserId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([ownerActorType, ownerId])
+  @@index([expectedFlowType])
+}
