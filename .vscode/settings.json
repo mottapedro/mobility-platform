@@ -1,3 +1,13 @@
 {
-    "chat.editing.autoAcceptDelay": 1
+    "chat.editing.autoAcceptDelay": 1,
+    "chat.tools.terminal.autoApprove": {
+        "/^cd \"c:\\\\Users\\\\ATI\\\\OneDrive - Step Computer Academy Brasil\\\\mobility-platform\" ; npx ts-node --project tsconfig\\.json -e \"\nconst \\{ prisma \\} = require\\('\\./src/infra/prisma/client'\\);\nasync function main\\(\\) \\{\n  const u = await prisma\\.user\\.findFirst\\(\\{ where: \\{ email: 'mottapedro01@gmail\\.com' \\}, select: \\{ id: true, name: true, email: true, role: true \\} \\}\\);\n  console\\.log\\('USER:', JSON\\.stringify\\(u, null, 2\\)\\);\n  if \\(!u\\) return;\n  const d = await prisma\\.driver\\.findFirst\\(\\{ where: \\{ userId: u\\.id \\}, select: \\{ id: true, isActive: true, experienceLevel: true, publicSlug: true, referralCode: true, rootDriverId: true \\} \\}\\);\n  console\\.log\\('DRIVER:', JSON\\.stringify\\(d, null, 2\\)\\);\n  if \\(!d\\) return;\n  const rels = await prisma\\.referralRelationship\\.findMany\\(\\{ where: \\{ OR: \\[\\{ inviterId: d\\.id \\}, \\{ invitedId: d\\.id \\}\\] \\}, select: \\{ id: true, inviterId: true, invitedId: true, flowType: true, depth: true \\} \\}\\);\n  console\\.log\\('RELATIONSHIPS:', JSON\\.stringify\\(rels, null, 2\\)\\);\n\\}\nmain\\(\\)\\.catch\\(console\\.error\\)\\.finally\\(\\(\\) => prisma\\.\\\\\\$disconnect\\(\\)\\);\n\" 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^cd \"c:\\\\Users\\\\ATI\\\\OneDrive - Step Computer Academy Brasil\\\\mobility-platform\" ; node -e \"\nconst \\{ PrismaClient \\} = require\\('@prisma/client'\\);\nconst prisma = new PrismaClient\\(\\);\nasync function main\\(\\) \\{\n  const u = await prisma\\.user\\.findFirst\\(\\{ where: \\{ email: 'mottapedro01@gmail\\.com' \\}, select: \\{ id: true, name: true, email: true, role: true \\} \\}\\);\n  console\\.log\\('USER:', JSON\\.stringify\\(u, null, 2\\)\\);\n  if \\(!u\\) \\{ await prisma\\['\\\\\\$disconnect'\\]\\(\\); return; \\}\n  const d = await prisma\\.driver\\.findFirst\\(\\{ where: \\{ userId: u\\.id \\}, select: \\{ id: true, isActive: true, experienceLevel: true, publicSlug: true, referralCode: true, rootDriverId: true \\} \\}\\);\n  console\\.log\\('DRIVER:', JSON\\.stringify\\(d, null, 2\\)\\);\n  if \\(!d\\) \\{ await prisma\\['\\\\\\$disconnect'\\]\\(\\); return; \\}\n  const rels = await prisma\\.referralRelationship\\.findMany\\(\\{ where: \\{ OR: \\[\\{ inviterId: d\\.id \\}, \\{ invitedId: d\\.id \\}\\] \\}, select: \\{ id: true, inviterId: true, invitedId: true, flowType: true, depth: true \\} \\}\\);\n  console\\.log\\('RELATIONSHIPS:', JSON\\.stringify\\(rels, null, 2\\)\\);\n  await prisma\\['\\\\\\$disconnect'\\]\\(\\);\n\\}\nmain\\(\\)\\.catch\\(e => \\{ console\\.error\\(e\\); process\\.exit\\(1\\); \\}\\);\n\" 2>&1$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
 }
