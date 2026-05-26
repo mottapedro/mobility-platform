@@ -41,6 +41,6 @@ describe("POST /rides", () => {
     });
 
     expect(ride).toBeTruthy();
-    expect(ride?.status).toBeDefined();
+    expect(["PENDING", "WAITING_REFERRAL", "MATCHING"]).toContain(ride?.status);
   });
 });
