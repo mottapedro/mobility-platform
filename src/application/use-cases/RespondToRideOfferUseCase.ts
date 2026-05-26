@@ -1,5 +1,6 @@
 ﻿import { prisma } from "../../infra/prisma/client";
-import { MatchRideUseCase } from "./MatchRideUseCase";
+import { logInfo } from "../../shared/logger";
+import { AdvanceRideDispatchUseCase } from "./AdvanceRideDispatchUseCase";
 
 export class OfferResponseError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -11,13 +12,16 @@ export class OfferResponseError extends Error {
 export class RespondToRideOfferUseCase {
 
   async execute(offerId: string, accept: boolean): Promise<{ accepted: boolean }> {
-
     const offer = await prisma.rideOffer.findUnique({
       where: { id: offerId },
     });
 
     if (!offer) {
       throw new OfferResponseError("OFFER_NOT_FOUND", "Offer nao encontrada");
+    }
+
+    if (offer.status === "EXPIRED" || new Date() > offer.expiresAt) {
+      throw new OfferResponseError("OFFER_EXPIRED", "Offer ja expirou");
     }
 
     if (offer.status !== "PENDING") {
@@ -27,95 +31,80 @@ export class RespondToRideOfferUseCase {
       );
     }
 
-    if (new Date() > offer.expiresAt) {
-      throw new OfferResponseError("OFFER_EXPIRED", "Offer ja expirou");
-    }
-
     const now = new Date();
 
     if (accept) {
-      await prisma.$transaction([
-        prisma.rideOffer.update({
-          where: { id: offerId },
+      await prisma.$transaction(async (tx) => {
+        const offerAccepted = await tx.rideOffer.updateMany({
+          where: {
+            id: offerId,
+            status: "PENDING",
+            expiresAt: { gt: now },
+          },
           data: { status: "ACCEPTED", respondedAt: now },
-        }),
-        prisma.rideOffer.updateMany({
+        });
+
+        if (offerAccepted.count === 0) {
+          throw new OfferResponseError("OFFER_EXPIRED", "Offer ja expirou");
+        }
+
+        const rideAccepted = await tx.rideRequest.updateMany({
+          where: {
+            id: offer.rideRequestId,
+            selectedDriverId: null,
+            status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_DRIVER"] },
+          },
+          data: {
+            status: "ACCEPTED",
+            selectedDriverId: offer.driverId,
+          },
+        });
+
+        if (rideAccepted.count === 0) {
+          throw new OfferResponseError("OFFER_ALREADY_RESPONDED", "Corrida ja foi atribuida");
+        }
+
+        await tx.rideOffer.updateMany({
           where: {
             rideRequestId: offer.rideRequestId,
             id: { not: offerId },
             status: "PENDING",
           },
-          data: { status: "EXPIRED" },
-        }),
-        prisma.rideRequest.update({
-          where: { id: offer.rideRequestId },
-          data: {
-            status: "ACCEPTED",
-            selectedDriverId: offer.driverId,
-          },
-        }),
-      ]);
-
-      console.log(`✅ Corrida ${offer.rideRequestId} aceita pelo driver ${offer.driverId}`);
-
-    } else {
-      const ride = await prisma.rideRequest.findUnique({
-        where: { id: offer.rideRequestId },
-        select: {
-          status: true,
-          passenger: { select: { referredByDriverId: true } },
-        },
+          data: { status: "EXPIRED", respondedAt: now },
+        });
       });
 
-      await prisma.rideOffer.update({
-        where: { id: offerId },
+      logInfo("ride.dispatch.offer_accepted", {
+        rideId: offer.rideRequestId,
+        driverId: offer.driverId,
+        offerId,
+      });
+
+    } else {
+      const rejected = await prisma.rideOffer.updateMany({
+        where: {
+          id: offerId,
+          status: "PENDING",
+          expiresAt: { gt: now },
+        },
         data: { status: "REJECTED", respondedAt: now },
       });
 
-      console.log("Driver " + offer.driverId + " rejeitou a corrida " + offer.rideRequestId);
-
-      const isWaitingReferral = ride?.status === "WAITING_REFERRAL";
-      const isReferredDriver  = ride?.passenger?.referredByDriverId === offer.driverId;
-
-      if (isWaitingReferral && isReferredDriver) {
-        await prisma.rideRequest.update({
-          where: { id: offer.rideRequestId },
-          data: { status: "MATCHING" },
-        });
-
-        const matchRide = new MatchRideUseCase();
-        const { matched } = await matchRide.execute({
-          rideId: offer.rideRequestId,
-          level: "NETWORK_L1",
-          excludedDriverIds: [offer.driverId],
-        });
-
-        if (!matched) {
-          await prisma.rideRequest.update({
-            where: { id: offer.rideRequestId },
-            data: { status: "EXPIRED" },
-          });
-        }
-      } else {
-        const pendingCount = await prisma.rideOffer.count({
-          where: { rideRequestId: offer.rideRequestId, status: "PENDING" },
-        });
-
-        if (pendingCount === 0) {
-          const matchRide = new MatchRideUseCase();
-          const { matched } = await matchRide.execute({ rideId: offer.rideRequestId });
-
-          if (!matched) {
-            await prisma.rideRequest.update({
-              where: {
-                id: offer.rideRequestId,
-                status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL"] },
-              },
-              data: { status: "EXPIRED" },
-            });
-          }
-        }
+      if (rejected.count === 0) {
+        throw new OfferResponseError("OFFER_EXPIRED", "Offer ja expirou");
       }
+
+      logInfo("ride.dispatch.offer_rejected", {
+        rideId: offer.rideRequestId,
+        driverId: offer.driverId,
+        offerId,
+      });
+
+      const advanceRideDispatchUseCase = new AdvanceRideDispatchUseCase();
+      await advanceRideDispatchUseCase.execute({
+        rideId: offer.rideRequestId,
+        excludedDriverIds: [offer.driverId],
+      });
     }
 
     return { accepted: accept };

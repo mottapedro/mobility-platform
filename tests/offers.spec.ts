@@ -1,6 +1,7 @@
 import request from "supertest";
 import { app } from "../src/app";
 import { prisma } from "./setup";
+import { ExpireOffersService } from "../src/application/use-cases/ExpireOffersService";
 
 describe("PATCH /offers/respond", () => {
   it("deve aceitar uma offer", async () => {
@@ -125,5 +126,74 @@ describe("PATCH /offers/respond", () => {
     });
 
     expect(updatedOffer?.status).toBe("REJECTED");
+  });
+
+  it("does not accept an offer after the referral fallback already expired it", async () => {
+    const referredDriver = await prisma.user.create({
+      data: {
+        name: "Race Driver",
+        email: "race.driver@test.com",
+        phone: "21777777777",
+        role: "DRIVER",
+        driver: {
+          create: {
+            experienceLevel: "PROFISSIONAL",
+            isActive: true,
+          },
+        },
+      },
+      include: { driver: true },
+    });
+
+    const passenger = await prisma.passenger.create({
+      data: {
+        user: {
+          create: {
+            name: "Race Passenger",
+            email: "race.passenger@test.com",
+            phone: "21666666666",
+            role: "PASSENGER",
+          },
+        },
+        referredByDriver: {
+          connect: { id: referredDriver.driver!.id },
+        },
+      },
+    });
+
+    const ride = await prisma.rideRequest.create({
+      data: {
+        passengerId: passenger.id,
+        origin: "A",
+        destination: "B",
+        scheduledAt: new Date(Date.now() + 3_600_000),
+        status: "WAITING_REFERRAL",
+      },
+    });
+
+    const offer = await prisma.rideOffer.create({
+      data: {
+        rideRequestId: ride.id,
+        driverId: referredDriver.driver!.id,
+        status: "PENDING",
+        expiresAt: new Date(Date.now() - 1_000),
+      },
+    });
+
+    const expireOffers = new ExpireOffersService();
+    await expireOffers.execute();
+
+    const response = await request(app)
+      .patch(`/offers/${offer.id}/respond`)
+      .send({ accept: true });
+
+    expect(response.status).toBe(410);
+
+    const updatedRide = await prisma.rideRequest.findUniqueOrThrow({
+      where: { id: ride.id },
+    });
+
+    expect(updatedRide.selectedDriverId).toBeNull();
+    expect(updatedRide.status).not.toBe("ACCEPTED");
   });
 });

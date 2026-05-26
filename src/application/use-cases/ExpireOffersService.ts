@@ -1,5 +1,6 @@
 import { prisma } from "../../infra/prisma/client";
-import { MatchRideUseCase } from "./MatchRideUseCase";
+import { logInfo } from "../../shared/logger";
+import { AdvanceRideDispatchUseCase } from "./AdvanceRideDispatchUseCase";
 
 export class ExpireOffersService {
   async execute(): Promise<void> {
@@ -20,63 +21,14 @@ export class ExpireOffersService {
 
     await prisma.rideOffer.updateMany({
       where: { id: { in: offerIds } },
-      data: { status: "EXPIRED" },
+      data: { status: "EXPIRED", respondedAt: now },
     });
 
-    console.log(`⏱️ ${offerIds.length} offer(s) expirada(s)`);
+    logInfo("ride.dispatch.offers_expired", { offerCount: offerIds.length, rideIds });
 
-    // Para cada corrida afetada, verificar se há offers ativas — se não, tentar re-match
-    const ridesWithActiveOffers = await prisma.rideOffer.groupBy({
-      by: ["rideRequestId"],
-      where: {
-        rideRequestId: { in: rideIds },
-        status: { notIn: ["EXPIRED", "REJECTED"] },
-      },
-      _count: true,
-    });
-
-    const activeRideSet = new Set(
-      ridesWithActiveOffers.map((r) => r.rideRequestId)
-    );
-
-    // Corridas sem offers ativas: tentar re-match antes de expirar
-    const ridesToRematch = rideIds.filter((id) => !activeRideSet.has(id));
-
-    if (ridesToRematch.length === 0) return;
-
-    // Excluir corridas em WAITING_REFERRAL — o timeout de 60s já trata o fallback delas
-    const waitingReferralRides = await prisma.rideRequest.findMany({
-      where: { id: { in: ridesToRematch }, status: "WAITING_REFERRAL" },
-      select: { id: true },
-    });
-    const waitingSet = new Set(waitingReferralRides.map((r) => r.id));
-    const rematchCandidates = ridesToRematch.filter((id) => !waitingSet.has(id));
-
-    if (rematchCandidates.length === 0) return;
-
-    const matchRide = new MatchRideUseCase();
-    const expiredRideIds: string[] = [];
-
-    for (const rideId of rematchCandidates) {
-      console.log(`🔄 Re-match automático para corrida ${rideId}...`);
-      const { matched } = await matchRide.execute({ rideId });
-
-      if (!matched) {
-        expiredRideIds.push(rideId);
-      }
-    }
-
-    // Só expira as corridas que não encontraram nenhum driver disponível
-    if (expiredRideIds.length > 0) {
-      await prisma.rideRequest.updateMany({
-        where: {
-          id: { in: expiredRideIds },
-          status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER"] },
-        },
-        data: { status: "EXPIRED" },
-      });
-
-      console.log(`❌ ${expiredRideIds.length} corrida(s) expirada(s) — sem drivers disponíveis`);
+    const advanceRideDispatchUseCase = new AdvanceRideDispatchUseCase();
+    for (const rideId of rideIds) {
+      await advanceRideDispatchUseCase.execute({ rideId });
     }
   }
 }
