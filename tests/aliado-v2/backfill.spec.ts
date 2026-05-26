@@ -32,9 +32,9 @@ async function makeDriver(email: string, referredByDriverId?: string) {
   });
 }
 
-async function backfillDriverToDriverOnce() {
+async function backfillDriverToDriverOnce(rootId?: string) {
   const drivers = await prisma.driver.findMany({
-    where: { referredByDriverId: { not: null } },
+    where: { referredByDriverId: rootId !== undefined ? rootId : { not: null } },
     select: { id: true, referredByDriverId: true },
   });
   let created = 0;
@@ -66,11 +66,11 @@ describe("Backfill — referral relationships idempotency", () => {
     await makeDriver("bf.c1@backfill.test", root.id);
     await makeDriver("bf.c2@backfill.test", root.id);
 
-    const first = await backfillDriverToDriverOnce();
+    const first = await backfillDriverToDriverOnce(root.id);
     expect(first.created).toBe(2);
     expect(first.skipped).toBe(0);
 
-    const second = await backfillDriverToDriverOnce();
+    const second = await backfillDriverToDriverOnce(root.id);
     expect(second.created).toBe(0);
     expect(second.skipped).toBe(2);
   });
