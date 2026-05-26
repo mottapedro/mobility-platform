@@ -1,3 +1,18 @@
+/*
+  Warnings:
+
+  - You are about to drop the column `referredByDriverId` on the `Driver` table. All the data in the column will be lost.
+
+*/
+-- DropForeignKey
+ALTER TABLE "Driver" DROP CONSTRAINT "Driver_referredByDriverId_fkey";
+
+-- AlterTable
+ALTER TABLE "Driver" DROP COLUMN "referredByDriverId";
+
+-- AlterTable
+ALTER TABLE "User" ADD COLUMN     "passwordHash" TEXT;
+
 -- CreateTable
 CREATE TABLE "DriverReferral" (
     "id" TEXT NOT NULL,

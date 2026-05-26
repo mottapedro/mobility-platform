@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "RideStatus" ADD VALUE 'WAITING_REFERRAL';

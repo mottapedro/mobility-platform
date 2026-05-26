@@ -1,0 +1,1 @@
+ALTER TABLE "RideRequest" ADD COLUMN IF NOT EXISTS "operationalCutoffAt" TIMESTAMP(3);

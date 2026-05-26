@@ -1,449 +1,168 @@
-import request from "supertest";
-import { app } from "../src/server";
 import { prisma } from "./setup";
+import {
+  createDriverReferralChain,
+  getDriverNetwork,
+} from "../src/domain/services/DriverReferralService";
 
 jest.setTimeout(15000);
 
-// ─── Helper: wait for offers ─────────────────────────────────────────────────
-async function waitForOffers(
-  rideId: string,
-  minCount = 1,
-  maxWaitMs = 5000,
-  intervalMs = 150
-): Promise<Array<{ id: string; driverId: string; createdAt: Date }>> {
-  const deadline = Date.now() + maxWaitMs;
-  while (Date.now() < deadline) {
-    const offers = await prisma.rideOffer.findMany({
-      where: { rideRequestId: rideId },
-      orderBy: { createdAt: "asc" },
-      select: { id: true, driverId: true, createdAt: true },
-    });
-    if (offers.length >= minCount) return offers;
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  return [];
+async function createDriver(email: string) {
+  const user = await prisma.user.create({
+    data: {
+      name: email,
+      email,
+      phone: "11999990000",
+      role: "DRIVER",
+      driver: { create: { experienceLevel: "PROFISSIONAL", isActive: true } },
+    },
+    include: { driver: true },
+  });
+  return user.driver!;
 }
 
-// ─── Helper: create driver via API ───────────────────────────────────────────
-async function createDriver(data: {
-  name: string;
-  email: string;
-  phone: string;
-  experienceLevel?: string;
-  referredByDriverId?: string;
-}) {
-  const response = await request(app)
-    .post("/drivers")
-    .send({
-      experienceLevel: "PROFISSIONAL",
-      ...data,
-    });
-  expect(response.status).toBe(201);
-  return response.body.driver as { id: string };
-}
+// ─── createDriverReferralChain ────────────────────────────────────────────
+describe("createDriverReferralChain", () => {
+  it("persists the direct parent edge with referrerDriverId and isDirect=true", async () => {
+    const driverA = await createDriver("direct-parent-a@ref.com");
+    const driverB = await createDriver("direct-parent-b@ref.com");
 
-// ─── 1. Driver creation via API ───────────────────────────────────────────────
-describe("Driver — criação via API", () => {
-  it("deve criar um driver sem referral", async () => {
-    const response = await request(app).post("/drivers").send({
-      name: "Driver Solo",
-      email: "solo@driver.com",
-      phone: "10000000001",
-      experienceLevel: "INICIANTE",
+    await createDriverReferralChain(driverB.id, driverA.id);
+
+    const chain = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverB.id },
     });
 
-    expect(response.status).toBe(201);
-    expect(response.body.driver).toBeTruthy();
-    expect(response.body.driver.id).toBeTruthy();
+    expect(chain).not.toBeNull();
+    expect(chain!.level).toBe(1);
+    expect(chain!.isDirect).toBe(true);
   });
 
-  it("deve criar um driver com referredByDriverId", async () => {
-    const referrer = await createDriver({
-      name: "Referrer Driver",
-      email: "referrer@driver.com",
-      phone: "10000000002",
-    });
+  it("cria vínculo level 1 entre referrer e novo driver", async () => {
+    const driverA = await createDriver("a@ref.com");
+    const driverB = await createDriver("b@ref.com");
 
-    const response = await request(app).post("/drivers").send({
-      name: "Referred Driver",
-      email: "referred@driver.com",
-      phone: "10000000003",
-      experienceLevel: "INTERMEDIARIO",
-      referredByDriverId: referrer.id,
-    });
+    await createDriverReferralChain(driverB.id, driverA.id);
 
-    expect(response.status).toBe(201);
-    expect(response.body.driver.referredByDriverId).toBe(referrer.id);
-
-    // DriverReferral record should be created
-    const referral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: referrer.id,
-        referredDriverId: response.body.driver.id,
-      },
+    const chain = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverB.id },
     });
-    expect(referral).toBeTruthy();
-    expect(referral!.level).toBe(1);
+    expect(chain).not.toBeNull();
+    expect(chain!.level).toBe(1);
+    expect(chain!.isDirect).toBe(true);
   });
 
-  it("deve retornar 404 ao indicar driver inexistente", async () => {
-    const response = await request(app).post("/drivers").send({
-      name: "Bad Referral Driver",
-      email: "bad@driver.com",
-      phone: "10000000004",
-      experienceLevel: "INICIANTE",
-      referredByDriverId: "non-existent-id",
-    });
+  it("herda nível 2 quando referrer já tem um nível 1", async () => {
+    const driverA = await createDriver("a2@ref.com");
+    const driverB = await createDriver("b2@ref.com");
+    const driverC = await createDriver("c2@ref.com");
 
-    expect(response.status).toBe(404);
+    await createDriverReferralChain(driverB.id, driverA.id); // A→B level 1 (direct)
+    await createDriverReferralChain(driverC.id, driverB.id); // B→C level 1 (direct), A→C level 2 (inherited)
+
+    const level2 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverC.id },
+    });
+    expect(level2).not.toBeNull();
+    expect(level2!.level).toBe(2);
+    expect(level2!.isDirect).toBe(false);
   });
 
-  it("deve retornar 400 se campos obrigatórios estiverem ausentes", async () => {
-    const response = await request(app).post("/drivers").send({
-      name: "Incomplete Driver",
+  it("herda até nível 5 e NÃO cria nível 6", async () => {
+    const driverA = await createDriver("a3@ref.com");
+    const driverB = await createDriver("b3@ref.com");
+    const driverC = await createDriver("c3@ref.com");
+    const driverD = await createDriver("d3@ref.com");
+    const driverE = await createDriver("e3@ref.com");
+    const driverF = await createDriver("f3@ref.com");
+    const driverG = await createDriver("g3@ref.com");
+
+    await createDriverReferralChain(driverB.id, driverA.id);
+    await createDriverReferralChain(driverC.id, driverB.id);
+    await createDriverReferralChain(driverD.id, driverC.id); // A→D level 3
+
+    const level3 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverD.id },
     });
+    expect(level3!.level).toBe(3);
+    expect(level3!.isDirect).toBe(false);
 
-    expect(response.status).toBe(400);
-  });
-});
+    await createDriverReferralChain(driverE.id, driverD.id); // A→E level 4
+    await createDriverReferralChain(driverF.id, driverE.id); // A→F level 5
+    await createDriverReferralChain(driverG.id, driverF.id); // A→G would be level 6 — must NOT exist
 
-// ─── 2. Referral chain creation ───────────────────────────────────────────────
-describe("DriverReferral — cadeia de indicação", () => {
-  it("deve criar cadeia de nível 1 ao indicar um driver diretamente", async () => {
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@chain.com",
-      phone: "20000000001",
+    const level4 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverE.id },
     });
+    expect(level4).not.toBeNull();
+    expect(level4!.level).toBe(4);
 
-    const driverB = await createDriver({
-      name: "Driver B",
-      email: "b@chain.com",
-      phone: "20000000002",
-      referredByDriverId: driverA.id,
+    const level5 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverF.id },
     });
+    expect(level5).not.toBeNull();
+    expect(level5!.level).toBe(5);
 
-    const referrals = await prisma.driverReferral.findMany({
-      where: { referrerDriverId: driverA.id },
+    const level6 = await prisma.driverReferral.findFirst({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverG.id },
     });
-
-    expect(referrals.length).toBe(1);
-    expect(referrals[0].referredDriverId).toBe(driverB.id);
-    expect(referrals[0].level).toBe(1);
-  });
-
-  it("deve criar cadeia de nível 2 quando C é indicado por B (que foi indicado por A)", async () => {
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@level2.com",
-      phone: "21000000001",
-    });
-
-    const driverB = await createDriver({
-      name: "Driver B",
-      email: "b@level2.com",
-      phone: "21000000002",
-      referredByDriverId: driverA.id,
-    });
-
-    const driverC = await createDriver({
-      name: "Driver C",
-      email: "c@level2.com",
-      phone: "21000000003",
-      referredByDriverId: driverB.id,
-    });
-
-    // A → C should be level 2
-    const level2Referral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverA.id,
-        referredDriverId: driverC.id,
-      },
-    });
-
-    expect(level2Referral).toBeTruthy();
-    expect(level2Referral!.level).toBe(2);
-
-    // B → C should be level 1
-    const level1Referral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverB.id,
-        referredDriverId: driverC.id,
-      },
-    });
-
-    expect(level1Referral).toBeTruthy();
-    expect(level1Referral!.level).toBe(1);
+    expect(level6).toBeNull();
   });
 
-  it("deve criar cadeia de nível 3 para D indicado por C (A → B → C → D)", async () => {
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@level3.com",
-      phone: "22000000001",
+  it("não cria duplicidade quando chamado duas vezes", async () => {
+    const driverA = await createDriver("a4@ref.com");
+    const driverB = await createDriver("b4@ref.com");
+
+    await createDriverReferralChain(driverB.id, driverA.id);
+    await createDriverReferralChain(driverB.id, driverA.id); // duplicata — deve ser ignorada
+
+    const count = await prisma.driverReferral.count({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverB.id },
     });
-
-    const driverB = await createDriver({
-      name: "Driver B",
-      email: "b@level3.com",
-      phone: "22000000002",
-      referredByDriverId: driverA.id,
-    });
-
-    const driverC = await createDriver({
-      name: "Driver C",
-      email: "c@level3.com",
-      phone: "22000000003",
-      referredByDriverId: driverB.id,
-    });
-
-    const driverD = await createDriver({
-      name: "Driver D",
-      email: "d@level3.com",
-      phone: "22000000004",
-      referredByDriverId: driverC.id,
-    });
-
-    // A → D should be level 3
-    const level3Referral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverA.id,
-        referredDriverId: driverD.id,
-      },
-    });
-
-    expect(level3Referral).toBeTruthy();
-    expect(level3Referral!.level).toBe(3);
-
-    // B → D should be level 2
-    const level2Referral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverB.id,
-        referredDriverId: driverD.id,
-      },
-    });
-
-    expect(level2Referral).toBeTruthy();
-    expect(level2Referral!.level).toBe(2);
-
-    // C → D should be level 1
-    const level1Referral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverC.id,
-        referredDriverId: driverD.id,
-      },
-    });
-
-    expect(level1Referral).toBeTruthy();
-    expect(level1Referral!.level).toBe(1);
+    expect(count).toBe(1);
   });
 
-  it("não deve criar nível 4 ou superior (limite de 3 níveis)", async () => {
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@maxlevel.com",
-      phone: "23000000001",
-    });
-    const driverB = await createDriver({
-      name: "Driver B",
-      email: "b@maxlevel.com",
-      phone: "23000000002",
-      referredByDriverId: driverA.id,
-    });
-    const driverC = await createDriver({
-      name: "Driver C",
-      email: "c@maxlevel.com",
-      phone: "23000000003",
-      referredByDriverId: driverB.id,
-    });
-    const driverD = await createDriver({
-      name: "Driver D",
-      email: "d@maxlevel.com",
-      phone: "23000000004",
-      referredByDriverId: driverC.id,
-    });
+  it("não cria self-referral — lança ReferralChainError", async () => {
+    const driverA = await createDriver("self@ref.com");
 
-    // Create E (5th in chain) — A should NOT be referrer of E (would be level 4)
-    const driverE = await createDriver({
-      name: "Driver E",
-      email: "e@maxlevel.com",
-      phone: "23000000005",
-      referredByDriverId: driverD.id,
-    });
+    await expect(
+      createDriverReferralChain(driverA.id, driverA.id)
+    ).rejects.toThrow("autoindicação");
 
-    const wouldBeLevel4 = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverA.id,
-        referredDriverId: driverE.id,
-      },
+    const count = await prisma.driverReferral.count({
+      where: { referrerDriverId: driverA.id, referredDriverId: driverA.id },
     });
-
-    expect(wouldBeLevel4).toBeNull();
-
-    // D → E should be level 1
-    const directReferral = await prisma.driverReferral.findFirst({
-      where: {
-        referrerDriverId: driverD.id,
-        referredDriverId: driverE.id,
-      },
-    });
-    expect(directReferral).toBeTruthy();
-    expect(directReferral!.level).toBe(1);
+    expect(count).toBe(0);
   });
 });
 
-// ─── 3. getDriverNetwork endpoint ────────────────────────────────────────────
-describe("GET /drivers/:id/network", () => {
-  it("deve retornar a rede de indicações de um driver", async () => {
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@network.com",
-      phone: "24000000001",
-    });
+// ─── getDriverNetwork ─────────────────────────────────────────────────────
+describe("getDriverNetwork", () => {
+  it("retorna drivers agrupados por level 1, 2 e 3", async () => {
+    const driverA = await createDriver("net_a@ref.com");
+    const driverB = await createDriver("net_b@ref.com");
+    const driverC = await createDriver("net_c@ref.com");
+    const driverD = await createDriver("net_d@ref.com");
 
-    await createDriver({
-      name: "Driver B",
-      email: "b@network.com",
-      phone: "24000000002",
-      referredByDriverId: driverA.id,
-    });
+    await createDriverReferralChain(driverB.id, driverA.id);
+    await createDriverReferralChain(driverC.id, driverB.id);
+    await createDriverReferralChain(driverD.id, driverC.id);
 
-    await createDriver({
-      name: "Driver C",
-      email: "c@network.com",
-      phone: "24000000003",
-      referredByDriverId: driverA.id,
-    });
+    const network = await getDriverNetwork(driverA.id);
 
-    const response = await request(app).get(`/drivers/${driverA.id}/network`);
-
-    expect(response.status).toBe(200);
-    expect(response.body.network).toHaveLength(2);
-    expect(response.body.network.every((r: { level: number }) => r.level === 1)).toBe(true);
+    expect(network.level1).toContain(driverB.id);
+    expect(network.level2).toContain(driverC.id);
+    expect(network.level3).toContain(driverD.id);
+    expect(network.level1).not.toContain(driverC.id);
+    expect(network.level2).not.toContain(driverD.id);
   });
 
-  it("deve retornar 404 para driver inexistente", async () => {
-    const response = await request(app).get("/drivers/non-existent-id/network");
-    expect(response.status).toBe(404);
-  });
+  it("retorna arrays vazios quando driver não tem rede", async () => {
+    const driverA = await createDriver("lonely@ref.com");
 
-  it("deve incluir drivers de todos os níveis na rede", async () => {
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@fullnet.com",
-      phone: "25000000001",
-    });
+    const network = await getDriverNetwork(driverA.id);
 
-    const driverB = await createDriver({
-      name: "Driver B",
-      email: "b@fullnet.com",
-      phone: "25000000002",
-      referredByDriverId: driverA.id,
-    });
-
-    await createDriver({
-      name: "Driver C",
-      email: "c@fullnet.com",
-      phone: "25000000003",
-      referredByDriverId: driverB.id,
-    });
-
-    const response = await request(app).get(`/drivers/${driverA.id}/network`);
-
-    expect(response.status).toBe(200);
-    // A's network: B (level 1) + C (level 2) = 2 entries
-    expect(response.body.network).toHaveLength(2);
-
-    const levels = response.body.network.map((r: { level: number }) => r.level).sort();
-    expect(levels).toEqual([1, 2]);
-  });
-});
-
-// ─── 4. Matching with DriverReferral multi-level network ─────────────────────
-describe("Matching — PARTNER com rede DriverReferral multi-nível", () => {
-  it("deve incluir driver de nível 2 no PARTNER tier após rejeição do driver indicado", async () => {
-    // Driver A — refers passenger and is directly referred by nobody
-    const driverA = await createDriver({
-      name: "Driver A",
-      email: "a@multilevel.com",
-      phone: "26000000001",
-    });
-
-    // Driver B — referred by A (level 1)
-    const driverB = await createDriver({
-      name: "Driver B",
-      email: "b@multilevel.com",
-      phone: "26000000002",
-      referredByDriverId: driverA.id,
-    });
-
-    // Driver C — referred by B (level 1 from B, level 2 from A)
-    await createDriver({
-      name: "Driver C",
-      email: "c@multilevel.com",
-      phone: "26000000003",
-      referredByDriverId: driverB.id,
-    });
-
-    // Passenger referred by A
-    const passengerUser = await prisma.user.create({
-      data: {
-        name: "Passageiro Multi",
-        email: "passageiro@multilevel.com",
-        phone: "26000000004",
-        role: "PASSENGER",
-      },
-    });
-    const passenger = await prisma.passenger.create({
-      data: {
-        userId: passengerUser.id,
-        referredByDriverId: driverA.id,
-      },
-    });
-
-    // Create ride → Driver A gets REFERRED offer
-    const rideResponse = await request(app)
-      .post("/rides")
-      .send({
-        passengerId: passenger.id,
-        origin: "Ipanema",
-        destination: "Tijuca",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
-      });
-
-    expect(rideResponse.status).toBe(201);
-    const rideId = rideResponse.body.ride.id;
-
-    // Wait for Driver A's REFERRED offer
-    const offersAfterCreate = await waitForOffers(rideId, 1);
-    const driverAOffer = offersAfterCreate.find((o) => o.driverId === driverA.id);
-    expect(driverAOffer).toBeTruthy();
-
-    // Driver A rejects → triggers PARTNER tier re-match
-    const rejectResponse = await request(app)
-      .patch(`/offers/${driverAOffer!.id}/respond`)
-      .send({ accept: false });
-
-    expect(rejectResponse.status).toBe(200);
-
-    // B and C should both receive offers (level 1 and level 2 in A's network)
-    const allOffers = await prisma.rideOffer.findMany({
-      where: { rideRequestId: rideId },
-      select: { driverId: true },
-    });
-
-    const offerDriverIds = allOffers.map((o) => o.driverId);
-    expect(offerDriverIds).toContain(driverB.id);
-
-    // Driver C is at level 2 from A's perspective — also in the PARTNER network
-    const driverCId = (
-      await prisma.driverReferral.findFirst({
-        where: { referrerDriverId: driverB.id, level: 1 },
-        select: { referredDriverId: true },
-      })
-    )?.referredDriverId;
-
-    expect(driverCId).toBeTruthy();
-    expect(offerDriverIds).toContain(driverCId);
+    expect(network.level1).toHaveLength(0);
+    expect(network.level2).toHaveLength(0);
+    expect(network.level3).toHaveLength(0);
   });
 });

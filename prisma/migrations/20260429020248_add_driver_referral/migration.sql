@@ -1,0 +1,2 @@
+-- This migration is superseded by 20260429020039_add_driver_referral from the main branch.
+-- DriverReferral table was already created; this migration is intentionally a no-op.

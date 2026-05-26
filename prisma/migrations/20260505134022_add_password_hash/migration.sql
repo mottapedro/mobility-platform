@@ -1,0 +1,2 @@
+-- Column "passwordHash" was already added to the "User" table by migration 20260429020039.
+-- This migration is intentionally a no-op.

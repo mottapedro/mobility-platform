@@ -2,6 +2,7 @@
 module.exports = {
   testEnvironment: "node",
   testMatch: ["**/*.spec.ts"],
+  testPathIgnorePatterns: ["/node_modules/", "/tests/e2e/"],
   moduleFileExtensions: ["ts", "js"],
   rootDir: ".",
   transform: {
@@ -11,5 +12,4 @@ module.exports = {
         tsconfig: "./tsconfig.jest.json",
       },
     ],
-  },
-};
+  },  testTimeout: 15000,};

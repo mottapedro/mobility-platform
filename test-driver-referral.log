@@ -1,0 +1,258 @@
+
+> mobility-platform@1.0.0 test
+> jest --runInBand --forceExit tests/driver-referral.spec.ts --verbose
+
+  console.warn
+    [Referral] ciclo detectado e bloqueado {
+      newDriverId: '3abec69f-cc5c-4609-acda-61855f33f42b',
+      referrerDriverId: 'ff2cdeeb-ef2a-4e0c-b3d6-e43672450d4a'
+    }
+
+    [0m [90m 87 |[39m
+     [90m 88 |[39m   [36mif[39m (reverseEdge) {
+    [31m[1m>[22m[39m[90m 89 |[39m     console[33m.[39mwarn([32m"[Referral] ciclo detectado e bloqueado"[39m[33m,[39m { newDriverId[33m,[39m referrerDriverId })[33m;[39m
+     [90m    |[39m             [31m[1m^[22m[39m
+     [90m 90 |[39m     [36mthrow[39m [36mnew[39m [33mReferralChainError[39m([32m"Ciclo de referral detectado"[39m)[33m;[39m
+     [90m 91 |[39m   }
+     [90m 92 |[39m[0m
+
+      at createDriverReferralChain (src/domain/services/DriverReferralService.ts:89:13)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:112:5)
+
+FAIL tests/driver-referral.spec.ts
+  createDriverReferralChain
+    × persists the direct parent edge using the rollout-safe driverId field (560 ms)
+    × cria vínculo level 1 entre referrer e novo driver (75 ms)
+    × herda nível 2 quando referrer já tem um nível 1 (93 ms)
+    × herda até nível 5 e NÃO cria nível 6 (137 ms)
+    × não cria duplicidade quando chamado duas vezes (98 ms)
+    × não cria self-referral (32 ms)
+  getDriverNetwork
+    × retorna drivers agrupados por level 1, 2 e 3 (116 ms)
+    √ retorna arrays vazios quando driver não tem rede (41 ms)
+
+  ● createDriverReferralChain › persists the direct parent edge using the rollout-safe driverId field
+
+    PrismaClientValidationError: 
+    Invalid `prisma.driverReferral.findFirst()` invocation in
+    C:\Users\ATI\OneDrive - Step Computer Academy Brasil\mobility-platform\tests\driver-referral.spec.ts:31:47
+
+      28 
+      29 await createDriverReferralChain(driverB.id, driverA.id);
+      30 
+    → 31 const chain = await prisma.driverReferral.findFirst({
+           where: {
+             driverId: "02e3c405-1275-4237-892a-bed9101dd426",
+             ~~~~~~~~
+             referredDriverId: "f14647ed-bf3d-4b33-aa91-37d360b67a0c",
+         ?   AND?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   OR?: DriverReferralWhereInput[],
+         ?   NOT?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   id?: StringFilter | String,
+         ?   referrerDriverId?: StringFilter | String,
+         ?   level?: IntFilter | Int,
+         ?   createdAt?: DateTimeFilter | DateTime,
+         ?   referrer?: DriverScalarRelationFilter | DriverWhereInput,
+         ?   referred?: DriverScalarRelationFilter | DriverWhereInput
+           }
+         })
+
+    Unknown argument `driverId`. Available options are marked with ?.
+
+    [0m [90m 29 |[39m     [36mawait[39m createDriverReferralChain(driverB[33m.[39mid[33m,[39m driverA[33m.[39mid)[33m;[39m
+     [90m 30 |[39m
+    [31m[1m>[22m[39m[90m 31 |[39m     [36mconst[39m chain [33m=[39m [36mawait[39m prisma[33m.[39mdriverReferral[33m.[39mfindFirst({
+     [90m    |[39m                   [31m[1m^[22m[39m
+     [90m 32 |[39m       where[33m:[39m { driverId[33m:[39m driverA[33m.[39mid[33m,[39m referredDriverId[33m:[39m driverB[33m.[39mid }[33m,[39m
+     [90m 33 |[39m     })[33m;[39m
+     [90m 34 |[39m[0m
+
+      at ar (node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:9)
+      at zr.throwValidationException [as handleRequestError] (node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:7)
+      at zr.handleAndLogRequestError (node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:12)
+      at zr.request (node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:12)
+      at a (node_modules/@prisma/client/src/runtime/getPrismaClient.ts:963:24)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:31:19)
+
+  ● createDriverReferralChain › cria vínculo level 1 entre referrer e novo driver
+
+    PrismaClientValidationError: 
+    Invalid `prisma.driverReferral.findFirst()` invocation in
+    C:\Users\ATI\OneDrive - Step Computer Academy Brasil\mobility-platform\tests\driver-referral.spec.ts:45:47
+
+      42 
+      43 await createDriverReferralChain(driverB.id, driverA.id);
+      44 
+    → 45 const chain = await prisma.driverReferral.findFirst({
+           where: {
+             driverId: "2b339ecc-19c5-48dc-baa0-7beea1a058a4",
+             ~~~~~~~~
+             referredDriverId: "ff9fe8a5-ccb4-49a9-af80-26052a3efbd9",
+         ?   AND?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   OR?: DriverReferralWhereInput[],
+         ?   NOT?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   id?: StringFilter | String,
+         ?   referrerDriverId?: StringFilter | String,
+         ?   level?: IntFilter | Int,
+         ?   createdAt?: DateTimeFilter | DateTime,
+         ?   referrer?: DriverScalarRelationFilter | DriverWhereInput,
+         ?   referred?: DriverScalarRelationFilter | DriverWhereInput
+           }
+         })
+
+    Unknown argument `driverId`. Available options are marked with ?.
+
+    [0m [90m 43 |[39m     [36mawait[39m createDriverReferralChain(driverB[33m.[39mid[33m,[39m driverA[33m.[39mid)[33m;[39m
+     [90m 44 |[39m
+    [31m[1m>[22m[39m[90m 45 |[39m     [36mconst[39m chain [33m=[39m [36mawait[39m prisma[33m.[39mdriverReferral[33m.[39mfindFirst({
+     [90m    |[39m                   [31m[1m^[22m[39m
+     [90m 46 |[39m       where[33m:[39m { driverId[33m:[39m driverA[33m.[39mid[33m,[39m referredDriverId[33m:[39m driverB[33m.[39mid }[33m,[39m
+     [90m 47 |[39m     })[33m;[39m
+     [90m 48 |[39m     expect(chain)[33m.[39mnot[33m.[39mtoBeNull()[33m;[39m[0m
+
+      at ar (node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:9)
+      at zr.throwValidationException [as handleRequestError] (node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:7)
+      at zr.handleAndLogRequestError (node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:12)
+      at zr.request (node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:12)
+      at a (node_modules/@prisma/client/src/runtime/getPrismaClient.ts:963:24)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:45:19)
+
+  ● createDriverReferralChain › herda nível 2 quando referrer já tem um nível 1
+
+    PrismaClientValidationError: 
+    Invalid `prisma.driverReferral.findFirst()` invocation in
+    C:\Users\ATI\OneDrive - Step Computer Academy Brasil\mobility-platform\tests\driver-referral.spec.ts:60:48
+
+      57 await createDriverReferralChain(driverB.id, driverA.id); // A→B level 1
+      58 await createDriverReferralChain(driverC.id, driverB.id); // B→C, herda A→C level 2
+      59 
+    → 60 const level2 = await prisma.driverReferral.findFirst({
+           where: {
+             driverId: "49c4917c-9168-411b-9abf-b11072708255",
+             ~~~~~~~~
+             referredDriverId: "c9085d2a-13de-4265-8dce-c572f88b55b6",
+         ?   AND?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   OR?: DriverReferralWhereInput[],
+         ?   NOT?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   id?: StringFilter | String,
+         ?   referrerDriverId?: StringFilter | String,
+         ?   level?: IntFilter | Int,
+         ?   createdAt?: DateTimeFilter | DateTime,
+         ?   referrer?: DriverScalarRelationFilter | DriverWhereInput,
+         ?   referred?: DriverScalarRelationFilter | DriverWhereInput
+           }
+         })
+
+    Unknown argument `driverId`. Available options are marked with ?.
+
+    [0m [90m 58 |[39m     [36mawait[39m createDriverReferralChain(driverC[33m.[39mid[33m,[39m driverB[33m.[39mid)[33m;[39m [90m// B→C, herda A→C level 2[39m
+     [90m 59 |[39m
+    [31m[1m>[22m[39m[90m 60 |[39m     [36mconst[39m level2 [33m=[39m [36mawait[39m prisma[33m.[39mdriverReferral[33m.[39mfindFirst({
+     [90m    |[39m                    [31m[1m^[22m[39m
+     [90m 61 |[39m       where[33m:[39m { driverId[33m:[39m driverA[33m.[39mid[33m,[39m referredDriverId[33m:[39m driverC[33m.[39mid }[33m,[39m
+     [90m 62 |[39m     })[33m;[39m
+     [90m 63 |[39m     expect(level2)[33m.[39mnot[33m.[39mtoBeNull()[33m;[39m[0m
+
+      at ar (node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:9)
+      at zr.throwValidationException [as handleRequestError] (node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:7)
+      at zr.handleAndLogRequestError (node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:12)
+      at zr.request (node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:12)
+      at a (node_modules/@prisma/client/src/runtime/getPrismaClient.ts:963:24)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:60:20)
+
+  ● createDriverReferralChain › herda até nível 5 e NÃO cria nível 6
+
+    PrismaClientValidationError: 
+    Invalid `prisma.driverReferral.findFirst()` invocation in
+    C:\Users\ATI\OneDrive - Step Computer Academy Brasil\mobility-platform\tests\driver-referral.spec.ts:80:48
+
+      77 await createDriverReferralChain(driverC.id, driverB.id);
+      78 await createDriverReferralChain(driverD.id, driverC.id); // A→D level 3
+      79 
+    → 80 const level3 = await prisma.driverReferral.findFirst({
+           where: {
+             driverId: "004af78a-f46a-47fd-81a0-d4ab823764e9",
+             ~~~~~~~~
+             referredDriverId: "b8f76058-eb37-4ff6-8420-277e33354baf",
+         ?   AND?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   OR?: DriverReferralWhereInput[],
+         ?   NOT?: DriverReferralWhereInput | DriverReferralWhereInput[],
+         ?   id?: StringFilter | String,
+         ?   referrerDriverId?: StringFilter | String,
+         ?   level?: IntFilter | Int,
+         ?   createdAt?: DateTimeFilter | DateTime,
+         ?   referrer?: DriverScalarRelationFilter | DriverWhereInput,
+         ?   referred?: DriverScalarRelationFilter | DriverWhereInput
+           }
+         })
+
+    Unknown argument `driverId`. Available options are marked with ?.
+
+    [0m [90m 78 |[39m     [36mawait[39m createDriverReferralChain(driverD[33m.[39mid[33m,[39m driverC[33m.[39mid)[33m;[39m [90m// A→D level 3[39m
+     [90m 79 |[39m
+    [31m[1m>[22m[39m[90m 80 |[39m     [36mconst[39m level3 [33m=[39m [36mawait[39m prisma[33m.[39mdriverReferral[33m.[39mfindFirst({
+     [90m    |[39m                    [31m[1m^[22m[39m
+     [90m 81 |[39m       where[33m:[39m { driverId[33m:[39m driverA[33m.[39mid[33m,[39m referredDriverId[33m:[39m driverD[33m.[39mid }[33m,[39m
+     [90m 82 |[39m     })[33m;[39m
+     [90m 83 |[39m     expect(level3[33m![39m[33m.[39mlevel)[33m.[39mtoBe([35m3[39m)[33m;[39m[0m
+
+      at ar (node_modules/@prisma/client/src/runtime/core/errorRendering/throwValidationException.ts:46:9)
+      at zr.throwValidationException [as handleRequestError] (node_modules/@prisma/client/src/runtime/RequestHandler.ts:211:7)
+      at zr.handleAndLogRequestError (node_modules/@prisma/client/src/runtime/RequestHandler.ts:183:12)
+      at zr.request (node_modules/@prisma/client/src/runtime/RequestHandler.ts:152:12)
+      at a (node_modules/@prisma/client/src/runtime/getPrismaClient.ts:963:24)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:80:20)
+
+  ● createDriverReferralChain › não cria duplicidade quando chamado duas vezes
+
+    ReferralChainError: Ciclo de referral detectado
+
+    [0m [90m 88 |[39m   [36mif[39m (reverseEdge) {
+     [90m 89 |[39m     console[33m.[39mwarn([32m"[Referral] ciclo detectado e bloqueado"[39m[33m,[39m { newDriverId[33m,[39m referrerDriverId })[33m;[39m
+    [31m[1m>[22m[39m[90m 90 |[39m     [36mthrow[39m [36mnew[39m [33mReferralChainError[39m([32m"Ciclo de referral detectado"[39m)[33m;[39m
+     [90m    |[39m           [31m[1m^[22m[39m
+     [90m 91 |[39m   }
+     [90m 92 |[39m
+     [90m 93 |[39m   [36mconst[39m edgesToCreate[33m:[39m {[0m
+
+      at createDriverReferralChain (src/domain/services/DriverReferralService.ts:90:11)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:112:5)
+
+  ● createDriverReferralChain › não cria self-referral
+
+    ReferralChainError: Ciclo de referral inválido: autoindicação não permitida
+
+    [0m [90m 62 |[39m )[33m:[39m [33mPromise[39m[33m<[39m[36mvoid[39m[33m>[39m {
+     [90m 63 |[39m   [36mif[39m (newDriverId [33m===[39m referrerDriverId) {
+    [31m[1m>[22m[39m[90m 64 |[39m     [36mthrow[39m [36mnew[39m [33mReferralChainError[39m([32m"Ciclo de referral inválido: autoindicação não permitida"[39m)[33m;[39m
+     [90m    |[39m           [31m[1m^[22m[39m
+     [90m 65 |[39m   }
+     [90m 66 |[39m
+     [90m 67 |[39m   [36mconst[39m [newDriver[33m,[39m referrerDriver] [33m=[39m [36mawait[39m [33mPromise[39m[33m.[39mall([[0m
+
+      at createDriverReferralChain (src/domain/services/DriverReferralService.ts:64:11)
+      at Object.<anonymous> (tests/driver-referral.spec.ts:123:36)
+
+  ● getDriverNetwork › retorna drivers agrupados por level 1, 2 e 3
+
+    expect(received).toContain(expected) // indexOf
+
+    Expected value: "b9b3d3ea-c5df-414c-b8e8-337eda19672a"
+    Received array: []
+
+    [0m [90m 145 |[39m
+     [90m 146 |[39m     expect(network[33m.[39mlevel1)[33m.[39mtoContain(driverB[33m.[39mid)[33m;[39m
+    [31m[1m>[22m[39m[90m 147 |[39m     expect(network[33m.[39mlevel2)[33m.[39mtoContain(driverC[33m.[39mid)[33m;[39m
+     [90m     |[39m                            [31m[1m^[22m[39m
+     [90m 148 |[39m     expect(network[33m.[39mlevel3)[33m.[39mtoContain(driverD[33m.[39mid)[33m;[39m
+     [90m 149 |[39m     expect(network[33m.[39mlevel1)[33m.[39mnot[33m.[39mtoContain(driverC[33m.[39mid)[33m;[39m
+     [90m 150 |[39m     expect(network[33m.[39mlevel2)[33m.[39mnot[33m.[39mtoContain(driverD[33m.[39mid)[33m;[39m[0m
+
+      at Object.<anonymous> (tests/driver-referral.spec.ts:147:28)
+
+Test Suites: 1 failed, 1 total
+Tests:       7 failed, 1 passed, 8 total
+Snapshots:   0 total
+Time:        4.383 s
+Ran all test suites matching tests/driver-referral.spec.ts.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?
