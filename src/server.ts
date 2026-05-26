@@ -19,6 +19,7 @@ import {
   driversNetworkRouter,
   networkLegacyRouter,
 } from "./presentation/routes/network-v2.routes";
+import { genealogyRouter } from "./presentation/routes/genealogy.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
 
@@ -75,6 +76,7 @@ app.use("/passengers", passengerRoutes);
 app.use("/passengers", passengersNetworkRouter);
 app.use("/drivers", driverRoutes);
 app.use("/drivers", driversNetworkRouter);
+app.use("/drivers", genealogyRouter);
 app.use("/onboarding", onboardingRouter);
 app.use("/network", networkLegacyRouter);
 app.use("/godnetwork", godnetworkRoutes);
