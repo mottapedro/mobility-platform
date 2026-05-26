@@ -16,6 +16,7 @@ import {
   onboardingRouter,
   passengersNetworkRouter,
   driversNetworkRouter,
+  networkLegacyRouter,
 } from "./presentation/routes/network-v2.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
@@ -73,6 +74,7 @@ app.use("/passengers", passengersNetworkRouter);
 app.use("/drivers", driverRoutes);
 app.use("/drivers", driversNetworkRouter);
 app.use("/onboarding", onboardingRouter);
+app.use("/network", networkLegacyRouter);
 app.use("/godnetwork", godnetworkRoutes);
 
 if (process.env.NODE_ENV !== "production") {
