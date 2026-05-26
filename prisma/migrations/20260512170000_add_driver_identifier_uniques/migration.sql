@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "Driver_publicSlug_key" ON "Driver" ("publicSlug");

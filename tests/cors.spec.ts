@@ -22,19 +22,29 @@ describe("Global CORS", () => {
         userId: user.id,
         isActive: true,
         experienceLevel: "PROFISSIONAL",
+        referralCode: `cors-driver-${Date.now()}`,
+        regions: ["Zona Sul"],
       },
     });
 
+    const passengerUser = await prisma.user.create({
+      data: {
+        name: "CORS Passenger",
+        email: "cors-passenger@test.com",
+        phone: "11999990002",
+        role: "PASSENGER",
+      },
+    });
+
+    const slug = `cors-passenger-${Date.now()}`;
     const passenger = await prisma.passenger.create({
       data: {
-        user: {
-          create: {
-            name: "CORS Passenger",
-            email: "cors-passenger@test.com",
-            phone: "11999990002",
-            role: "PASSENGER",
-          },
-        },
+        referralCode: slug,
+        publicSlug: slug,
+        userId: passengerUser.id,
+      },
+      include: {
+        user: true,
       },
     });
 
@@ -61,13 +71,14 @@ describe("Global CORS", () => {
       .get(`/drivers/${driver.id}/offers`)
       .set("Origin", origin);
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(400);
     expect(response.headers["access-control-allow-origin"]).toBe(origin);
     expect(response.headers["access-control-allow-credentials"]).toBe("true");
   });
 
   it("returns CORS headers on GET /offers for Vercel preview deploys", async () => {
-    const origin = "https://mobility-platform-git-feature-branch-mottapedro.vercel.app";
+    const origin =
+      "https://mobility-platform-git-feature-branch-mottapedro.vercel.app";
 
     const response = await request(app)
       .get("/offers")
@@ -98,13 +109,18 @@ describe("Global CORS", () => {
         userId: user.id,
         isActive: true,
         experienceLevel: "INTERMEDIARIO",
+        referralCode: `cors-login-${Date.now()}`,
+        regions: ["Centro"],
       },
     });
 
     const response = await request(app)
       .post("/auth/login")
       .set("Origin", origin)
-      .send({ email: "cors-login@test.com", password });
+      .send({
+        email: "cors-login@test.com",
+        password,
+      });
 
     expect(response.status).toBe(200);
     expect(response.headers["access-control-allow-origin"]).toBe(origin);

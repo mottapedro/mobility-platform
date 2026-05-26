@@ -2,9 +2,9 @@ import { Request, Response } from "express";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
-import { AdvanceRideDispatchUseCase } from "../../application/use-cases/AdvanceRideDispatchUseCase";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
-import { logError, logInfo } from "../../shared/logger";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
 // ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
@@ -42,7 +42,7 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt, context: rawContext } = req.body;
+      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds } = req.body;
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
@@ -98,6 +98,11 @@ export class RideController {
         });
       }
 
+      // ─── Regra de negócio: referral define status inicial ──────────────────
+      const initialStatus = passengerExists.referredByDriverId
+        ? "WAITING_REFERRAL"
+        : "MATCHING";
+
       // valida data
       const date = new Date(scheduledAt);
 
@@ -145,13 +150,16 @@ export class RideController {
         isLuggage: context.isLuggage ?? false,
       };
 
+      const policy = AcceptancePolicyEngine.computePolicy(date);
+
       const ride = await prisma.rideRequest.create({
         data: {
           passengerId,
           origin: originTrimmed,
           destination: destinationTrimmed,
           scheduledAt: date,
-          status: "PENDING",
+          operationalCutoffAt: policy.operationalCutoffAt,
+          status: initialStatus,
           distanceKm,
           durationMin,
           context: safeContext,
@@ -171,18 +179,32 @@ export class RideController {
         },
       });
 
-      logInfo("ride.dispatch.created", {
+      logMatchingEvent({
+        rideId: ride.id,
+        event: "ACCEPTANCE_WINDOW_CALCULATED",
+        metadata: {
+          isScheduled: policy.isScheduled,
+          operationalCutoffAt: policy.operationalCutoffAt?.toISOString() ?? null,
+          offerResponseTimeoutMs: policy.offerResponseTimeoutMs,
+          referralWindowMs: policy.referralWindowMs,
+        },
+      });
+
+      // 🚀 Dispara o matching em background (não bloqueia HTTP)
+      console.log("RIDE CREATED:", {
         id: ride.id,
-        status: "PENDING",
+        status: initialStatus,
         targetDriverId: passengerExists.referredByDriverId ?? null,
       });
 
       setImmediate(async () => {
         try {
+          console.log(`🚀 Iniciando matching para ride ${ride.id}`);
           const matchRideUseCase = new MatchRideUseCase();
-          await matchRideUseCase.execute({ rideId: ride.id });
+          await matchRideUseCase.execute({ rideId: ride.id, candidateDriverIds });
+          console.log(`✅ Matching finalizado para ride ${ride.id}`);
         } catch (error) {
-          logError("ride.dispatch.start_failed", error, { rideId: ride.id });
+          console.error(`🔥 Erro no matching da ride ${ride.id}:`, error);
         }
       });
 
@@ -242,15 +264,33 @@ export class RideController {
         });
       }
 
+      // WAITING_REFERRAL → MATCHING
+      await prisma.rideRequest.update({
+        where: { id },
+        data: { status: "MATCHING" },
+      });
+
+      console.log(`🔄 Fallback manual disparado para corrida ${id}`);
+
+      // Dispara matching geral excluindo o driver indicado
       setImmediate(async () => {
         try {
-          const advanceRideDispatchUseCase = new AdvanceRideDispatchUseCase();
-          await advanceRideDispatchUseCase.execute({
+          const matchRideUseCase = new MatchRideUseCase();
+          const { matched } = await matchRideUseCase.execute({
             rideId: id,
+            level: "NETWORK_L1",
             excludedDriverIds: referredDriverId ? [referredDriverId] : [],
           });
+
+          if (!matched) {
+            await prisma.rideRequest.update({
+              where: { id },
+              data: { status: "EXPIRED" },
+            });
+            console.log(`⏱️ Corrida ${id} expirada — sem drivers no fallback manual`);
+          }
         } catch (err) {
-          logError("ride.dispatch.manual_fallback_failed", err, { rideId: id });
+          console.error(`🔥 Erro no fallback manual da corrida ${id}:`, err);
         }
       });
 

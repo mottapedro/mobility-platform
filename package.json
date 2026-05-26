@@ -8,6 +8,16 @@
     "build": "tsc",
     "start": "node -r tsconfig-paths/register dist/server.js",
     "seed": "ts-node -r tsconfig-paths/register prisma/seed.ts",
+    "seed:base": "ts-node -r tsconfig-paths/register prisma/seeds/base-seed.ts",
+    "seed:dev": "ts-node -r tsconfig-paths/register prisma/seeds/dev-fixtures.ts",
+    "bootstrap:network": "ts-node -r tsconfig-paths/register scripts/network/bootstrap-network.ts",
+    "backfill:driver-network": "ts-node -r tsconfig-paths/register scripts/network/backfill-driver-network.ts",
+    "backfill:passenger-network": "ts-node -r tsconfig-paths/register scripts/passenger/backfill-passenger-network.ts",
+    "backfill:passenger-driver-links": "ts-node -r tsconfig-paths/register scripts/network/backfill-passenger-driver-links.ts",
+    "seed:golden": "ts-node -r tsconfig-paths/register prisma/seeds/golden-network-seed.ts",
+    "backfill:referral-v2": "ts-node -r tsconfig-paths/register scripts/backfill-referral-relationships.ts",
+    "backfill:skills": "ts-node -r tsconfig-paths/register scripts/backfill-gisele-skill.ts",
+    "verify:network": "ts-node -r tsconfig-paths/register scripts/verify-network.ts",
     "postinstall": "prisma generate",
     "test": "jest --runInBand --forceExit",
     "test:e2e": "playwright test --config playwright.config.ts"
@@ -17,7 +27,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@prisma/adapter-pg": "^7.7.0",
+    "@prisma/adapter-pg": "7.8.0",
     "@types/bcrypt": "^6.0.0",
     "@types/cors": "^2.8.19",
     "bcrypt": "^6.0.0",
@@ -30,7 +40,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.59.1",
-    "@prisma/client": "^7.7.0",
+    "@prisma/client": "7.8.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
@@ -38,11 +48,12 @@
     "@types/supertest": "^7.2.0",
     "jest": "^30.3.0",
     "nodemon": "^3.1.14",
-    "prisma": "^7.7.0",
+    "prisma": "7.8.0",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.9",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
+    "tsx": "^4.22.3",
     "typescript": "^6.0.2"
   }
 }

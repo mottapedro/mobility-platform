@@ -74,6 +74,8 @@ describe("Matching — Tier 1 (REFERRED)", () => {
     const passenger = await prisma.passenger.create({
       data: {
         userId: passengerUser.id,
+        referralCode: "ref-t1-" + Date.now(),
+        publicSlug:   "slug-t1-" + Date.now(),
         referredByDriverId: driverAUser.driver!.id,
       },
     });
@@ -84,7 +86,7 @@ describe("Matching — Tier 1 (REFERRED)", () => {
         passengerId: passenger.id,
         origin: "Barra da Tijuca",
         destination: "Centro",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
       });
 
     expect(response.status).toBe(201);
@@ -148,6 +150,8 @@ describe("Matching — Tier 2 (PARTNER)", () => {
     const passenger = await prisma.passenger.create({
       data: {
         userId: passengerUser.id,
+        referralCode: "ref-t2-" + Date.now(),
+        publicSlug:   "slug-t2-" + Date.now(),
         referredByDriverId: driverAUser.driver!.id,
       },
     });
@@ -159,7 +163,7 @@ describe("Matching — Tier 2 (PARTNER)", () => {
         passengerId: passenger.id,
         origin: "Barra da Tijuca",
         destination: "Centro",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
       });
 
     expect(rideResponse.status).toBe(201);
@@ -198,9 +202,9 @@ describe("Matching — Contexto VIP", () => {
     // Driver ELITE — deve receber a offer primeiro
     const eliteDriverUser = await prisma.user.create({
       data: {
-        name: "Driver Elite",
-        email: "elite@vip.com",
-        phone: "33000000001",
+        name: "TEST_Driver Elite",
+        email: "TEST_elite@vip.com",
+        phone: "TEST_33000000001",
         role: "DRIVER",
         driver: {
           create: {
@@ -213,11 +217,11 @@ describe("Matching — Contexto VIP", () => {
     });
 
     // Driver INICIANTE — recebe offer depois do ELITE
-    await prisma.user.create({
+    const commonDriverUser = await prisma.user.create({
       data: {
-        name: "Driver Comum",
-        email: "comum@vip.com",
-        phone: "33000000002",
+        name: "TEST_Driver Comum",
+        email: "TEST_comum@vip.com",
+        phone: "TEST_33000000002",
         role: "DRIVER",
         driver: {
           create: {
@@ -226,21 +230,31 @@ describe("Matching — Contexto VIP", () => {
           },
         },
       },
+      include: { driver: true },
     });
 
     // Passageiro sem indicação → matching vai para GENERAL com filtro VIP
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: "ref-vip-" + Date.now(),
+        publicSlug:   "slug-vip-" + Date.now(),
         user: {
           create: {
-            name: "Passageiro VIP",
-            email: "passageiro@vip.com",
-            phone: "33000000003",
+            name: "TEST_Passageiro VIP",
+            email: "TEST_passageiro@vip.com",
+            phone: "TEST_33000000003",
             role: "PASSENGER",
           },
         },
       },
     });
+
+    // Scope matching to only these two test drivers — prevents real drivers
+    // (e.g. Pedro Paulo, who may also be ELITE) from polluting the pool.
+    const candidateDriverIds = [
+      eliteDriverUser.driver!.id,
+      commonDriverUser.driver!.id,
+    ];
 
     const response = await request(app)
       .post("/rides")
@@ -248,13 +262,14 @@ describe("Matching — Contexto VIP", () => {
         passengerId: passenger.id,
         origin: "Barra da Tijuca",
         destination: "Centro",
-        scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
         context: {
           vip: true,
           airport: false,
           pet: false,
           luggage: false,
         },
+        candidateDriverIds,
       });
 
     expect(response.status).toBe(201);
@@ -264,14 +279,20 @@ describe("Matching — Contexto VIP", () => {
 
     expect(offers.length).toBeGreaterThan(0);
 
+    // Refetch eliteDriverUser to ensure driver relation is populated
+    const eliteDriver = await prisma.user.findUnique({
+      where: { id: eliteDriverUser.id },
+      include: { driver: true },
+    });
+
     // Driver ELITE deve ter recebido offer
     const eliteOffer = offers.find(
-      (o) => o.driverId === eliteDriverUser.driver!.id
+      (o) => o.driverId === eliteDriver!.driver!.id
     );
     expect(eliteOffer).toBeTruthy();
 
     // Driver ELITE deve ser o PRIMEIRO a receber (prioridade VIP)
-    expect(offers[0].driverId).toBe(eliteDriverUser.driver!.id);
+    expect(offers[0].driverId).toBe(eliteDriver!.driver!.id);
   });
 });
 

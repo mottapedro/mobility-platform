@@ -6,6 +6,8 @@ describe("POST /rides", () => {
   it("deve criar uma corrida e disparar matching", async () => {
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: `p-rides-test-${Date.now()}`,
+        publicSlug: `p-rides-test-${Date.now()}`,
         user: {
           create: {
             name: "Teste",
