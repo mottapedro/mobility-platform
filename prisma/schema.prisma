@@ -325,6 +325,7 @@ enum DomainEventType {
   SETTLEMENT_CONFIRMED
   LINEAGE_RESOLVED
   SKILL_ASSIGNED
+  DRIVER_REFERRED
 }
 
 /// Canonical taxonomy of how a node participates in a driver's network.

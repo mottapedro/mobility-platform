@@ -22,6 +22,8 @@ import {
 import { genealogyRouter } from "./presentation/routes/genealogy.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
+import { lifecycle } from "./infra/AppLifecycleManager";
+import { SyncProjectionJob } from "./domain/network/SyncProjectionJob";
 
 dotenv.config();
 
@@ -102,15 +104,33 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 
 if (process.env.NODE_ENV !== "test") {
   const expireOffersService = new ExpireOffersService();
-  setInterval(() => {
-    expireOffersService.execute().catch((err) => {
-      console.error("🔥 Erro no job de expiração de offers:", err);
-    });
-  }, 10_000);
+  lifecycle.registerInterval(
+    "expireOffers",
+    () => {
+      expireOffersService.execute().catch((err) => {
+        console.error("🔥 Erro no job de expiração de offers:", err);
+      });
+    },
+    10_000
+  );
+
+  lifecycle.registerInterval(
+    "syncProjection",
+    () => {
+      SyncProjectionJob.execute().catch((err) => {
+        console.error("🔥 Erro no SyncProjectionJob:", err);
+      });
+    },
+    5 * 60_000
+  );
+
+  process.on("SIGTERM", () => lifecycle.shutdown());
+  process.on("SIGINT", () => lifecycle.shutdown());
 
   app.listen(3000, () => {
     console.log("🚀 Server running on port 3000");
     console.log("⏱️ Job de expiração de offers ativo (a cada 10s)");
+    console.log("🔄 SyncProjectionJob ativo (a cada 5min)");
   });
 }
 

@@ -16,6 +16,8 @@ export interface OwnershipMetrics {
   completedRidesAttributedToTree: number;
   settledRevenueShareCents: number;
   retentionRate: number;
+  growthLast7Days: number;
+  growthLast30Days: number;
 }
 
 const COMPLETED_LIKE: RideStatus[] = [RideStatus.COMPLETED, RideStatus.PAID];
@@ -28,6 +30,8 @@ export async function getOwnershipMetrics(
   const windowDays = options.windowDays ?? 30;
   const now = options.now ?? new Date();
   const since = new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000);
+  const since7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const since30d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   const [
     directDrivers,
@@ -37,6 +41,8 @@ export async function getOwnershipMetrics(
     completedRidesAttributedToTree,
     splitAgg,
     retentionRate,
+    growthLast7Days,
+    growthLast30Days,
   ] = await Promise.all([
     db.referralRelationship.count({
       where: {
@@ -72,6 +78,12 @@ export async function getOwnershipMetrics(
       },
     }),
     computeRetention(driverId, since, db),
+    db.referralRelationship.count({
+      where: { rootDriverId: driverId, createdAt: { gte: since7d } },
+    }),
+    db.referralRelationship.count({
+      where: { rootDriverId: driverId, createdAt: { gte: since30d } },
+    }),
   ]);
 
   return {
@@ -84,6 +96,8 @@ export async function getOwnershipMetrics(
     completedRidesAttributedToTree,
     settledRevenueShareCents: splitAgg._sum.amountCents ?? 0,
     retentionRate,
+    growthLast7Days,
+    growthLast30Days,
   };
 }
 

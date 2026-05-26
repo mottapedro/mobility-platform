@@ -1,5 +1,6 @@
 import { disconnectPrisma, prisma } from "../src/infra/prisma/client";
 import { clearPendingReferralFallbacks } from "../src/application/use-cases/MatchRideUseCase";
+import { lifecycle } from "../src/infra/AppLifecycleManager";
 
 export { prisma };
 
@@ -242,6 +243,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  lifecycle.shutdown();
   await disconnectPrisma();
 });
 

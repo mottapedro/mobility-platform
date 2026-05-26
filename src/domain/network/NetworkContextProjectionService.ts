@@ -15,7 +15,7 @@
  * aggregates — optional frontend fields deferred to a later iteration).
  */
 
-import { ActorType, ExperienceLevel, ReferralFlowType } from "../../shared/enums";
+import { ActorType, ExperienceLevel, ReferralFlowType, RideStatus } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { resolveDriverRoot } from "../referral-network/DriverRootResolverService";
 import { getOwnershipMetrics } from "../referral-network/NetworkOwnershipService";
@@ -24,11 +24,13 @@ import { buildGenealogyProjection } from "../genealogy/BuildGenealogyProjectionS
 import { buildDescendantsTree } from "../genealogy/treeBuilder";
 import {
   FlowType,
+  FrontendGenealogyNode,
   Genealogy,
   NetworkActor,
   NetworkCapabilityContext,
   NetworkContext,
   NetworkDriverActor,
+  NodeMetrics,
 } from "./NetworkContextTypes";
 
 const FRONTEND_BASE_URL =
@@ -175,6 +177,101 @@ function buildDriverInviteUrls(
   };
 }
 
+// ── Batch NodeMetrics ─────────────────────────────────────────────────────────
+
+/**
+ * Fetch per-driver operational metrics in 3 bulk queries (O(1) DB round-trips).
+ * Returns maps keyed by driverId.
+ */
+async function fetchNodeMetricsMaps(
+  driverIds: string[],
+  db: typeof prisma
+): Promise<{
+  passengerCountByDriver: Map<string, number>;
+  driverCountByDriver: Map<string, number>;
+  rideCountByDriver: Map<string, number>;
+}> {
+  if (driverIds.length === 0) {
+    return {
+      passengerCountByDriver: new Map(),
+      driverCountByDriver: new Map(),
+      rideCountByDriver: new Map(),
+    };
+  }
+
+  const [passengerGroups, driverGroups, rideGroups] = await Promise.all([
+    db.referralRelationship.groupBy({
+      by: ["inviterId"],
+      where: {
+        inviterActorType: ActorType.DRIVER,
+        inviterId: { in: driverIds },
+        invitedActorType: ActorType.PASSENGER,
+      },
+      _count: { invitedId: true },
+    }),
+    db.referralRelationship.groupBy({
+      by: ["inviterId"],
+      where: {
+        inviterActorType: ActorType.DRIVER,
+        inviterId: { in: driverIds },
+        invitedActorType: ActorType.DRIVER,
+      },
+      _count: { invitedId: true },
+    }),
+    db.rideRequest.groupBy({
+      by: ["selectedDriverId"],
+      where: {
+        selectedDriverId: { in: driverIds },
+        status: { in: [RideStatus.COMPLETED, RideStatus.PAID] },
+      },
+      _count: { id: true },
+    }),
+  ]);
+
+  const passengerCountByDriver = new Map<string, number>(
+    passengerGroups.map((g) => [g.inviterId, g._count.invitedId])
+  );
+  const driverCountByDriver = new Map<string, number>(
+    driverGroups.map((g) => [g.inviterId, g._count.invitedId])
+  );
+  const rideCountByDriver = new Map<string, number>(
+    rideGroups
+      .filter((g) => g.selectedDriverId !== null)
+      .map((g) => [g.selectedDriverId as string, g._count.id])
+  );
+
+  return { passengerCountByDriver, driverCountByDriver, rideCountByDriver };
+}
+
+/**
+ * Walk the descendants tree and attach NodeMetrics to each driver node
+ * (passenger nodes get nodeMetrics: undefined).
+ */
+function injectNodeMetrics(
+  nodes: FrontendGenealogyNode[],
+  maps: {
+    passengerCountByDriver: Map<string, number>;
+    driverCountByDriver: Map<string, number>;
+    rideCountByDriver: Map<string, number>;
+  }
+): FrontendGenealogyNode[] {
+  return nodes.map((node) => {
+    const isDriver = node.actor.actorType === "driver";
+    const nodeMetrics: NodeMetrics | undefined = isDriver
+      ? {
+          directPassengerCount: maps.passengerCountByDriver.get(node.actor.id) ?? 0,
+          directDriverCount: maps.driverCountByDriver.get(node.actor.id) ?? 0,
+          completedRides: maps.rideCountByDriver.get(node.actor.id) ?? 0,
+        }
+      : undefined;
+    return {
+      ...node,
+      nodeMetrics,
+      children: injectNodeMetrics(node.children, maps),
+    };
+  });
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -212,6 +309,8 @@ export async function buildNetworkContextForDriver(
       id: true,
       publicSlug: true,
       createdAt: true,
+      networkLevel: true,
+      regions: true,
       user: { select: { name: true } },
     },
   });
@@ -222,6 +321,8 @@ export async function buildNetworkContextForDriver(
         name: rootDriverRecord.user.name,
         slug: rootDriverRecord.publicSlug,
         joinedAt: rootDriverRecord.createdAt.toISOString(),
+        regions: rootDriverRecord.regions,
+        networkLevel: rootDriverRecord.networkLevel,
       }
     : null;
 
@@ -258,12 +359,19 @@ export async function buildNetworkContextForDriver(
   ]);
 
   // Convert flat tree projection to recursive descendants of actorId
-  const descendants = buildDescendantsTree(
+  const rawDescendants = buildDescendantsTree(
     projection.nodes,
     projection.edges,
     actorId,
     ActorType.DRIVER
   );
+
+  // Batch NodeMetrics for all driver nodes in one pass (3 bulk queries)
+  const driverNodeIds = projection.nodes
+    .filter((n) => n.actorType === ActorType.DRIVER && n.actorId !== actorId)
+    .map((n) => n.actorId);
+  const metricsMaps = await fetchNodeMetricsMaps(driverNodeIds, db);
+  const descendants = injectNodeMetrics(rawDescendants, metricsMaps);
 
   const genealogy: Genealogy = {
     me,
@@ -277,6 +385,12 @@ export async function buildNetworkContextForDriver(
     totalActors: ownership.totalDriversInTree + ownership.totalPassengersInTree,
     activeCount: ownership.totalDriversInTree,
     depth: projection.stats.maxDepth,
+    ridesFromNetwork: ownership.completedRidesAttributedToTree,
+    estimatedRevenue: ownership.settledRevenueShareCents / 100,
+    growth: {
+      last7Days: ownership.growthLast7Days,
+      last30Days: ownership.growthLast30Days,
+    },
   };
 
   const level = driver.experienceLevel ?? "";
@@ -334,6 +448,8 @@ export async function buildNetworkContextForPassenger(
       id: true,
       publicSlug: true,
       createdAt: true,
+      networkLevel: true,
+      regions: true,
       user: { select: { name: true } },
     },
   });
@@ -344,6 +460,8 @@ export async function buildNetworkContextForPassenger(
         name: rootDriverRecord.user.name,
         slug: rootDriverRecord.publicSlug,
         joinedAt: rootDriverRecord.createdAt.toISOString(),
+        regions: rootDriverRecord.regions,
+        networkLevel: rootDriverRecord.networkLevel,
       }
     : null;
 
@@ -412,6 +530,12 @@ export async function buildNetworkContextForPassenger(
     totalActors: ownership.totalDriversInTree + ownership.totalPassengersInTree,
     activeCount: ownership.totalDriversInTree,
     depth: ancestors.length,
+    ridesFromNetwork: ownership.completedRidesAttributedToTree,
+    estimatedRevenue: ownership.settledRevenueShareCents / 100,
+    growth: {
+      last7Days: ownership.growthLast7Days,
+      last30Days: ownership.growthLast30Days,
+    },
   };
 
   const ref = passenger.publicSlug ?? passenger.referralCode;

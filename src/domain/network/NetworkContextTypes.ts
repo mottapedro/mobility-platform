@@ -31,6 +31,15 @@ export interface NetworkDriverActor extends NetworkActor {
   } | null;
   rating?: number | null;
   offersAssistedTransport?: boolean;
+  regions?: string[] | null;
+  networkLevel?: number | null;
+}
+
+/** Per-node operational metrics attached to driver genealogy nodes. */
+export interface NodeMetrics {
+  directPassengerCount: number;
+  directDriverCount: number;
+  completedRides: number;
 }
 
 /** Recursive descendant node — mirrors frontend GenealogyNode. */
@@ -38,6 +47,7 @@ export interface FrontendGenealogyNode {
   actor: NetworkActor;
   depth: number;
   children: FrontendGenealogyNode[];
+  nodeMetrics?: NodeMetrics;
 }
 
 export interface Genealogy {

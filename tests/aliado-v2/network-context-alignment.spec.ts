@@ -270,4 +270,76 @@ describe("GET /network/context — NetworkContext shape alignment", () => {
     expect(typeof body.networkMetrics.depth).toBe("number");
     expect(body.capabilities).toBeDefined();
   });
+
+  // 9. networkMetrics includes ridesFromNetwork, estimatedRevenue, and growth
+  it("networkMetrics contains ridesFromNetwork, estimatedRevenue, and growth fields", async () => {
+    const t = tag();
+    const root = await makeDriver(`r9${t}`);
+
+    const res = await request(app)
+      .get(`/network/context?actorId=${root.id}&actorType=DRIVER`)
+      .expect(200);
+
+    const { networkMetrics } = res.body;
+    expect(typeof networkMetrics.ridesFromNetwork).toBe("number");
+    expect(typeof networkMetrics.estimatedRevenue).toBe("number");
+    expect(networkMetrics.growth).toBeDefined();
+    expect(typeof networkMetrics.growth.last7Days).toBe("number");
+    expect(typeof networkMetrics.growth.last30Days).toBe("number");
+  });
+
+  // 10. rootDriver includes regions (array) and networkLevel fields
+  it("rootDriver includes regions array and networkLevel", async () => {
+    const t = tag();
+    const root = await makeDriver(`r10${t}`);
+
+    const res = await request(app)
+      .get(`/network/context?actorId=${root.id}&actorType=DRIVER`)
+      .expect(200);
+
+    const { rootDriver } = res.body;
+    expect(Array.isArray(rootDriver.regions)).toBe(true);
+    expect(rootDriver.regions).toContain("ZN");
+    // networkLevel may be null for a new driver (not yet computed), but field must exist
+    expect("networkLevel" in rootDriver).toBe(true);
+  });
+
+  // 11. Driver descendant node includes nodeMetrics
+  it("driver descendant node has nodeMetrics populated", async () => {
+    const t = tag();
+    const root = await makeDriver(`r11root${t}`);
+    const child = await makeDriver(`r11child${t}`, { referredByDriverId: root.id });
+    await wireD2D(root, child);
+
+    const res = await request(app)
+      .get(`/network/context?actorId=${root.id}&actorType=DRIVER`)
+      .expect(200);
+
+    const { genealogy } = res.body;
+    expect(genealogy.descendants).toHaveLength(1);
+    const childNode = genealogy.descendants[0];
+    expect(childNode.nodeMetrics).toBeDefined();
+    expect(typeof childNode.nodeMetrics.directPassengerCount).toBe("number");
+    expect(typeof childNode.nodeMetrics.directDriverCount).toBe("number");
+    expect(typeof childNode.nodeMetrics.completedRides).toBe("number");
+  });
+
+  // 12. Passenger networkMetrics also contains growth fields
+  it("passenger networkMetrics contains ridesFromNetwork, estimatedRevenue, growth", async () => {
+    const t = tag();
+    const root = await makeDriver(`r12root${t}`);
+    const pax = await makePassenger(`r12p${t}`);
+    await wireD2P(root, pax, root.id);
+
+    const res = await request(app)
+      .get(`/network/context?actorId=${pax.id}&actorType=PASSENGER`)
+      .expect(200);
+
+    const { networkMetrics } = res.body;
+    expect(typeof networkMetrics.ridesFromNetwork).toBe("number");
+    expect(typeof networkMetrics.estimatedRevenue).toBe("number");
+    expect(networkMetrics.growth).toBeDefined();
+    expect(typeof networkMetrics.growth.last7Days).toBe("number");
+    expect(typeof networkMetrics.growth.last30Days).toBe("number");
+  });
 });
