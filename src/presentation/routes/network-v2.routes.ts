@@ -11,8 +11,6 @@ export const driversNetworkRouter = Router();
 driversNetworkRouter.get("/:id/ownership", NetworkV2Controller.getDriverOwnership);
 driversNetworkRouter.get("/:id/network/summary", NetworkV2Controller.getDriverNetwork);
 
-/** Legacy route — was called by older frontend builds; now 410 Gone. */
+/** /network/context?actorId=&actorType= — operational network context for any actor. */
 export const networkLegacyRouter = Router();
-networkLegacyRouter.get("/context", (_req, res) =>
-  res.status(410).json({ error: "Deprecated. Use GET /onboarding/context/:slug" })
-);
+networkLegacyRouter.get("/context", NetworkV2Controller.getNetworkContext);

@@ -6,7 +6,9 @@ import {
 import { getPassengerLineage } from "../../domain/referral-network/PassengerLineageService";
 import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwnershipService";
 import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
+import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
 import { listDriverSkills } from "../../domain/skills/DriverSkillService";
+import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 
 function paramId(req: Request, key: string): string {
@@ -67,5 +69,124 @@ export class NetworkV2Controller {
       skillCodes: skills.map((s) => s.code),
     };
     return res.json({ driverId: id, relationships, ownership, skills, capabilities });
+  }
+
+  /**
+   * GET /network/context?actorId=<id>&actorType=DRIVER|PASSENGER
+   *
+   * Returns the operational network context for an authenticated actor.
+   * Replaces the legacy unconditional 410 with a proper domain response.
+   *
+   * Responses:
+   *   200 { state: "ACTIVE", ... }      — actor has a network context
+   *   410 { state: "UNINITIALIZED", reason: "..." } — actor exists but has no network yet
+   *   404 { error: "..." }              — actorId not found
+   *   400 { error: "..." }              — missing/invalid params
+   */
+  static async getNetworkContext(req: Request, res: Response) {
+    const actorId = Array.isArray(req.query.actorId)
+      ? String(req.query.actorId[0])
+      : String(req.query.actorId ?? "");
+    const rawActorType = Array.isArray(req.query.actorType)
+      ? String(req.query.actorType[0])
+      : String(req.query.actorType ?? "");
+    const actorType = rawActorType.toUpperCase() as ActorType;
+
+    if (!actorId) {
+      return res.status(400).json({ error: "actorId is required" });
+    }
+    if (actorType !== ActorType.DRIVER && actorType !== ActorType.PASSENGER) {
+      return res.status(400).json({ error: "actorType must be DRIVER or PASSENGER" });
+    }
+
+    if (actorType === ActorType.DRIVER) {
+      const driver = await prisma.driver.findUnique({
+        where: { id: actorId },
+        select: { id: true, isActive: true, experienceLevel: true, networkLevel: true, publicSlug: true, referralCode: true },
+      });
+      if (!driver) {
+        return res.status(404).json({ error: `Driver ${actorId} not found` });
+      }
+      if (!driver.isActive) {
+        return res.status(410).json({
+          state: "UNINITIALIZED",
+          reason: "DRIVER_INACTIVE",
+          message: "Rede ainda não inicializada. Motorista inativo.",
+        });
+      }
+
+      const rootDriverId = await resolveDriverRoot(ActorType.DRIVER, actorId).catch(() => null);
+      if (!rootDriverId) {
+        return res.status(410).json({
+          state: "UNINITIALIZED",
+          reason: "ROOT_DRIVER_NOT_PROPAGATED",
+          message: "Rede ainda não inicializada. Aguardando ativação pelo backend.",
+        });
+      }
+
+      const [relationships, ownership, skills] = await Promise.all([
+        getNetworkRelationships(rootDriverId),
+        getOwnershipMetrics(rootDriverId),
+        listDriverSkills(actorId).catch(() => [] as { code: string }[]),
+      ]);
+
+      const level = driver.experienceLevel ?? "";
+      const capabilities = {
+        canInvitePassengers: true,
+        canInviteDrivers: level === "PROFISSIONAL" || level === "ELITE",
+        canReceiveRewards: true,
+        canExpandNetwork: true,
+        skillCodes: skills.map((s) => s.code),
+      };
+
+      return res.json({
+        state: "ACTIVE",
+        actorId,
+        actorType: ActorType.DRIVER,
+        rootDriverId,
+        isRoot: rootDriverId === actorId,
+        networkLevel: driver.networkLevel,
+        publicSlug: driver.publicSlug,
+        referralCode: driver.referralCode,
+        relationships,
+        ownership,
+        capabilities,
+      });
+    }
+
+    // PASSENGER
+    const passenger = await prisma.passenger.findUnique({
+      where: { id: actorId },
+      select: { id: true, rootDriverId: true, referralCode: true, publicSlug: true, networkLevel: true },
+    });
+    if (!passenger) {
+      return res.status(404).json({ error: `Passenger ${actorId} not found` });
+    }
+
+    const rootDriverId = await resolveDriverRoot(ActorType.PASSENGER, actorId).catch(() => null);
+    if (!rootDriverId) {
+      return res.status(410).json({
+        state: "UNINITIALIZED",
+        reason: "ROOT_DRIVER_NOT_PROPAGATED",
+        message: "Rede ainda não inicializada. Aguardando ativação pelo backend.",
+      });
+    }
+
+    const [lineage, ownership] = await Promise.all([
+      getPassengerLineage(actorId).catch(() => null),
+      getOwnershipMetrics(rootDriverId),
+    ]);
+
+    return res.json({
+      state: "ACTIVE",
+      actorId,
+      actorType: ActorType.PASSENGER,
+      rootDriverId,
+      networkLevel: passenger.networkLevel,
+      referralCode: passenger.referralCode,
+      publicSlug: passenger.publicSlug,
+      lineage,
+      ownership,
+    });
   }
 }
