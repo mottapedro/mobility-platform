@@ -1,11 +1,13 @@
 import request from "supertest";
-import { app } from "../src/server";
+import { app } from "../src/app";
 import { prisma } from "./setup";
 
 describe("POST /rides", () => {
   it("deve criar uma corrida e disparar matching", async () => {
     const passenger = await prisma.passenger.create({
       data: {
+        referralCode: `p-rides-test-${Date.now()}`,
+        publicSlug: `p-rides-test-${Date.now()}`,
         user: {
           create: {
             name: "Teste",
@@ -39,6 +41,6 @@ describe("POST /rides", () => {
     });
 
     expect(ride).toBeTruthy();
-    expect(ride?.status).toBeDefined();
+    expect(["PENDING", "WAITING_REFERRAL", "MATCHING"]).toContain(ride?.status);
   });
 });

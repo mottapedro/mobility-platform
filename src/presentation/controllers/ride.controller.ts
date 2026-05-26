@@ -3,25 +3,27 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
+import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
-// ─── Tipo do contexto da corrida (V1.3) ────────────────────────────────────
+// ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
-  vip?:     boolean;
-  airport?: boolean;
-  pet?:     boolean;
-  luggage?: boolean;
+  isVip?:     boolean;
+  isAirport?: boolean;
+  isPet?:     boolean;
+  isLuggage?: boolean;
 }
 
-function validateContext(raw: unknown): RideContext | null {
-  if (raw === undefined || raw === null) return null;
-  if (typeof raw !== "object" || Array.isArray(raw)) return null;
-  const c = raw as Record<string, unknown>;
-  const allowed = ["vip", "airport", "pet", "luggage"];
-  for (const key of Object.keys(c)) {
-    if (!allowed.includes(key)) return null;
-    if (c[key] !== undefined && typeof c[key] !== "boolean") return null;
-  }
-  return c as RideContext;
+function normalizeContext(raw: unknown): RideContext {
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw))
+    ? raw as Record<string, unknown>
+    : {};
+  return {
+    isVip:     Boolean(r.isVip),
+    isAirport: Boolean(r.isAirport),
+    isPet:     Boolean(r.isPet),
+    isLuggage: Boolean(r.isLuggage),
+  };
 }
 
 
@@ -40,7 +42,7 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt, context: rawContext } = req.body;
+      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds } = req.body;
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
@@ -79,21 +81,13 @@ export class RideController {
         });
       }
 
-      // valida context (opcional)
-      const context = validateContext(rawContext);
-      if (rawContext !== undefined && context === null) {
-        return res.status(400).json({
-          error: "Invalid context",
-          details: "context deve ser um objeto com campos opcionais: isAirport, isPet, isLuggage, isVip (boolean)",
-        });
-      }
+      // normaliza context — aceita qualquer formato, nunca rejeita
+      const context = normalizeContext(rawContext);
 
       // valida passageiro
       const passengerExists = await prisma.passenger.findUnique({
         where: { id: passengerId },
-        include: {
-          user: true,
-        },
+        select: { id: true, referredByDriverId: true, user: { select: { name: true } } },
       });
 
       console.log("🔥 PASSENGER:", passengerExists);
@@ -103,6 +97,11 @@ export class RideController {
           error: "Passenger not found",
         });
       }
+
+      // ─── Regra de negócio: referral define status inicial ──────────────────
+      const initialStatus = passengerExists.referredByDriverId
+        ? "WAITING_REFERRAL"
+        : "MATCHING";
 
       // valida data
       const date = new Date(scheduledAt);
@@ -131,7 +130,7 @@ export class RideController {
         where: {
           passengerId,
           scheduledAt: { gte: windowStart, lte: windowEnd },
-          status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER", "ACCEPTED"] },
+          status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_DRIVER", "ACCEPTED"] },
         },
       });
 
@@ -144,14 +143,14 @@ export class RideController {
       }
       // ───────────────────────────────────────────────────────────────────────
 
-      const safeContext: Prisma.InputJsonValue | undefined = context
-        ? {
-            vip:     context.vip     ?? false,
-            airport: context.airport ?? false,
-            pet:     context.pet     ?? false,
-            luggage: context.luggage ?? false,
-          }
-        : undefined;
+      const safeContext: Prisma.InputJsonValue = {
+        isVip:     context.isVip     ?? false,
+        isAirport: context.isAirport ?? false,
+        isPet:     context.isPet     ?? false,
+        isLuggage: context.isLuggage ?? false,
+      };
+
+      const policy = AcceptancePolicyEngine.computePolicy(date);
 
       const ride = await prisma.rideRequest.create({
         data: {
@@ -159,9 +158,11 @@ export class RideController {
           origin: originTrimmed,
           destination: destinationTrimmed,
           scheduledAt: date,
+          operationalCutoffAt: policy.operationalCutoffAt,
+          status: initialStatus,
           distanceKm,
           durationMin,
-          ...(safeContext !== undefined ? { context: safeContext } : {}),
+          context: safeContext,
         },
         include: {
           passenger: {
@@ -178,12 +179,29 @@ export class RideController {
         },
       });
 
+      logMatchingEvent({
+        rideId: ride.id,
+        event: "ACCEPTANCE_WINDOW_CALCULATED",
+        metadata: {
+          isScheduled: policy.isScheduled,
+          operationalCutoffAt: policy.operationalCutoffAt?.toISOString() ?? null,
+          offerResponseTimeoutMs: policy.offerResponseTimeoutMs,
+          referralWindowMs: policy.referralWindowMs,
+        },
+      });
+
       // 🚀 Dispara o matching em background (não bloqueia HTTP)
+      console.log("RIDE CREATED:", {
+        id: ride.id,
+        status: initialStatus,
+        targetDriverId: passengerExists.referredByDriverId ?? null,
+      });
+
       setImmediate(async () => {
         try {
           console.log(`🚀 Iniciando matching para ride ${ride.id}`);
           const matchRideUseCase = new MatchRideUseCase();
-          await matchRideUseCase.execute({ rideId: ride.id });
+          await matchRideUseCase.execute({ rideId: ride.id, candidateDriverIds });
           console.log(`✅ Matching finalizado para ride ${ride.id}`);
         } catch (error) {
           console.error(`🔥 Erro no matching da ride ${ride.id}:`, error);
@@ -199,6 +217,91 @@ export class RideController {
 
       return res.status(500).json({
         error: "Erro ao criar corrida",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  async patch(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { action } = req.body;
+
+      if (!id || typeof id !== "string") {
+        return res.status(400).json({ error: "Ride id inválido" });
+      }
+
+      if (action !== "reject_referral") {
+        return res.status(400).json({ error: "Ação não suportada. Use action: 'reject_referral'" });
+      }
+
+      const ride = await prisma.rideRequest.findUnique({
+        where: { id },
+        select: {
+          status: true,
+          passenger: { select: { referredByDriverId: true } },
+        },
+      });
+
+      if (!ride) {
+        return res.status(404).json({ error: "Corrida não encontrada" });
+      }
+
+      if (ride.status !== "WAITING_REFERRAL") {
+        return res.status(409).json({
+          error: "Corrida não está em WAITING_REFERRAL",
+          currentStatus: ride.status,
+        });
+      }
+
+      const referredDriverId = ride.passenger.referredByDriverId;
+
+      // Expirar offer pendente do driver indicado
+      if (referredDriverId) {
+        await prisma.rideOffer.updateMany({
+          where: { rideRequestId: id, driverId: referredDriverId, status: "PENDING" },
+          data: { status: "EXPIRED" },
+        });
+      }
+
+      // WAITING_REFERRAL → MATCHING
+      await prisma.rideRequest.update({
+        where: { id },
+        data: { status: "MATCHING" },
+      });
+
+      console.log(`🔄 Fallback manual disparado para corrida ${id}`);
+
+      // Dispara matching geral excluindo o driver indicado
+      setImmediate(async () => {
+        try {
+          const matchRideUseCase = new MatchRideUseCase();
+          const { matched } = await matchRideUseCase.execute({
+            rideId: id,
+            level: "NETWORK_L1",
+            excludedDriverIds: referredDriverId ? [referredDriverId] : [],
+          });
+
+          if (!matched) {
+            await prisma.rideRequest.update({
+              where: { id },
+              data: { status: "EXPIRED" },
+            });
+            console.log(`⏱️ Corrida ${id} expirada — sem drivers no fallback manual`);
+          }
+        } catch (err) {
+          console.error(`🔥 Erro no fallback manual da corrida ${id}:`, err);
+        }
+      });
+
+      return res.status(200).json({
+        message: "Fallback iniciado — corrida será atribuída a outro motorista",
+        rideId: id,
+      });
+    } catch (error) {
+      console.error("🔥 ERRO PATCH RIDE:", error);
+      return res.status(500).json({
+        error: "Erro ao processar fallback",
         details: error instanceof Error ? error.message : error,
       });
     }

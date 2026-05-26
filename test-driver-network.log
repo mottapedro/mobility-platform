@@ -1,0 +1,153 @@
+
+> mobility-platform@1.0.0 test
+> jest --runInBand --forceExit tests/driver-network.spec.ts --verbose
+
+  console.log
+    ◇ injected env (0) from .env // tip: ◈ secrets for agents [www.dotenvx.com]
+
+      at _log (node_modules/dotenv/lib/main.js:131:11)
+
+  console.log
+    ➡️ GET /drivers/b7697408-6896-4e3d-9d52-054353f742ae/network
+
+      at src/server.ts:49:11
+
+  console.log
+    ➡️ GET /drivers/34afc508-4413-4790-bab4-9f336139fd60/network
+
+      at src/server.ts:49:11
+
+  console.log
+    ➡️ GET /drivers/c98dbac7-d40f-41fd-ab8c-7cba261438bb/network?page=1&pageSize=2
+
+      at src/server.ts:49:11
+
+  console.log
+    ➡️ GET /drivers/f7872adc-fba3-44ee-8db4-468003a4e968/network
+
+      at src/server.ts:49:11
+
+  console.log
+    ➡️ GET /drivers/886388a2-9753-48ae-b988-07cb6613924d/network
+
+      at src/server.ts:49:11
+
+  console.error
+    level1Ids: [{"driverId":"89afeb9e-dbc2-4652-b51f-96610f80efed","name":"rel-l1@test.com","referralCode":"ref-1779543563959-4842l3","isActive":true,"createdAt":"2026-05-23T13:39:23.960Z","referredPassengersCount":0}] expected: 89afeb9e-dbc2-4652-b51f-96610f80efed
+
+    [0m [90m 211 |[39m     [36mif[39m ([33m![39mlevel1Ids[33m.[39mincludes(level1[33m.[39mid)) {
+     [90m 212 |[39m       [90m// eslint-disable-next-line no-console[39m
+    [31m[1m>[22m[39m[90m 213 |[39m       console[33m.[39merror([32m'level1Ids:'[39m[33m,[39m [33mJSON[39m[33m.[39mstringify(level1Ids)[33m,[39m [32m'expected:'[39m[33m,[39m level1[33m.[39mid)[33m;[39m
+     [90m     |[39m               [31m[1m^[22m[39m
+     [90m 214 |[39m     }
+     [90m 215 |[39m     [36mif[39m ([33m![39mlevel2Ids[33m.[39mincludes(level2[33m.[39mid)) {
+     [90m 216 |[39m       [90m// eslint-disable-next-line no-console[39m[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:213:15)
+
+  console.error
+    level2Ids: [] expected: da7975c1-4ce4-4b7d-bb5a-eb0650a98df0
+
+    [0m [90m 215 |[39m     [36mif[39m ([33m![39mlevel2Ids[33m.[39mincludes(level2[33m.[39mid)) {
+     [90m 216 |[39m       [90m// eslint-disable-next-line no-console[39m
+    [31m[1m>[22m[39m[90m 217 |[39m       console[33m.[39merror([32m'level2Ids:'[39m[33m,[39m [33mJSON[39m[33m.[39mstringify(level2Ids)[33m,[39m [32m'expected:'[39m[33m,[39m level2[33m.[39mid)[33m;[39m
+     [90m     |[39m               [31m[1m^[22m[39m
+     [90m 218 |[39m       [90m// Fail with a clear message[39m
+     [90m 219 |[39m       [36mthrow[39m [36mnew[39m [33mError[39m([32m`level2.id (${level2.id}) not found in level2Ids: ${JSON.stringify(level2Ids)}. Raw relations: ${JSON.stringify(relations)}`[39m)[33m;[39m
+     [90m 220 |[39m     }[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:217:15)
+
+FAIL tests/driver-network.spec.ts
+  GET /drivers/:id/network
+    × requires an authenticated driver header (291 ms)
+    × forbids a driver from reading another driver network (53 ms)
+    × returns paginated linked passengers for the authenticated driver (97 ms)
+    × returns stats with totalPassengers and dynamic driver level counts (186 ms)
+    × returns relations grouped dynamically by referral level (104 ms)
+
+  ● GET /drivers/:id/network › requires an authenticated driver header
+
+    expect(received).toContain(expected) // indexOf
+
+    Expected value: 200
+    Received array: [401, 403]
+
+    [0m [90m 70 |[39m       [33m.[39munset([32m"x-driver-id"[39m)[33m;[39m
+     [90m 71 |[39m
+    [31m[1m>[22m[39m[90m 72 |[39m     expect([[35m401[39m[33m,[39m [35m403[39m])[33m.[39mtoContain(response[33m.[39mstatus)[33m;[39m
+     [90m    |[39m                        [31m[1m^[22m[39m
+     [90m 73 |[39m
+     [90m 74 |[39m     expect(response[33m.[39mbody)[33m.[39mtoHaveProperty([32m"error"[39m)[33m;[39m
+     [90m 75 |[39m[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:72:24)
+
+  ● GET /drivers/:id/network › forbids a driver from reading another driver network
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 403
+    Received: 200
+
+    [0m [90m 90 |[39m       [33m.[39m[36mset[39m([32m"x-driver-id"[39m[33m,[39m [33mString[39m(otherDriver[33m.[39mid))[33m;[39m
+     [90m 91 |[39m
+    [31m[1m>[22m[39m[90m 92 |[39m     expect(response[33m.[39mstatus)[33m.[39mtoBe([35m403[39m)[33m;[39m
+     [90m    |[39m                             [31m[1m^[22m[39m
+     [90m 93 |[39m
+     [90m 94 |[39m     expect(response[33m.[39mbody)[33m.[39mtoEqual({
+     [90m 95 |[39m       error[33m:[39m [32m"Driver cannot access another network"[39m[33m,[39m[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:92:29)
+
+  ● GET /drivers/:id/network › returns paginated linked passengers for the authenticated driver
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 3
+    Received: undefined
+
+    [0m [90m 112 |[39m     expect(response[33m.[39mstatus)[33m.[39mtoBe([35m200[39m)[33m;[39m
+     [90m 113 |[39m
+    [31m[1m>[22m[39m[90m 114 |[39m     expect(response[33m.[39mbody[33m.[39mtotalPassengers)[33m.[39mtoBe([35m3[39m)[33m;[39m
+     [90m     |[39m                                           [31m[1m^[22m[39m
+     [90m 115 |[39m
+     [90m 116 |[39m     expect(response[33m.[39mbody[33m.[39mpage)[33m.[39mtoBe([35m1[39m)[33m;[39m
+     [90m 117 |[39m[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:114:43)
+
+  ● GET /drivers/:id/network › returns stats with totalPassengers and dynamic driver level counts
+
+    TypeError: Cannot read properties of undefined (reading 'totalPassengers')
+
+    [0m [90m 162 |[39m     expect(response[33m.[39mstatus)[33m.[39mtoBe([35m200[39m)[33m;[39m
+     [90m 163 |[39m
+    [31m[1m>[22m[39m[90m 164 |[39m     expect(response[33m.[39mbody[33m.[39mstats[33m.[39mtotalPassengers)[33m.[39mtoBe([35m2[39m)[33m;[39m
+     [90m     |[39m                                [31m[1m^[22m[39m
+     [90m 165 |[39m
+     [90m 166 |[39m     [90m// Estrutura dinâmica da rede[39m
+     [90m 167 |[39m     expect(response[33m.[39mbody[33m.[39mstats[33m.[39mlevels[33m.[39mlevel1)[33m.[39mtoBe([35m2[39m)[33m;[39m[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:164:32)
+
+  ● GET /drivers/:id/network › returns relations grouped dynamically by referral level
+
+    level2.id (da7975c1-4ce4-4b7d-bb5a-eb0650a98df0) not found in level2Ids: []. Raw relations: {"level1":[{"driverId":"89afeb9e-dbc2-4652-b51f-96610f80efed","name":"rel-l1@test.com","referralCode":"ref-1779543563959-4842l3","isActive":true,"createdAt":"2026-05-23T13:39:23.960Z","referredPassengersCount":0}],"level2":[],"level3":[],"level4":[],"level5":[]}
+
+    [0m [90m 217 |[39m       console[33m.[39merror([32m'level2Ids:'[39m[33m,[39m [33mJSON[39m[33m.[39mstringify(level2Ids)[33m,[39m [32m'expected:'[39m[33m,[39m level2[33m.[39mid)[33m;[39m
+     [90m 218 |[39m       [90m// Fail with a clear message[39m
+    [31m[1m>[22m[39m[90m 219 |[39m       [36mthrow[39m [36mnew[39m [33mError[39m([32m`level2.id (${level2.id}) not found in level2Ids: ${JSON.stringify(level2Ids)}. Raw relations: ${JSON.stringify(relations)}`[39m)[33m;[39m
+     [90m     |[39m             [31m[1m^[22m[39m
+     [90m 220 |[39m     }
+     [90m 221 |[39m
+     [90m 222 |[39m     [90m// Check that the correct driver IDs are present[39m[0m
+
+      at Object.<anonymous> (tests/driver-network.spec.ts:219:13)
+
+Test Suites: 1 failed, 1 total
+Tests:       5 failed, 5 total
+Snapshots:   0 total
+Time:        4.38 s, estimated 8 s
+Ran all test suites matching tests/driver-network.spec.ts.
+Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?
