@@ -1,4 +1,4 @@
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../shared/enums";
 import { ReferralFlowError } from "./errors";
 
 /**

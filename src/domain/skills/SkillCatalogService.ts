@@ -1,4 +1,5 @@
-import { DriverSkillCode, Skill } from "@prisma/client";
+import type { Skill } from "@prisma/client";
+import { DriverSkillCode } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { SkillCatalogError } from "./errors";
 

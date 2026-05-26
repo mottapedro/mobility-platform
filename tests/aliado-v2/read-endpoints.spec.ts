@@ -1,6 +1,6 @@
 import bcrypt from "bcrypt";
 import request from "supertest";
-import { ActorType, DriverSkillCode } from "@prisma/client";
+import { ActorType, DriverSkillCode } from "../../src/shared/enums";
 import { app } from "../../src/app";
 import { prisma } from "../setup";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";

@@ -1,4 +1,5 @@
-import { ActorType, ReferralFlowType, ReferralRelationship } from "@prisma/client";
+import type { ReferralRelationship } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 
 type Db = Pick<typeof prisma, "passenger" | "referralRelationship">;

@@ -1,4 +1,4 @@
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../src/shared/enums";
 import { resolveReferralFlowType } from "../../src/domain/referral-network/ReferralFlowResolverService";
 import { ReferralFlowError } from "../../src/domain/referral-network/errors";
 

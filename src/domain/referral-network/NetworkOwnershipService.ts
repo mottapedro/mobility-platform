@@ -1,4 +1,4 @@
-import { ActorType, RideStatus, SplitBeneficiaryType } from "@prisma/client";
+import { ActorType, RideStatus, SplitBeneficiaryType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 
 type Db = Pick<

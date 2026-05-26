@@ -1,4 +1,4 @@
-import { Region } from "@prisma/client";
+import { Region } from "../../shared/enums";
 
 const REGION_SUFFIX: Record<Region, string> = {
   ZN: "zn",

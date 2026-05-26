@@ -1,5 +1,5 @@
 import bcrypt from "bcrypt";
-import { DomainEventType, RideStatus } from "@prisma/client";
+import { DomainEventType, RideStatus } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { settleConfirmedPayment } from "../../src/domain/payment/SettlementService";

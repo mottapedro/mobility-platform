@@ -1,5 +1,5 @@
 import bcrypt from "bcrypt";
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { resolveOnboardingContext } from "../../src/domain/onboarding/OnboardingContextService";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";
@@ -63,7 +63,7 @@ describe("OnboardingContextService.resolveOnboardingContext", () => {
     expect(ctx.rootDriver).toMatchObject({ id: owner.id });
     expect(ctx.invite).toMatchObject({ id: invite.id, slug: "join-d2d-001" });
     expect(ctx.lineage).toBeNull();
-    expect(ctx.operationalOwnership).toMatchObject({ driverId: owner.id });
+    expect(ctx.ownership).toMatchObject({ driverId: owner.id });
   });
 
   it("resolves a PASSENGER invite (P2P) — inviter passenger, root inherited", async () => {

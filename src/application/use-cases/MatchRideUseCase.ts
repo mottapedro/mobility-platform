@@ -6,6 +6,7 @@ import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 import { RegionResolver } from "../../domain/services/RegionResolver";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { execute as createOfferService } from "../services/CreateOfferService";
 
 export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
 
@@ -203,13 +204,13 @@ export class MatchRideUseCase {
 
   // ─── Criar offer com tolerância a duplicidade ───────────────────────────────
   private async createOffer(rideId: string, driverId: string, expiresAt: Date) {
-    try {
-      await prisma.rideOffer.create({
-        data: { rideRequestId: rideId, driverId, expiresAt },
-      });
+    const result = await createOfferService({
+      rideRequestId: rideId,
+      driverId,
+      expiresAt,
+    });
+    if (result.created) {
       console.log(`📨 Offer enviada para driver ${driverId}`);
-    } catch {
-      // Ignora violação de @@unique (offer duplicada)
     }
   }
 

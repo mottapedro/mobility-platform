@@ -1,4 +1,4 @@
-import { Region } from "@prisma/client";
+import { Region } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 
 const REGION_BY_CODE: Record<string, Region> = {

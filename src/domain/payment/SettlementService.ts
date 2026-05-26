@@ -1,10 +1,5 @@
-import {
-  DomainEventType,
-  PaymentStatus,
-  RideStatus,
-  Settlement,
-  SplitBeneficiaryType,
-} from "@prisma/client";
+import type { Settlement } from "@prisma/client";
+import { DomainEventType, PaymentStatus, RideStatus, SplitBeneficiaryType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import {
   EventBus,

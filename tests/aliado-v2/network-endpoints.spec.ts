@@ -1,6 +1,6 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
-import { ActorType, ReferralFlowType } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../src/shared/enums";
 import { app } from "../../src/app";
 import { prisma } from "../setup";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";
@@ -56,7 +56,7 @@ describe("Aliado V2 network endpoints", () => {
     expect(res.body.flowType).toBe(ReferralFlowType.DRIVER_TO_PASSENGER);
     expect(res.body.inviter).toMatchObject({ actorType: ActorType.DRIVER, id: owner.id });
     expect(res.body.rootDriver).toMatchObject({ id: owner.id });
-    expect(res.body.operationalOwnership).toMatchObject({ driverId: owner.id });
+    expect(res.body.ownership).toMatchObject({ driverId: owner.id });
   });
 
   it("GET /onboarding/context/:slug — 404 when not found", async () => {

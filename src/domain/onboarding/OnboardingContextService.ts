@@ -1,10 +1,5 @@
-import {
-  ActorType,
-  Driver,
-  Invite,
-  Passenger,
-  ReferralFlowType,
-} from "@prisma/client";
+import type { Driver, Invite, Passenger } from "@prisma/client";
+import { ActorType, ReferralFlowType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { resolveReferralFlowType } from "../referral-network/ReferralFlowResolverService";
 import { resolveDriverRoot } from "../referral-network/DriverRootResolverService";
@@ -36,6 +31,7 @@ export interface OnboardingInviterSnapshot {
 
 export interface OnboardingRootDriverSnapshot {
   id: string;
+  name: string;
 }
 
 export interface OnboardingContext {
@@ -47,7 +43,7 @@ export interface OnboardingContext {
   rootDriver: OnboardingRootDriverSnapshot | null;
   invite: Invite | null;
   lineage: PassengerLineage | null;
-  operationalOwnership: OwnershipMetrics | null;
+  ownership: OwnershipMetrics | null;
 }
 
 export class OnboardingContextError extends Error {}
@@ -183,9 +179,18 @@ async function buildContext(
     }
   }
 
-  let operationalOwnership: OwnershipMetrics | null = null;
+  let ownership: OwnershipMetrics | null = null;
   if (rootDriverId) {
-    operationalOwnership = await getOwnershipMetrics(rootDriverId, {}, db);
+    ownership = await getOwnershipMetrics(rootDriverId, {}, db);
+  }
+
+  let rootDriver: OnboardingRootDriverSnapshot | null = null;
+  if (rootDriverId) {
+    const rootDriverRow = await db.driver.findUnique({
+      where: { id: rootDriverId },
+      include: { user: true },
+    });
+    rootDriver = rootDriverRow ? { id: rootDriverId, name: rootDriverRow.user.name } : null;
   }
 
   return {
@@ -194,9 +199,9 @@ async function buildContext(
     flowType,
     expectedActor,
     inviter: { actorType: inviterActorType, id: inviterId },
-    rootDriver: rootDriverId ? { id: rootDriverId } : null,
+    rootDriver,
     invite,
     lineage,
-    operationalOwnership,
+    ownership,
   };
 }

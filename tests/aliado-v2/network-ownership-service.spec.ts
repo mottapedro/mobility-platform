@@ -1,5 +1,5 @@
 import bcrypt from "bcrypt";
-import { ActorType, RideStatus } from "@prisma/client";
+import { ActorType, RideStatus } from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";
 import { getOwnershipMetrics } from "../../src/domain/referral-network/NetworkOwnershipService";

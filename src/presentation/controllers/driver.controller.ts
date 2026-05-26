@@ -4,7 +4,7 @@ import { getDriverNetworkSnapshot } from "../../domain/services/DriverReferralSe
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
 import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
 import { listDriverSkills } from "../../domain/skills/DriverSkillService";
-import { ReferralFlowType } from "@prisma/client";
+import { ReferralFlowType } from "../../shared/enums";
 
 export class DriverController {
   private async findActivePublicDriver(referralCodeOrSlug: string) {

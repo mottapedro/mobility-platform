@@ -1,7 +1,5 @@
-import {
-  ActorType,
-  ReferralRelationship,
-} from "@prisma/client";
+import type { ReferralRelationship } from "@prisma/client";
+import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { recordRelationship } from "../referral-network/ReferralRelationshipService";
 

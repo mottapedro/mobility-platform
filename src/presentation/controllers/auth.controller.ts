@@ -1,7 +1,8 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import { randomBytes } from "crypto";
-import { ActorType, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain, ReferralChainError } from "../../domain/services/DriverReferralService";
 import { assignPassengerIdentity, createPassengerReferral } from "../../domain/services/PassengerReferralService";
@@ -65,12 +66,18 @@ export class AuthController {
             throw new HttpError(400, "referralCode deve ser string não vazia");
           }
 
-          const driver = await tx.driver.findUnique({
-            where: { referralCode: referralCode.trim() },
+          const driver = await tx.driver.findFirst({
+            where: {
+              isActive: true,
+              OR: [
+                { referralCode: referralCode.trim() },
+                { publicSlug: referralCode.trim() },
+              ],
+            },
             select: { id: true, isActive: true },
           });
 
-          if (driver && driver.isActive) {
+          if (driver) {
             referrerDriverId = driver.id;
           } else {
             // Try passenger referral code (passenger-to-passenger referral)

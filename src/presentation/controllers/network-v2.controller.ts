@@ -7,6 +7,7 @@ import { getPassengerLineage } from "../../domain/referral-network/PassengerLine
 import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwnershipService";
 import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
 import { listDriverSkills } from "../../domain/skills/DriverSkillService";
+import { prisma } from "../../infra/prisma/client";
 
 function paramId(req: Request, key: string): string {
   const v = req.params[key];
@@ -50,11 +51,21 @@ export class NetworkV2Controller {
 
   static async getDriverNetwork(req: Request, res: Response) {
     const id = paramId(req, "id");
-    const [relationships, ownership, skills] = await Promise.all([
+    const [relationships, ownership, skills, driver] = await Promise.all([
       getNetworkRelationships(id),
       getOwnershipMetrics(id),
-      listDriverSkills(id).catch(() => []),
+      listDriverSkills(id).catch(() => [] as { code: string }[]),
+      prisma.driver.findUnique({ where: { id }, select: { isActive: true, experienceLevel: true } }),
     ]);
-    return res.json({ driverId: id, relationships, ownership, skills });
+    const active = driver?.isActive ?? false;
+    const level = driver?.experienceLevel ?? "";
+    const capabilities = {
+      canInvitePassengers: active,
+      canInviteDrivers: active && (level === "PROFISSIONAL" || level === "ELITE"),
+      canReceiveRewards: active,
+      canExpandNetwork: active,
+      skillCodes: skills.map((s) => s.code),
+    };
+    return res.json({ driverId: id, relationships, ownership, skills, capabilities });
   }
 }

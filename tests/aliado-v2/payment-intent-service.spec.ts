@@ -3,7 +3,7 @@ import {
   DomainEventType,
   PaymentStatus,
   RideStatus,
-} from "@prisma/client";
+} from "../../src/shared/enums";
 import { prisma } from "../setup";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { InMemoryPixProvider } from "../../src/domain/payment/providers/InMemoryPixProvider";
