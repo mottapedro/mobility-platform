@@ -192,4 +192,5 @@ model DriverReferral {
   createdAt        DateTime @default(now())
 
   @@unique([referrerDriverId, referredDriverId])
+  @@index([referredDriverId])
 }

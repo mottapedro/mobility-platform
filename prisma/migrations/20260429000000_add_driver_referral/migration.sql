@@ -12,6 +12,9 @@ CREATE TABLE "DriverReferral" (
 -- CreateIndex
 CREATE UNIQUE INDEX "DriverReferral_referrerDriverId_referredDriverId_key" ON "DriverReferral"("referrerDriverId", "referredDriverId");
 
+-- CreateIndex
+CREATE INDEX "DriverReferral_referredDriverId_idx" ON "DriverReferral"("referredDriverId");
+
 -- AddForeignKey
 ALTER TABLE "DriverReferral" ADD CONSTRAINT "DriverReferral_referrerDriverId_fkey" FOREIGN KEY ("referrerDriverId") REFERENCES "Driver"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 

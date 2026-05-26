@@ -66,6 +66,41 @@ function applyContextFilters(
 }
 
 export class MatchRideUseCase {
+  private async getPartnerNetwork(
+    referredDriverId: string
+  ): Promise<{
+    driverIds: string[];
+    networkEntryCount: number;
+    directPartnerCount: number;
+    levels: number[];
+  }> {
+    const [networkEntries, directPartners] = await Promise.all([
+      prisma.driverReferral.findMany({
+        where: { referrerDriverId: referredDriverId },
+        select: { referredDriverId: true, level: true },
+        orderBy: { level: "asc" },
+      }),
+      prisma.driver.findMany({
+        where: { isActive: true, referredByDriverId: referredDriverId },
+        select: { id: true },
+      }),
+    ]);
+
+    const driverIds = Array.from(
+      new Set([
+        ...networkEntries.map((entry) => entry.referredDriverId),
+        ...directPartners.map((driver) => driver.id),
+      ])
+    );
+
+    return {
+      driverIds,
+      networkEntryCount: networkEntries.length,
+      directPartnerCount: directPartners.length,
+      levels: [...new Set(networkEntries.map((entry) => entry.level))],
+    };
+  }
+
 
   // ─── Derivar próximo nível com base no estado atual das offers ──────────────
   private async deriveLevel(
@@ -84,22 +119,8 @@ export class MatchRideUseCase {
 
     // Driver indicado já foi tentado → verificar se há parceiros da rede não tentados
     // Preferência: tabela DriverReferral (multi-nível); fallback: referredByDriverId direto
-    const networkEntries = await prisma.driverReferral.findMany({
-      where: { referrerDriverId: referredDriverId },
-      select: { referredDriverId: true },
-    });
-
-    let partnerIds: string[];
-    if (networkEntries.length > 0) {
-      partnerIds = networkEntries.map((e) => e.referredDriverId);
-    } else {
-      // Fallback para drivers com referredByDriverId = referredDriverId
-      const directPartners = await prisma.driver.findMany({
-        where: { isActive: true, referredByDriverId: referredDriverId },
-        select: { id: true },
-      });
-      partnerIds = directPartners.map((d) => d.id);
-    }
+    const { driverIds } = await this.getPartnerNetwork(referredDriverId);
+    const partnerIds = driverIds.filter((id) => id !== referredDriverId);
 
     if (partnerIds.length === 0) return "GENERAL";
 
@@ -204,30 +225,18 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds });
       }
 
-      // Preferência: DriverReferral (níveis 1, 2, 3 ordenados por nível);
-      // Fallback: drivers com referredByDriverId = referredDriverId
-      const networkEntries = await prisma.driverReferral.findMany({
-        where: { referrerDriverId: referredDriverId },
-        select: { referredDriverId: true, level: true },
-        orderBy: { level: "asc" },
-      });
+      const {
+        driverIds: networkDriverIds,
+        networkEntryCount,
+        directPartnerCount,
+        levels,
+      } = await this.getPartnerNetwork(referredDriverId);
 
-      let networkDriverIds: string[];
-      if (networkEntries.length > 0) {
-        networkDriverIds = networkEntries.map((e) => e.referredDriverId);
-        console.log(
-          `🤝 Rede de indicação (DriverReferral): ${networkEntries.length} entrada(s) — níveis: ${[...new Set(networkEntries.map((e) => e.level))].join(", ")}`
-        );
-      } else {
-        // Fallback: consulta direta por referredByDriverId
-        const directPartners = await prisma.driver.findMany({
-          where: { isActive: true, referredByDriverId: referredDriverId },
-          select: { id: true },
-        });
-        networkDriverIds = directPartners.map((d) => d.id);
-        console.log(
-          `🤝 Drivers parceiros (fallback referredByDriverId): ${networkDriverIds.length}`
-        );
+      console.log(
+        `🤝 Rede parceiros combinada: DriverReferral=${networkEntryCount}, legado referredByDriverId=${directPartnerCount}`
+      );
+      if (levels.length > 0) {
+        console.log(`🤝 Níveis DriverReferral encontrados: ${levels.join(", ")}`);
       }
 
       const filteredNetworkIds = networkDriverIds.filter(

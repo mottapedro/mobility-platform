@@ -32,19 +32,51 @@ export async function createDriverReferralChain(
     select: { referrerDriverId: true, level: true },
   });
 
+  const ancestorsByLevel = new Map<string, number>();
+
   for (const ancestor of ancestorEntries) {
     const newLevel = ancestor.level + 1;
     if (newLevel > 3) continue;
+    const existingLevel = ancestorsByLevel.get(ancestor.referrerDriverId);
+    if (!existingLevel || newLevel < existingLevel) {
+      ancestorsByLevel.set(ancestor.referrerDriverId, newLevel);
+    }
+  }
 
+  // Fallback para legado: walk via Driver.referredByDriverId quando a rede
+  // ainda não foi totalmente preenchida em DriverReferral.
+  const visited = new Set<string>([referrerId]);
+  let currentId: string | null = referrerId;
+  let distanceFromReferrer = 0;
+  while (currentId && distanceFromReferrer < 2) {
+    const currentDriver: { referredByDriverId: string | null } | null =
+      await prisma.driver.findUnique({
+      where: { id: currentId },
+      select: { referredByDriverId: true },
+    });
+    const parentId: string | null = currentDriver?.referredByDriverId ?? null;
+    if (!parentId || visited.has(parentId)) break;
+
+    visited.add(parentId);
+    distanceFromReferrer += 1;
+    const newLevel = distanceFromReferrer + 1; // parent of referrer => nível 2
+    const existingLevel = ancestorsByLevel.get(parentId);
+    if (!existingLevel || newLevel < existingLevel) {
+      ancestorsByLevel.set(parentId, newLevel);
+    }
+    currentId = parentId;
+  }
+
+  for (const [ancestorId, newLevel] of ancestorsByLevel) {
     await prisma.driverReferral.upsert({
       where: {
         referrerDriverId_referredDriverId: {
-          referrerDriverId: ancestor.referrerDriverId,
+          referrerDriverId: ancestorId,
           referredDriverId: driverId,
         },
       },
       create: {
-        referrerDriverId: ancestor.referrerDriverId,
+        referrerDriverId: ancestorId,
         referredDriverId: driverId,
         level: newLevel,
       },
@@ -52,7 +84,7 @@ export async function createDriverReferralChain(
     });
 
     console.log(
-      `🔗 Referral chain: nível ${newLevel} criado (${ancestor.referrerDriverId} → ${driverId})`
+      `🔗 Referral chain: nível ${newLevel} criado (${ancestorId} → ${driverId})`
     );
   }
 }
