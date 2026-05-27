@@ -206,10 +206,20 @@ describe("GET /network/context — NetworkContext shape alignment", () => {
 
     const { inviteUrls } = res.body;
     expect(inviteUrls).not.toBeNull();
+    expect(typeof inviteUrls.d2p).toBe("string");
+    expect(inviteUrls.d2p).toContain(`/invite/d2p/slug-ctx-r5${t}`);
+    expect(typeof inviteUrls.d2d).toBe("string");
+    expect(inviteUrls.d2d).toContain(`/invite/d2d/slug-ctx-r5${t}`);
+    expect(inviteUrls.p2p).toBeNull();
+
+    // Legacy fields must remain while frontend migration is in progress.
     expect(typeof inviteUrls.driverToPassenger).toBe("string");
-    expect(inviteUrls.driverToPassenger).toContain(`slug-ctx-r5${t}`);
+    expect(inviteUrls.driverToPassenger).toContain(`/invite/d2p/slug-ctx-r5${t}`);
     expect(typeof inviteUrls.driverToDriver).toBe("string");
-    expect(inviteUrls.driverToDriver).toContain("type=driver");
+    expect(inviteUrls.driverToDriver).toContain(`/invite/d2d/slug-ctx-r5${t}`);
+
+    // Governance: driver context MUST NOT expose a passenger-flow alias.
+    expect(inviteUrls.passengerToPassenger).toBeNull();
   });
 
   // 6. PASSENGER → operationalOwner + targetActorExpected
@@ -341,5 +351,33 @@ describe("GET /network/context — NetworkContext shape alignment", () => {
     expect(networkMetrics.growth).toBeDefined();
     expect(typeof networkMetrics.growth.last7Days).toBe("number");
     expect(typeof networkMetrics.growth.last30Days).toBe("number");
+  });
+
+  // 13. Passenger inviteUrls expose explicit p2p and hide d2d/d2p
+  it("passenger inviteUrls expose explicit p2p context", async () => {
+    const t = tag();
+    const root = await makeDriver(`r13root${t}`);
+    const pax = await makePassenger(`r13p${t}`);
+    await wireD2P(root, pax, root.id);
+
+    const res = await request(app)
+      .get(`/network/context?actorId=${pax.id}&actorType=PASSENGER`)
+      .expect(200);
+
+    const { inviteUrls } = res.body;
+    expect(inviteUrls).not.toBeNull();
+    expect(inviteUrls.d2d).toBeNull();
+    expect(inviteUrls.d2p).toBeNull();
+    expect(typeof inviteUrls.p2p).toBe("string");
+    expect(inviteUrls.p2p).toContain(`/invite/p2p/pslug-r13p${t}`);
+
+    // Governance: passenger context MUST NOT leak P2P link via driver aliases.
+    // Reusing the p2p URL as driverToPassenger would allow the frontend to
+    // share a passenger invite as if it were a driver invite (cross-flow bug).
+    expect(inviteUrls.driverToPassenger).toBeNull();
+    expect(inviteUrls.driverToDriver).toBeNull();
+    // Legacy alias for P2P must mirror the canonical p2p URL.
+    expect(typeof inviteUrls.passengerToPassenger).toBe("string");
+    expect(inviteUrls.passengerToPassenger).toBe(inviteUrls.p2p);
   });
 });

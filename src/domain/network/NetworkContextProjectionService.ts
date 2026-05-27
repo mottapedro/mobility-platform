@@ -168,12 +168,26 @@ async function buildLateral(
 function buildDriverInviteUrls(
   publicSlug: string | null,
   referralCode: string | null
-): { driverToPassenger: string; driverToDriver: string } | null {
+): {
+  d2d: string;
+  d2p: string;
+  p2p: null;
+  driverToPassenger: string;
+  driverToDriver: string;
+  passengerToPassenger: null;
+} | null {
   const ref = publicSlug ?? referralCode;
   if (!ref) return null;
+  const d2p = `${FRONTEND_BASE_URL}/invite/d2p/${encodeURIComponent(ref)}`;
+  const d2d = `${FRONTEND_BASE_URL}/invite/d2d/${encodeURIComponent(ref)}`;
   return {
-    driverToPassenger: `${FRONTEND_BASE_URL}/onboarding/join?ref=${encodeURIComponent(ref)}`,
-    driverToDriver: `${FRONTEND_BASE_URL}/onboarding/join?ref=${encodeURIComponent(ref)}&type=driver`,
+    d2d,
+    d2p,
+    p2p: null,
+    // Legacy aliases kept for backward compatibility while frontend migrates.
+    driverToPassenger: d2p,
+    driverToDriver: d2d,
+    passengerToPassenger: null,
   };
 }
 
@@ -539,9 +553,20 @@ export async function buildNetworkContextForPassenger(
   };
 
   const ref = passenger.publicSlug ?? passenger.referralCode;
-  const inviteUrls = ref
+  const p2pUrl = ref
+    ? `${FRONTEND_BASE_URL}/invite/p2p/${encodeURIComponent(ref)}`
+    : null;
+  // Passenger flow MUST expose only P2P URLs. Never reuse the P2P link as
+  // a D2P/D2D alias — that would let the frontend share a passenger invite
+  // as if it were a driver invite. Legacy alias mirrors the canonical p2p.
+  const inviteUrls = p2pUrl
     ? {
-        driverToPassenger: `${FRONTEND_BASE_URL}/onboarding/join?ref=${encodeURIComponent(ref)}`,
+        d2d: null,
+        d2p: null,
+        p2p: p2pUrl,
+        driverToPassenger: null,
+        driverToDriver: null,
+        passengerToPassenger: p2pUrl,
       }
     : null;
 

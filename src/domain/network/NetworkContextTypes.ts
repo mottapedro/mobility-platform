@@ -98,8 +98,18 @@ export interface NetworkContext {
   genealogy: Genealogy;
   networkMetrics: NetworkMetrics;
   inviteUrls?: {
+    /** Canonical DRIVER_TO_DRIVER invite URL. Null when flow not available. */
+    d2d?: string | null;
+    /** Canonical DRIVER_TO_PASSENGER invite URL. Null when flow not available. */
+    d2p?: string | null;
+    /** Canonical PASSENGER_TO_PASSENGER invite URL. Null when flow not available. */
+    p2p?: string | null;
+    /** Legacy alias for d2p. Null for passenger contexts (no cross-flow reuse). */
     driverToPassenger?: string | null;
+    /** Legacy alias for d2d. Null for passenger contexts. */
     driverToDriver?: string | null;
+    /** Legacy alias for p2p. Null for driver contexts. */
+    passengerToPassenger?: string | null;
   } | null;
   capabilities?: NetworkCapabilityContext | null;
 }
