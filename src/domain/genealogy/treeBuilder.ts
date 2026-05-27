@@ -53,6 +53,10 @@ export function buildDescendantsTree(
     childrenMap.set(edge.sourceActorId, list);
   }
 
+  // Absolute BFS level of the viewer — used to normalise all descendant depths.
+  // If viewer is not in the BFS result (e.g. they are the global root), default to 0.
+  const viewerAbsoluteLevel = nodeMap.get(rootActorId)?.level ?? 0;
+
   // Recursive tree builder (cycle-safe via nodeMap lookup only — BFS already de-cycled)
   function buildSubtree(actorId: string): FrontendGenealogyNode | null {
     const node = nodeMap.get(actorId);
@@ -65,7 +69,8 @@ export function buildDescendantsTree(
 
     return {
       actor: toNetworkActor(node),
-      depth: node.level,
+      depth: node.level - viewerAbsoluteLevel,   // relative to viewer
+      absoluteDepth: node.level,                  // absolute from global root
       children,
     };
   }

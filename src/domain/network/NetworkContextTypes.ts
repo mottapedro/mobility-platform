@@ -45,7 +45,10 @@ export interface NodeMetrics {
 /** Recursive descendant node — mirrors frontend GenealogyNode. */
 export interface FrontendGenealogyNode {
   actor: NetworkActor;
+  /** Relative depth from the requesting actor (viewer = 0, direct child = 1). Use for UI badges/labels. */
   depth: number;
+  /** Absolute BFS depth from the global root driver (for governance / analytics). */
+  absoluteDepth: number;
   children: FrontendGenealogyNode[];
   nodeMetrics?: NodeMetrics;
 }
