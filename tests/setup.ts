@@ -26,6 +26,7 @@ const TEST_EMAIL_DOMAINS = [
   "@vip.com",
   "@ptest.com",
   "@sqlval.com",
+  "@sla.com",
 ];
 
 const TEST_USER_WHERE = {

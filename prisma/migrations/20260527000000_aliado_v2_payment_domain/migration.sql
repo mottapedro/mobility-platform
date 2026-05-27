@@ -26,6 +26,15 @@ DO $$ BEGIN
     );
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- Ensure base DomainEventType values exist even if the type was pre-created
+-- by an earlier migration (e.g. 20260526190329_add_driver_referred_event).
+ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'PAYMENT_INTENT_CREATED';
+ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'PIX_QRCODE_GENERATED';
+ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'PAYMENT_CONFIRMED';
+ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'PAYMENT_FAILED';
+ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'RIDE_SETTLED';
+ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'REWARD_DISTRIBUTED';
+
 -- 2) Add PAID to RideStatus
 ALTER TYPE "RideStatus" ADD VALUE IF NOT EXISTS 'PAID';
 

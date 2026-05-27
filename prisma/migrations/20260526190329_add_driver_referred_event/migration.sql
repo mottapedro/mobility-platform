@@ -1,5 +1,9 @@
--- AlterEnum
-ALTER TYPE "DomainEventType" ADD VALUE 'DRIVER_REFERRED';
+-- AlterEnum (idempotent: creates type on fresh DB, adds value if type already exists)
+DO $$ BEGIN
+  CREATE TYPE "DomainEventType" AS ENUM ('DRIVER_REFERRED');
+EXCEPTION WHEN duplicate_object THEN
+  ALTER TYPE "DomainEventType" ADD VALUE IF NOT EXISTS 'DRIVER_REFERRED';
+END $$;
 
 -- DropForeignKey
 ALTER TABLE "DriverSkill" DROP CONSTRAINT "DriverSkill_driver_fkey";

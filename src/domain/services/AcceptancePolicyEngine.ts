@@ -14,6 +14,7 @@ export const OPERATIONAL_CUTOFF_HOURS = 24;
 export const SCHEDULED_OFFER_TIMEOUT_MS = 30 * 60 * 1000;   // 30 minutes per driver
 export const IMMEDIATE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;    // 2 minutes per driver
 export const REFERRAL_WINDOW_IMMEDIATE_MS = 5 * 60 * 1000;  // 5 minutes (existing behaviour)
+export const NETWORK_OFFER_TIMEOUT_MS = 15 * 60 * 1000;     // 15 minutes — network-owned rides (D2P / P2P with rootDriverId)
 
 export interface RidePolicy {
   rideStartsAt: Date | null;
@@ -21,21 +22,31 @@ export interface RidePolicy {
   offerResponseTimeoutMs: number;
   referralWindowMs: number;
   isScheduled: boolean;
+  isNetworkOwned: boolean;
 }
 
 export class AcceptancePolicyEngine {
   /**
    * Compute the full acceptance policy for a ride.
-   * @param scheduledAt - The ride's scheduled start time, or null for immediate rides.
+   * @param scheduledAt   - The ride's scheduled start time, or null for immediate rides.
+   * @param isNetworkOwned - True when the ride belongs to a driver's network
+   *                         (passenger has rootDriverId — covers D2P and P2P).
+   *                         Raises the offer response timeout to 15 min for
+   *                         immediate rides; scheduled rides keep 30 min (already larger).
    */
-  static computePolicy(scheduledAt: Date | null | undefined): RidePolicy {
+  static computePolicy(scheduledAt: Date | null | undefined, isNetworkOwned = false): RidePolicy {
     if (!scheduledAt) {
+      const offerResponseTimeoutMs = Math.max(
+        IMMEDIATE_OFFER_TIMEOUT_MS,
+        isNetworkOwned ? NETWORK_OFFER_TIMEOUT_MS : 0,
+      );
       return {
         rideStartsAt: null,
         operationalCutoffAt: null,
-        offerResponseTimeoutMs: IMMEDIATE_OFFER_TIMEOUT_MS,
+        offerResponseTimeoutMs,
         referralWindowMs: REFERRAL_WINDOW_IMMEDIATE_MS,
         isScheduled: false,
+        isNetworkOwned,
       };
     }
 
@@ -50,12 +61,18 @@ export class AcceptancePolicyEngine {
       Math.min(SCHEDULED_OFFER_TIMEOUT_MS, msUntilCutoff)
     );
 
+    const offerResponseTimeoutMs = Math.max(
+      SCHEDULED_OFFER_TIMEOUT_MS,
+      isNetworkOwned ? NETWORK_OFFER_TIMEOUT_MS : 0,
+    );
+
     return {
       rideStartsAt: scheduledAt,
       operationalCutoffAt: cutoff,
-      offerResponseTimeoutMs: SCHEDULED_OFFER_TIMEOUT_MS,
+      offerResponseTimeoutMs,
       referralWindowMs,
       isScheduled: true,
+      isNetworkOwned,
     };
   }
 

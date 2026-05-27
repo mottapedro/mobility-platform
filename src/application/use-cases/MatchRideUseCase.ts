@@ -229,7 +229,7 @@ export class MatchRideUseCase {
 
     const passenger = await prisma.passenger.findUnique({
       where: { id: ride.passengerId },
-      select: { referredByDriverId: true },
+      select: { referredByDriverId: true, rootDriverId: true },
     });
 
     // Guard: só faz matching em corridas que ainda podem ser matchadas
@@ -239,12 +239,19 @@ export class MatchRideUseCase {
     }
 
     const referredDriverId = passenger?.referredByDriverId ?? null;
+    // A ride is network-owned when the passenger belongs to a driver's network
+    // (rootDriverId is set via D2P or P2P-inherited referral). GENERAL dispatch
+    // rides without a network passenger are excluded.
+    const isNetworkOwned = !!(ride.rootDriverId || passenger?.rootDriverId);
     const rideContext = (ride.context ?? null) as RideContext | null;
     const priority = calculatePriority(rideContext);
 
     // Acceptance policy: compute offer TTL and cutoff from ride data.
+    // Network-owned rides receive a 15-min acceptance window (immediate rides only;
+    // scheduled rides already use 30 min which exceeds the network SLA).
     const policy = AcceptancePolicyEngine.computePolicy(
-      ride.scheduledAt ?? null
+      ride.scheduledAt ?? null,
+      isNetworkOwned,
     );
     const now = new Date();
 
@@ -273,6 +280,7 @@ export class MatchRideUseCase {
       event: "ACCEPTANCE_WINDOW_CALCULATED",
       metadata: {
         isScheduled: policy.isScheduled,
+        isNetworkOwned,
         operationalCutoffAt: policy.operationalCutoffAt?.toISOString() ?? null,
         offerExpiresAt: expiresAt.toISOString(),
         referralWindowMs,
