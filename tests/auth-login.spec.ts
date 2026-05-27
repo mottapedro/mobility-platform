@@ -17,13 +17,16 @@ beforeEach(async () => {
       passwordHash,
     },
   });
-  await prisma.driver.create({
-    data: {
-      userId: user.id,
-      isActive: true,
-      experienceLevel: "INTERMEDIARIO",
-    },
-  });
+  if (user?.id) {
+    await prisma.driver.create({
+      data: {
+        userId: user.id,
+        isActive: true,
+        experienceLevel: "INTERMEDIARIO",
+        regions: ["ZN"],
+      },
+    });
+  }
 });
 
 describe("POST /auth/login", () => {

@@ -72,6 +72,7 @@ describe("Public driver referral flow", () => {
         experienceLevel: "PROFISSIONAL",
         referralCode: `pedro-paulo-motta-${ts}`,
         publicSlug: `pedro-paulo-motta-${ts}`,
+        regions: ["ZN"],
       },
     });
 
@@ -106,6 +107,7 @@ describe("Public driver referral flow", () => {
         isActive: false,
         experienceLevel: "INTERMEDIARIO",
         referralCode: "inactive-driver-code",
+        regions: ["ZN"],
       },
     });
 
@@ -131,6 +133,7 @@ describe("Public driver referral flow", () => {
         isActive: true,
         experienceLevel: "INTERMEDIARIO",
         referralCode: "passenger-flow-code",
+        regions: ["ZN"],
       },
     });
 
@@ -207,6 +210,7 @@ describe("Public driver referral flow", () => {
         isActive: true,
         experienceLevel: "ELITE",
         referralCode: "driver-flow-code",
+        regions: ["ZN"],
       },
     });
 
