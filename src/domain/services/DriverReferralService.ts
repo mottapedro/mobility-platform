@@ -147,8 +147,25 @@ export async function createDriverReferralChain(
     });
   }
 
-  const directEdge = edgesToCreate.find((e) => e.isDirect);
-  const inheritedEdges = edgesToCreate.filter((e) => !e.isDirect);
+  // Hardening: filtra ancestrais órfãos (dados legados inconsistentes) para
+  // evitar FK crash no createMany e deduplica payload final.
+  const referrerIds = Array.from(new Set(edgesToCreate.map((e) => e.referrerDriverId)));
+  const existingReferrers = await db.driver.findMany({
+    where: { id: { in: referrerIds } },
+    select: { id: true },
+  });
+  const existingReferrerSet = new Set(existingReferrers.map((d) => d.id));
+
+  const dedupedEdges = Array.from(
+    new Map(
+      edgesToCreate
+        .filter((e) => existingReferrerSet.has(e.referrerDriverId))
+        .map((e) => [`${e.referrerDriverId}:${e.referredDriverId}:${e.level}`, e])
+    ).values()
+  );
+
+  const directEdge = dedupedEdges.find((e) => e.isDirect);
+  const inheritedEdges = dedupedEdges.filter((e) => !e.isDirect);
 
   if (directEdge) {
     console.info("[Referral] DIRECT_EDGE_CREATED", {
@@ -181,7 +198,7 @@ export async function createDriverReferralChain(
   }
 
   await db.driverReferral.createMany({
-    data: edgesToCreate,
+    data: dedupedEdges,
     skipDuplicates: true,
   });
 }
