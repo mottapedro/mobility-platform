@@ -25,7 +25,7 @@ router.get("/:driverId/skills", (req, res) => controller.getDriverSkills(req, re
 router.get("/:driverId/network", (req, res) => controller.getNetwork(req, res));
 
 // Compat: offers (autenticação é recomendada; mantido para legado)
-router.get("/:driverId/offers", (req, res) => controller.getOffers(req as any, res));
+router.get("/:driverId/offers", requireDriverAuth, (req, res) => controller.getOffers(req as any, res));
 
 // Endpoint público canônico
 router.get("/r/:slug", (req, res) => controller.resolvePublicReferral(req, res));

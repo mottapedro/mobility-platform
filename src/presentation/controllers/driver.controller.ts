@@ -271,10 +271,10 @@ export class DriverController {
 
   async getOffers(req: AuthenticatedDriverRequest, res: Response) {
     try {
-      const { id } = req.params;
+      const { driverId } = req.params;
       const authDriverId = req.authDriverId;
 
-      if (!id || typeof id !== "string") {
+      if (!driverId || typeof driverId !== "string") {
         return res.status(400).json({ error: "driverId inválido na URL" });
       }
 
@@ -282,12 +282,16 @@ export class DriverController {
         return res.status(401).json({ error: "Driver authentication required" });
       }
 
-      if (authDriverId !== id) {
+      if (authDriverId !== driverId) {
         return res.status(403).json({ error: "Driver cannot access another network" });
       }
 
       const offers = await prisma.rideOffer.findMany({
-        where: { driverId: id, status: "PENDING" },
+        where: {
+          driverId,
+          status: "PENDING",
+          expiresAt: { gt: new Date() },
+        },
         include: {
           rideRequest: {
             select: {

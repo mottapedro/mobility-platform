@@ -71,7 +71,7 @@ describe("Global CORS", () => {
       .get(`/drivers/${driver.id}/offers`)
       .set("Origin", origin);
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(401);
     expect(response.headers["access-control-allow-origin"]).toBe(origin);
     expect(response.headers["access-control-allow-credentials"]).toBe("true");
   });

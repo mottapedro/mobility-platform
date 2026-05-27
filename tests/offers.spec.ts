@@ -15,6 +15,7 @@ describe("PATCH /offers/respond", () => {
           create: {
             experienceLevel: "PROFISSIONAL",
             isActive: true,
+            regions: ["ZN"],
           },
         },
       },
@@ -79,6 +80,7 @@ describe("PATCH /offers/respond", () => {
           create: {
             experienceLevel: "PROFISSIONAL",
             isActive: true,
+            regions: ["ZN"],
           },
         },
       },
