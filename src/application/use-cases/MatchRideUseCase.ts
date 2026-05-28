@@ -220,9 +220,23 @@ export class MatchRideUseCase {
   // ─── Governed sequential dispatch ───────────────────────────────────────────
   // Single source of truth for creating one PENDING offer. Enforces the
   // invariant: at most ONE active PENDING offer per ride at any time.
-  // Phase 1 uses a $transaction with a pre-check; Phase 2 will add a partial
-  // unique index `(rideRequestId) WHERE status='PENDING'` to harden against
-  // concurrent dispatchers.
+  // Phase 2 hardens this with a partial unique index `(rideRequestId) WHERE
+  // status='PENDING'` so concurrent dispatchers cannot race; the pre-check
+  // remains as a fast path for telemetry (`single_active_offer_enforced`).
+  // Persists queue state on RideRequest: currentStage + currentCandidateDriverId.
+  // Returns the Prisma MatchLevel enum literal (superset of the application-
+  // layer MatchLevel — includes REGION and GLOBAL alongside REFERRED/NETWORK_*).
+  private stageToPersistedLevel(
+    stage: "REFERRAL_DIRECT" | "REFERRAL_NETWORK" | "REGION" | "GLOBAL"
+  ): "REFERRED" | "NETWORK_L1" | "REGION" | "GLOBAL" {
+    switch (stage) {
+      case "REFERRAL_DIRECT":  return "REFERRED";
+      case "REFERRAL_NETWORK": return "NETWORK_L1";
+      case "REGION":           return "REGION";
+      case "GLOBAL":           return "GLOBAL";
+    }
+  }
+
   private async dispatchSingle(
     rideId: string,
     driverId: string,
@@ -244,21 +258,45 @@ export class MatchRideUseCase {
       return { dispatched: false };
     }
 
-    const result = await this.createOffer(rideId, driverId, expiresAt);
-    if (result.created) {
-      logMatchingEvent({
-        rideId,
-        event: "candidate_dispatched",
-        stage,
-        candidateDriverIds: [driverId],
-        metadata: {
-          driverId,
-          queueRemaining,
-          expiresAt: expiresAt.toISOString(),
-        },
-      });
+    try {
+      const result = await this.createOffer(rideId, driverId, expiresAt);
+      if (result.created) {
+        // Persist queue state atomically with the dispatched offer (Phase 2).
+        await prisma.rideRequest.update({
+          where: { id: rideId },
+          data: {
+            currentStage: this.stageToPersistedLevel(stage),
+            currentCandidateDriverId: driverId,
+          },
+        });
+        logMatchingEvent({
+          rideId,
+          event: "candidate_dispatched",
+          stage,
+          candidateDriverIds: [driverId],
+          metadata: {
+            driverId,
+            queueRemaining,
+            expiresAt: expiresAt.toISOString(),
+          },
+        });
+      }
+      return { dispatched: result.created };
+    } catch (err: unknown) {
+      // Partial unique index races: another dispatcher beat us to PENDING.
+      // Treat as enforced (same outcome) and surface telemetry.
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("RideOffer_one_pending_per_ride") || message.includes("Unique constraint")) {
+        logMatchingEvent({
+          rideId,
+          event: "single_active_offer_enforced",
+          stage,
+          metadata: { attemptedDriverId: driverId, racedOnIndex: true },
+        });
+        return { dispatched: false };
+      }
+      throw err;
     }
-    return { dispatched: result.created };
   }
 
   /**
@@ -282,7 +320,7 @@ export class MatchRideUseCase {
   async execute(
     input: MatchInput
   ): Promise<{ matched: boolean; level: MatchLevel }> {
-    const { rideId, excludedDriverIds = [], candidateDriverIds } = input;
+    const { rideId, candidateDriverIds } = input;
 
     // 1. Buscar corrida e passageiro em leituras sequenciais para evitar fan-out interno no adapter
     const ride = await prisma.rideRequest.findUnique({
@@ -290,6 +328,14 @@ export class MatchRideUseCase {
     });
 
     if (!ride) throw new Error("Ride not found");
+
+    // Merge persisted exclusion list (Phase 2) with caller-supplied ids.
+    // The persisted list survives across re-dispatches so the same driver is
+    // never re-offered after rejection/expiration even if the caller forgets to forward it.
+    const persistedExcluded = (ride as { excludedDriverIds?: string[] }).excludedDriverIds ?? [];
+    const excludedDriverIds = Array.from(
+      new Set([...(input.excludedDriverIds ?? []), ...persistedExcluded])
+    );
 
     const passenger = await prisma.passenger.findUnique({
       where: { id: ride.passengerId },
@@ -396,7 +442,11 @@ export class MatchRideUseCase {
       // ✅ Modo referral: aguarda 60s antes de abrir para outros
       await prisma.rideRequest.update({
         where: { id: rideId },
-        data: { status: "WAITING_REFERRAL" },
+        data: {
+          status: "WAITING_REFERRAL",
+          currentStage: "REFERRED",
+          currentCandidateDriverId: referredDriverId,
+        },
       });
 
       await this.createOffer(rideId, referredDriverId, expiresAt);

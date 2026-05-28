@@ -106,6 +106,12 @@ describe("Governed Sequential Dispatch — invariants", () => {
     });
     expect(aOffers.length).toBe(1);
     expect(aOffers[0].status).toBe("REJECTED");
+
+    // Phase 2: persisted queue state reflects exclusion + current candidate pointer.
+    const rideRow = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
+    expect((rideRow as { excludedDriverIds: string[] }).excludedDriverIds).toContain(driverA.id);
+    expect((rideRow as { currentCandidateDriverId: string | null }).currentCandidateDriverId).toBe(driverB.id);
+    expect((rideRow as { currentStage: string | null }).currentStage).not.toBeNull();
   });
 
   it("emits single_active_offer_enforced if a duplicate dispatch is attempted", async () => {

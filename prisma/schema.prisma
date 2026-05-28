@@ -119,6 +119,18 @@ model RideRequest {
   // V2 — operational root in the driver network (nullable during rollout)
   rootDriverId String?
 
+  // Governed Sequential Dispatch — queue state persistence (Phase 2)
+  // currentStage: most recent matching tier the dispatcher escalated to
+  // excludedDriverIds: drivers that already rejected/expired this ride; never re-offered
+  // queueSnapshot: optional cached candidate list for the current stage (nullable = recompute)
+  // currentCandidateDriverId: driver whose offer is currently PENDING (null between candidates)
+  // lastOfferExpiredAt: most recent PENDING→EXPIRED transition (audit)
+  currentStage             MatchLevel?
+  excludedDriverIds        String[]    @default([])
+  queueSnapshot            Json?
+  currentCandidateDriverId String?
+  lastOfferExpiredAt       DateTime?
+
   // V2 — payment domain (PR-2)
   paymentIntent PaymentIntent?
   settlement    Settlement?
@@ -207,6 +219,16 @@ enum RideOfferStatus {
   ACCEPTED
   REJECTED
   EXPIRED
+}
+
+// Governed Sequential Dispatch — matching tier persisted on RideRequest.currentStage
+enum MatchLevel {
+  REFERRED
+  NETWORK_L1
+  NETWORK_L2
+  NETWORK_L3
+  REGION
+  GLOBAL
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

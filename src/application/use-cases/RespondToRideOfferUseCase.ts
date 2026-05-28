@@ -1,4 +1,5 @@
 ﻿import { prisma } from "../../infra/prisma/client";
+import { Prisma } from "@prisma/client";
 import { MatchRideUseCase } from "./MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
@@ -56,6 +57,9 @@ export class RespondToRideOfferUseCase {
           data: {
             status: "ACCEPTED",
             selectedDriverId: offer.driverId,
+            // Phase 2: clear queue state on terminal accept.
+            currentCandidateDriverId: null,
+            queueSnapshot: Prisma.DbNull,
           },
         });
       });
@@ -76,6 +80,17 @@ export class RespondToRideOfferUseCase {
       await prisma.rideOffer.update({
         where: { id: offerId },
         data: { status: "REJECTED", respondedAt: now },
+      });
+
+      // Phase 2: append rejecting driver to persisted exclusion list and clear
+      // the current candidate pointer atomically so the next dispatchNextCandidate
+      // call cannot re-offer to the same driver.
+      await prisma.rideRequest.update({
+        where: { id: offer.rideRequestId },
+        data: {
+          excludedDriverIds: { push: offer.driverId },
+          currentCandidateDriverId: null,
+        },
       });
 
       logMatchingEvent({

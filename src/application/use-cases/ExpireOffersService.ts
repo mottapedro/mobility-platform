@@ -12,7 +12,7 @@ export class ExpireOffersService {
         status: "PENDING",
         expiresAt: { lt: now },
       },
-      select: { id: true, rideRequestId: true },
+      select: { id: true, rideRequestId: true, driverId: true },
     });
 
     if (expiredOffers.length === 0) return;
@@ -24,6 +24,33 @@ export class ExpireOffersService {
       where: { id: { in: offerIds } },
       data: { status: "EXPIRED" },
     });
+
+    // Phase 2: persist the rejection of each expired candidate on the parent
+    // RideRequest so dispatchNextCandidate cannot re-offer to them. Done per
+    // ride so we can also clear currentCandidateDriverId when it matches.
+    const ridesAffected = await prisma.rideRequest.findMany({
+      where: { id: { in: rideIds } },
+      select: { id: true, currentCandidateDriverId: true, excludedDriverIds: true },
+    });
+    for (const r of ridesAffected) {
+      const expiredDriverIds = expiredOffers
+        .filter((o) => o.rideRequestId === r.id)
+        .map((o) => o.driverId);
+      const existing = new Set(r.excludedDriverIds ?? []);
+      const additions = expiredDriverIds.filter((id) => !existing.has(id));
+      if (additions.length === 0 && r.currentCandidateDriverId === null) continue;
+      await prisma.rideRequest.update({
+        where: { id: r.id },
+        data: {
+          excludedDriverIds: { push: additions },
+          currentCandidateDriverId:
+            r.currentCandidateDriverId && expiredDriverIds.includes(r.currentCandidateDriverId)
+              ? null
+              : r.currentCandidateDriverId,
+          lastOfferExpiredAt: now,
+        },
+      });
+    }
 
     offerIds.forEach((id) => {
       const rideId = expiredOffers.find((o) => o.id === id)!.rideRequestId;
