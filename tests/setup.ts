@@ -1,6 +1,7 @@
 import { disconnectPrisma, prisma } from "../src/infra/prisma/client";
 import { clearPendingReferralFallbacks } from "../src/application/use-cases/MatchRideUseCase";
 import { lifecycle } from "../src/infra/AppLifecycleManager";
+import { matchingJobScheduler } from "../src/infra/async/MatchingJobScheduler";
 
 export { prisma };
 
@@ -250,6 +251,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   clearPendingReferralFallbacks();
+  await matchingJobScheduler.drain();
   await cleanTestData();
 });
 

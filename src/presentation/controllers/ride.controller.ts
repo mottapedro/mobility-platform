@@ -5,6 +5,7 @@ import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
+import { matchingJobScheduler } from "../../infra/async/MatchingJobScheduler";
 
 // ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
@@ -197,7 +198,7 @@ export class RideController {
         targetDriverId: passengerExists.referredByDriverId ?? null,
       });
 
-      setImmediate(async () => {
+      matchingJobScheduler.schedule(async () => {
         try {
           console.log(`🚀 Iniciando matching para ride ${ride.id}`);
           const matchRideUseCase = new MatchRideUseCase();
@@ -273,7 +274,7 @@ export class RideController {
       console.log(`🔄 Fallback manual disparado para corrida ${id}`);
 
       // Dispara matching geral excluindo o driver indicado
-      setImmediate(async () => {
+      matchingJobScheduler.schedule(async () => {
         try {
           const matchRideUseCase = new MatchRideUseCase();
           const { matched } = await matchRideUseCase.execute({
