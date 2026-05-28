@@ -28,7 +28,7 @@ model Driver {
   networkLevel       Int                  @default(0)
   referredByDriverId String?
   publicSlug         String?              @unique
-  regions            String[]
+  regions            String[]             @default([])
   referredBy         Driver?              @relation("DriverDirectReferral", fields: [referredByDriverId], references: [id])
   referredDrivers    Driver[]             @relation("DriverDirectReferral")
   user               User                 @relation(fields: [userId], references: [id])
