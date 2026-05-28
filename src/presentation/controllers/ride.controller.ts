@@ -131,7 +131,17 @@ export class RideController {
         where: {
           passengerId,
           scheduledAt: { gte: windowStart, lte: windowEnd },
-          status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_DRIVER", "ACCEPTED"] },
+          status: {
+            in: [
+              "PENDING",
+              "MATCHING",
+              "WAITING_REFERRAL",
+              "WAITING_PARTNER",
+              "WAITING_GENERAL",
+              "WAITING_DRIVER",
+              "ACCEPTED",
+            ],
+          },
         },
       });
 

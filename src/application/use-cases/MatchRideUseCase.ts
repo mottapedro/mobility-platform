@@ -343,7 +343,9 @@ export class MatchRideUseCase {
     });
 
     // Guard: só faz matching em corridas que ainda podem ser matchadas
-    if (!["PENDING", "MATCHING", "WAITING_REFERRAL"].includes(ride.status)) {
+    if (!
+      ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_PARTNER", "WAITING_GENERAL"].includes(ride.status)
+    ) {
       console.log(`⚠️ Corrida ${rideId} ignorada — status: ${ride.status}`);
       return { matched: false, level: "GENERAL" };
     }
@@ -512,9 +514,11 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "GENERAL", excludedDriverIds, candidateDriverIds });
       }
 
+      // Phase 3: lifecycle status reflects current dispatch tier so the frontend
+      // can render "Buscando motoristas da rede de Pedro" instead of generic "MATCHING".
       await prisma.rideRequest.update({
         where: { id: rideId },
-        data: { status: "MATCHING" },
+        data: { status: "WAITING_PARTNER" },
       });
 
       const { drivers, resultLevel, resolvedRegion } = await this.preparePriorityDrivers(
@@ -562,9 +566,11 @@ export class MatchRideUseCase {
     }
 
     // ── Tier 3: GENERAL ───────────────────────────────────────────────────────
+    // Phase 3: WAITING_GENERAL signals the frontend that the partner network
+    // is exhausted and the search has expanded to all available regional drivers.
     await prisma.rideRequest.update({
       where: { id: rideId },
-      data: { status: "MATCHING" },
+      data: { status: "WAITING_GENERAL" },
     });
 
     const { drivers: generalDrivers, resolvedRegion } = await this.preparePriorityDrivers(

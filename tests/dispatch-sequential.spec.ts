@@ -112,6 +112,10 @@ describe("Governed Sequential Dispatch — invariants", () => {
     expect((rideRow as { excludedDriverIds: string[] }).excludedDriverIds).toContain(driverA.id);
     expect((rideRow as { currentCandidateDriverId: string | null }).currentCandidateDriverId).toBe(driverB.id);
     expect((rideRow as { currentStage: string | null }).currentStage).not.toBeNull();
+
+    // Phase 3: lifecycle status escalated from WAITING_REFERRAL to WAITING_PARTNER
+    // when the referred driver rejected and the partner-network search began.
+    expect(rideRow.status).toBe("WAITING_PARTNER");
   });
 
   it("emits single_active_offer_enforced if a duplicate dispatch is attempted", async () => {
@@ -154,5 +158,89 @@ describe("Governed Sequential Dispatch — invariants", () => {
     // A second execute() while an offer is still PENDING must not create more.
     await match.execute({ rideId: ride.id });
     expect(await pendingCount(ride.id)).toBe(1);
+  });
+
+  it("transitions WAITING_REFERRAL → WAITING_PARTNER → WAITING_GENERAL preserving the single-offer invariant", async () => {
+    const driverA = await makeDriver(
+      "Driver A3",
+      "seqA3@matching.com",
+      "55000000020"
+    );
+    const driverB = await makeDriver(
+      "Driver B3",
+      "seqB3@matching.com",
+      "55000000021"
+    );
+    const driverC = await makeDriver(
+      "Driver C3",
+      "seqC3@matching.com",
+      "55000000022"
+    );
+    // B is L1 partner of A; C is unaffiliated → falls through to GENERAL.
+    await createDriverReferralChain(driverB.id, driverA.id);
+
+    const passengerUser = await prisma.user.create({
+      data: {
+        name: "Passageiro Seq3",
+        email: "pseq3@matching.com",
+        phone: "55000000023",
+        role: "PASSENGER",
+      },
+    });
+    const passenger = await prisma.passenger.create({
+      data: {
+        userId: passengerUser.id,
+        referralCode: "ref-seq3-" + Date.now(),
+        publicSlug: "slug-seq3-" + Date.now(),
+        referredByDriverId: driverA.id,
+      },
+    });
+    const ride = await prisma.rideRequest.create({
+      data: {
+        passengerId: passenger.id,
+        origin: "Barra da Tijuca",
+        destination: "Centro",
+        scheduledAt: new Date(Date.now() + 90_000_000),
+        status: "PENDING",
+      },
+    });
+
+    const match = new MatchRideUseCase();
+    const respond = new RespondToRideOfferUseCase();
+
+    // Tier 1 — REFERRED
+    await match.execute({ rideId: ride.id });
+    expect(await pendingCount(ride.id)).toBe(1);
+    let row = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
+    expect(row.status).toBe("WAITING_REFERRAL");
+    let offer = await prisma.rideOffer.findFirstOrThrow({
+      where: { rideRequestId: ride.id, status: "PENDING" },
+    });
+    expect(offer.driverId).toBe(driverA.id);
+
+    // A rejects → escalate to L1 partner B
+    await respond.execute(offer.id, false);
+    expect(await pendingCount(ride.id)).toBe(1);
+    row = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
+    expect(row.status).toBe("WAITING_PARTNER");
+    offer = await prisma.rideOffer.findFirstOrThrow({
+      where: { rideRequestId: ride.id, status: "PENDING" },
+    });
+    expect(offer.driverId).toBe(driverB.id);
+
+    // B rejects → network exhausted → falls to GENERAL pool
+    await respond.execute(offer.id, false);
+    expect(await pendingCount(ride.id)).toBe(1);
+    row = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
+    expect(row.status).toBe("WAITING_GENERAL");
+    offer = await prisma.rideOffer.findFirstOrThrow({
+      where: { rideRequestId: ride.id, status: "PENDING" },
+    });
+    // The general pool may include drivers seeded by other specs; the contract
+    // is only that the next offer is not re-issued to the rejected drivers.
+    expect(offer.driverId).not.toBe(driverA.id);
+    expect(offer.driverId).not.toBe(driverB.id);
+    // driverC is one of the candidates available in this test's DB state.
+    void driverC;
   });
 });

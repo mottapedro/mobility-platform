@@ -126,7 +126,7 @@ export class ExpireOffersService {
       await prisma.rideRequest.updateMany({
         where: {
           id: { in: expiredRideIds },
-          status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER"] },
+          status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER", "WAITING_PARTNER", "WAITING_GENERAL"] },
         },
         data: { status: "EXPIRED" },
       });

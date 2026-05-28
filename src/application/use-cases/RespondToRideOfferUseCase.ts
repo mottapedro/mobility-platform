@@ -119,9 +119,10 @@ export class RespondToRideOfferUseCase {
       const isReferredDriver  = ride?.passenger?.referredByDriverId === offer.driverId;
 
       if (isWaitingReferral && isReferredDriver) {
+        // Phase 3: escalate from referral exclusivity to partner-network status.
         await prisma.rideRequest.update({
           where: { id: offer.rideRequestId },
-          data: { status: "MATCHING" },
+          data: { status: "WAITING_PARTNER" },
         });
 
         const matchRide = new MatchRideUseCase();
@@ -162,7 +163,7 @@ export class RespondToRideOfferUseCase {
             await prisma.rideRequest.update({
               where: {
                 id: offer.rideRequestId,
-                status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL"] },
+                status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_PARTNER", "WAITING_GENERAL"] },
               },
               data: { status: "EXPIRED" },
             });
