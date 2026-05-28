@@ -24,6 +24,7 @@ import { ExpireOffersService } from "./application/use-cases/ExpireOffersService
 import { prisma } from "./infra/prisma/client";
 import { lifecycle } from "./infra/AppLifecycleManager";
 import { matchingJobScheduler } from "./infra/async/MatchingJobScheduler";
+import { referralFallbackScheduler } from "./infra/async/ReferralFallbackScheduler";
 import { SyncProjectionJob } from "./domain/network/SyncProjectionJob";
 
 dotenv.config();
@@ -104,6 +105,10 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
+  // Order matters: referral fallback drains first because its callback can
+  // recursively enqueue matching work; we want that cascade to settle before
+  // we drain the matching scheduler.
+  lifecycle.registerDrainable("referralFallbackScheduler", referralFallbackScheduler);
   lifecycle.registerDrainable("matchingJobScheduler", matchingJobScheduler);
 
   const expireOffersService = new ExpireOffersService();

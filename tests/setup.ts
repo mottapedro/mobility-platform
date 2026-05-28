@@ -2,6 +2,7 @@ import { disconnectPrisma, prisma } from "../src/infra/prisma/client";
 import { clearPendingReferralFallbacks } from "../src/application/use-cases/MatchRideUseCase";
 import { lifecycle } from "../src/infra/AppLifecycleManager";
 import { matchingJobScheduler } from "../src/infra/async/MatchingJobScheduler";
+import { referralFallbackScheduler } from "../src/infra/async/ReferralFallbackScheduler";
 
 export { prisma };
 
@@ -241,6 +242,9 @@ export async function cleanTestData(): Promise<void> {
 }
 
 beforeAll(async () => {
+  // Referral fallback registered before matching: shutdownAsync drains in
+  // insertion order, and a firing referral callback enqueues matching work.
+  lifecycle.registerDrainable("referralFallbackScheduler", referralFallbackScheduler);
   lifecycle.registerDrainable("matchingJobScheduler", matchingJobScheduler);
   await prisma.$connect();
 });

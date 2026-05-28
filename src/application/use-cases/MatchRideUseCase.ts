@@ -7,20 +7,22 @@ import { RegionResolver } from "../../domain/services/RegionResolver";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { execute as createOfferService } from "../services/CreateOfferService";
+import { referralFallbackScheduler } from "../../infra/async/ReferralFallbackScheduler";
 
 export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
 
 // Tempo de exclusividade do motorista indicado antes do fallback para MATCHING geral
 // For scheduled rides this is overridden dynamically by AcceptancePolicyEngine.
 const REFERRAL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutos (immediate rides)
-const pendingReferralFallbacks = new Set<NodeJS.Timeout>();
 
-export function clearPendingReferralFallbacks() {
-  for (const timeoutHandle of pendingReferralFallbacks) {
-    clearTimeout(timeoutHandle);
-  }
-
-  pendingReferralFallbacks.clear();
+/**
+ * Backwards-compatible facade. The referral fallback timers are now owned by
+ * `referralFallbackScheduler` and participate in `lifecycle.shutdownAsync()`.
+ * This helper remains exported because legacy callers (tests, in particular)
+ * import it directly; it simply delegates to the scheduler.
+ */
+export function clearPendingReferralFallbacks(): void {
+  referralFallbackScheduler.cancelAll();
 }
 
 export interface MatchInput {
@@ -352,8 +354,10 @@ export class MatchRideUseCase {
         metadata: { timeoutSeconds: referralWindowMs / 1000 },
       });
 
-      // Timeout: if still WAITING_REFERRAL after referralWindowMs → escalate
-      const timeoutHandle = setTimeout(async () => {
+      // Timeout: if still WAITING_REFERRAL after referralWindowMs → escalate.
+      // Governed by referralFallbackScheduler so it participates in graceful
+      // shutdown (drained via lifecycle.shutdownAsync).
+      referralFallbackScheduler.schedule(referralWindowMs, async () => {
         try {
           // Atomic check-and-update: only proceeds if status is still WAITING_REFERRAL
           const updated = await prisma.rideRequest.updateMany({
@@ -384,13 +388,8 @@ export class MatchRideUseCase {
           });
         } catch (err) {
           console.error(`🔥 Erro no timeout referral para corrida ${rideId}:`, err);
-        } finally {
-          pendingReferralFallbacks.delete(timeoutHandle);
         }
-      }, referralWindowMs);
-
-      timeoutHandle.unref?.();
-      pendingReferralFallbacks.add(timeoutHandle);
+      });
 
       return { matched: true, level };
     }
