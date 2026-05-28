@@ -241,11 +241,12 @@ export async function cleanTestData(): Promise<void> {
 }
 
 beforeAll(async () => {
+  lifecycle.registerDrainable("matchingJobScheduler", matchingJobScheduler);
   await prisma.$connect();
 });
 
 afterAll(async () => {
-  lifecycle.shutdown();
+  await lifecycle.shutdownAsync({ drainTimeoutMs: 5_000 });
   await disconnectPrisma();
 });
 

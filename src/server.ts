@@ -23,6 +23,7 @@ import { genealogyRouter } from "./presentation/routes/genealogy.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
 import { lifecycle } from "./infra/AppLifecycleManager";
+import { matchingJobScheduler } from "./infra/async/MatchingJobScheduler";
 import { SyncProjectionJob } from "./domain/network/SyncProjectionJob";
 
 dotenv.config();
@@ -103,6 +104,8 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
+  lifecycle.registerDrainable("matchingJobScheduler", matchingJobScheduler);
+
   const expireOffersService = new ExpireOffersService();
   lifecycle.registerInterval(
     "expireOffers",
@@ -124,8 +127,23 @@ if (process.env.NODE_ENV !== "test") {
     5 * 60_000
   );
 
-  process.on("SIGTERM", () => lifecycle.shutdown());
-  process.on("SIGINT", () => lifecycle.shutdown());
+  let shuttingDown = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`🛑 ${signal} received — draining runtime...`);
+    try {
+      await lifecycle.shutdownAsync({ drainTimeoutMs: 30_000 });
+      await prisma.$disconnect();
+      console.log("✅ Graceful shutdown complete");
+      process.exit(0);
+    } catch (err) {
+      console.error("🔥 Error during graceful shutdown:", err);
+      process.exit(1);
+    }
+  };
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
   app.listen(3000, () => {
     console.log("🚀 Server running on port 3000");
