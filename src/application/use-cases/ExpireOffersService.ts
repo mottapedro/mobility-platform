@@ -87,7 +87,7 @@ export class ExpireOffersService {
 
       console.log(`🔄 Re-match automático para corrida ${rideId}...`);
       logMatchingEvent({ rideId, event: "OFFER_REDISTRIBUTED" });
-      const { matched } = await matchRide.execute({ rideId });
+      const { matched } = await matchRide.dispatchNextCandidate({ rideId });
 
       if (!matched) {
         expiredRideIds.push(rideId);

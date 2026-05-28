@@ -274,10 +274,12 @@ describe("Matching — Contexto VIP", () => {
 
     expect(response.status).toBe(201);
 
-    // Aguardar matching (2 drivers → 2 offers)
-    const offers = await waitForOffers(response.body.ride.id, 2);
+    // Governed sequential dispatch: only the highest-priority candidate
+    // (ELITE driver) receives the first offer. The common driver is queued
+    // and would only be dispatched if the elite offer expires/is rejected.
+    const offers = await waitForOffers(response.body.ride.id, 1);
 
-    expect(offers.length).toBeGreaterThan(0);
+    expect(offers.length).toBe(1);
 
     // Refetch eliteDriverUser to ensure driver relation is populated
     const eliteDriver = await prisma.user.findUnique({
@@ -285,13 +287,7 @@ describe("Matching — Contexto VIP", () => {
       include: { driver: true },
     });
 
-    // Driver ELITE deve ter recebido offer
-    const eliteOffer = offers.find(
-      (o) => o.driverId === eliteDriver!.driver!.id
-    );
-    expect(eliteOffer).toBeTruthy();
-
-    // Driver ELITE deve ser o PRIMEIRO a receber (prioridade VIP)
+    // The single dispatched offer must be for the ELITE driver (VIP priority).
     expect(offers[0].driverId).toBe(eliteDriver!.driver!.id);
   });
 });

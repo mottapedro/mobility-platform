@@ -8,6 +8,10 @@ export type MatchingLogEvent = {
     | "offers_prepared"
     | "fallback_triggered"
     | "matching_finished"
+    // Governed sequential dispatch
+    | "candidate_dispatched"
+    | "queue_advanced"
+    | "single_active_offer_enforced"
     // Acceptance policy events
     | "OFFER_CREATED"
     | "OFFER_EXPIRED"
@@ -17,6 +21,10 @@ export type MatchingLogEvent = {
     | "ACCEPTANCE_WINDOW_CALCULATED";
   stage?: MatchingLogStage;
   candidateDriverIds?: string[];
+  /** New: total candidates in queue for current stage (replaces full id list in broadcast contexts). */
+  candidateCount?: number;
+  /** New: first N driver ids for debugging, without exposing the full queue. */
+  previewCandidateIds?: string[];
   excludedDriverIds?: string[];
   resolvedRegion?: string | null;
   metadata?: Record<string, unknown>;

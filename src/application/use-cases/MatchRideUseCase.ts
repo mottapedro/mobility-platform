@@ -214,6 +214,68 @@ export class MatchRideUseCase {
     if (result.created) {
       console.log(`📨 Offer enviada para driver ${driverId}`);
     }
+    return result;
+  }
+
+  // ─── Governed sequential dispatch ───────────────────────────────────────────
+  // Single source of truth for creating one PENDING offer. Enforces the
+  // invariant: at most ONE active PENDING offer per ride at any time.
+  // Phase 1 uses a $transaction with a pre-check; Phase 2 will add a partial
+  // unique index `(rideRequestId) WHERE status='PENDING'` to harden against
+  // concurrent dispatchers.
+  private async dispatchSingle(
+    rideId: string,
+    driverId: string,
+    expiresAt: Date,
+    stage: "REFERRAL_DIRECT" | "REFERRAL_NETWORK" | "REGION" | "GLOBAL",
+    queueRemaining: number
+  ): Promise<{ dispatched: boolean }> {
+    const pendingCount = await prisma.rideOffer.count({
+      where: { rideRequestId: rideId, status: "PENDING" },
+    });
+
+    if (pendingCount >= 1) {
+      logMatchingEvent({
+        rideId,
+        event: "single_active_offer_enforced",
+        stage,
+        metadata: { attemptedDriverId: driverId, pendingCount },
+      });
+      return { dispatched: false };
+    }
+
+    const result = await this.createOffer(rideId, driverId, expiresAt);
+    if (result.created) {
+      logMatchingEvent({
+        rideId,
+        event: "candidate_dispatched",
+        stage,
+        candidateDriverIds: [driverId],
+        metadata: {
+          driverId,
+          queueRemaining,
+          expiresAt: expiresAt.toISOString(),
+        },
+      });
+    }
+    return { dispatched: result.created };
+  }
+
+  /**
+   * Public re-dispatch entry point. Used by RespondToRideOfferUseCase (on
+   * reject) and ExpireOffersService (on expire). Derives the next stage from
+   * persisted offer history and dispatches a single next candidate.
+   * Replaces the previous recursive `execute({ level })` calls that broadcasted.
+   */
+  async dispatchNextCandidate(input: { rideId: string }): Promise<{ matched: boolean; level: MatchLevel }> {
+    logMatchingEvent({
+      rideId: input.rideId,
+      event: "queue_advanced",
+      metadata: { trigger: "dispatchNextCandidate" },
+    });
+    // execute() already derives level when not provided; the new single-
+    // candidate logic below ensures only one offer is created.
+    return this.execute({ rideId: input.rideId });
   }
 
   // ─── Execução principal ─────────────────────────────────────────────────────
@@ -428,17 +490,24 @@ export class MatchRideUseCase {
         return { matched: false, level: resultLevel };
       }
 
-      for (const driver of drivers) {
-        await this.createOffer(rideId, driver.id, expiresAt);
-      }
+      const networkStage = resultLevel === "GENERAL" ? "REGION" : "REFERRAL_NETWORK";
+      const networkPick = drivers[0];
       logMatchingEvent({
         rideId,
         event: "offers_prepared",
-        stage: resultLevel === "GENERAL" ? "REGION" : "REFERRAL_NETWORK",
-        candidateDriverIds: drivers.map((driver) => driver.id),
+        stage: networkStage,
+        candidateCount: drivers.length,
+        previewCandidateIds: drivers.slice(0, 3).map((driver) => driver.id),
         excludedDriverIds,
         resolvedRegion,
       });
+      await this.dispatchSingle(
+        rideId,
+        networkPick.id,
+        expiresAt,
+        networkStage,
+        drivers.length - 1
+      );
       return { matched: true, level: resultLevel };
     }
 
@@ -471,17 +540,24 @@ export class MatchRideUseCase {
       return { matched: false, level };
     }
 
-    for (const driver of generalDrivers) {
-      await this.createOffer(rideId, driver.id, expiresAt);
-    }
+    const generalStage = "REGION" as const;
+    const generalPick = generalDrivers[0];
     logMatchingEvent({
       rideId,
       event: "offers_prepared",
-      stage: generalDrivers.length > 0 ? "REGION" : "GLOBAL",
-      candidateDriverIds: generalDrivers.map((driver) => driver.id),
+      stage: generalStage,
+      candidateCount: generalDrivers.length,
+      previewCandidateIds: generalDrivers.slice(0, 3).map((driver) => driver.id),
       excludedDriverIds,
       resolvedRegion,
     });
+    await this.dispatchSingle(
+      rideId,
+      generalPick.id,
+      expiresAt,
+      generalStage,
+      generalDrivers.length - 1
+    );
     return { matched: true, level };
   }
 }

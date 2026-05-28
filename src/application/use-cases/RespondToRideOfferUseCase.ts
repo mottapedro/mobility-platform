@@ -135,7 +135,7 @@ export class RespondToRideOfferUseCase {
 
         if (pendingCount === 0) {
           const matchRide = new MatchRideUseCase();
-          const { matched } = await matchRide.execute({ rideId: offer.rideRequestId });
+          const { matched } = await matchRide.dispatchNextCandidate({ rideId: offer.rideRequestId });
 
           logMatchingEvent({
             rideId: offer.rideRequestId,

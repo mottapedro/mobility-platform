@@ -16,6 +16,7 @@ jest.mock("../src/infra/prisma/client", () => ({
     rideOffer: {
       findMany: jest.fn(),
       create: jest.fn(),
+      count: jest.fn(),
     },
     driver: {
       findMany: jest.fn(),
@@ -32,6 +33,7 @@ describe("MatchRideUseCase regional matching", () => {
   const rideRequestUpdateMock = jest.mocked(prisma.rideRequest.update);
   const rideOfferFindManyMock = jest.mocked(prisma.rideOffer.findMany);
   const rideOfferCreateMock = jest.mocked(prisma.rideOffer.create);
+  const rideOfferCountMock = jest.mocked(prisma.rideOffer.count);
   const driverFindManyMock = jest.mocked(prisma.driver.findMany);
   const passengerFindUniqueMock = jest.mocked(prisma.passenger.findUnique);
 
@@ -50,6 +52,7 @@ describe("MatchRideUseCase regional matching", () => {
     rideOfferFindManyMock.mockResolvedValue([] as never);
     rideRequestUpdateMock.mockResolvedValue({} as never);
     rideOfferCreateMock.mockResolvedValue({} as never);
+    rideOfferCountMock.mockResolvedValue(0 as never);
   });
 
   it("creates offers only for regional matches in matcher order", async () => {
@@ -83,7 +86,8 @@ describe("MatchRideUseCase regional matching", () => {
       },
       select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
     });
-    expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-2", "driver-1", "driver-global"]);
+    // Governed sequential dispatch: only the first priority candidate receives an offer.
+    expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-2"]);
     expect(result).toEqual({ matched: true, level: "GENERAL" });
   });
 
@@ -160,7 +164,8 @@ describe("MatchRideUseCase regional matching", () => {
     const useCase = new MatchRideUseCase(regionResolver as never, driverRegionMatcher as never);
     const result = await useCase.execute({ rideId: "ride-1", level: "NETWORK_L1" });
 
-    expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-region", "driver-global"]);
+    // Sequential dispatch: only the first region candidate is offered initially.
+    expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-region"]);
     expect(result).toEqual({ matched: true, level: "GENERAL" });
   });
 });
