@@ -29,6 +29,10 @@
 
 type FallbackFn = () => Promise<void>;
 
+import { logRuntimeEvent } from "../../shared/logging/runtimeLog";
+
+const SCHEDULER_NAME = "referralFallbackScheduler";
+
 export interface ReferralFallbackDrainOptions {
   timeoutMs?: number;
 }
@@ -60,6 +64,12 @@ export class ReferralFallbackScheduler {
 
     handle.unref?.();
     this.timers.add(handle);
+    logRuntimeEvent({
+      event: "job_scheduled",
+      scheduler: SCHEDULER_NAME,
+      pendingCount: this.timers.size,
+      delayMs,
+    });
   }
 
   /**
@@ -68,8 +78,16 @@ export class ReferralFallbackScheduler {
    * completion is observable via `drain`).
    */
   cancelAll(): void {
+    const cancelled = this.timers.size;
     for (const handle of this.timers) clearTimeout(handle);
     this.timers.clear();
+    if (cancelled > 0) {
+      logRuntimeEvent({
+        event: "timer_cancelled",
+        scheduler: SCHEDULER_NAME,
+        count: cancelled,
+      });
+    }
   }
 
   /**
@@ -82,11 +100,22 @@ export class ReferralFallbackScheduler {
     if (this.inflight.size === 0) return;
 
     const timeoutMs = options.timeoutMs ?? 5000;
+    const startedAt = Date.now();
+    const jobsAwaited = this.inflight.size;
+    logRuntimeEvent({
+      event: "drain_started",
+      scheduler: SCHEDULER_NAME,
+      pendingCount: jobsAwaited,
+      timeoutMs,
+    });
+
     const snapshot = Array.from(this.inflight);
     let timeoutHandle: NodeJS.Timeout | undefined;
+    let timedOut = false;
 
     const timeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
+        timedOut = true;
         reject(
           new Error(
             `ReferralFallbackScheduler.drain() timed out after ${timeoutMs}ms with ${this.inflight.size} callbacks in flight`,
@@ -100,6 +129,13 @@ export class ReferralFallbackScheduler {
       await Promise.race([Promise.all(snapshot), timeout]);
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      logRuntimeEvent({
+        event: "drain_completed",
+        scheduler: SCHEDULER_NAME,
+        durationMs: Date.now() - startedAt,
+        jobsAwaited,
+        timedOut,
+      });
     }
   }
 

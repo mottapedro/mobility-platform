@@ -18,6 +18,8 @@ export interface Drainable {
   drain(options?: { timeoutMs?: number }): Promise<void>;
 }
 
+import { logRuntimeEvent } from "../shared/logging/runtimeLog";
+
 export interface ShutdownAsyncOptions {
   /**
    * Per-drainable timeout passed to `drain`. Defaults to 30s (production-safe
@@ -35,6 +37,7 @@ export const lifecycle = {
     const existing = intervals.get(id);
     if (existing !== undefined) clearInterval(existing);
     intervals.set(id, setInterval(fn, ms));
+    logRuntimeEvent({ event: "scheduler_registered", registry: "interval", id });
   },
 
   /**
@@ -43,6 +46,7 @@ export const lifecycle = {
    */
   registerDrainable(id: string, target: Drainable): void {
     drainables.set(id, target);
+    logRuntimeEvent({ event: "scheduler_registered", registry: "drainable", id });
   },
 
   /** Clear all registered intervals (synchronous). */
@@ -60,7 +64,14 @@ export const lifecycle = {
    */
   async shutdownAsync(options: ShutdownAsyncOptions = {}): Promise<void> {
     const drainTimeoutMs = options.drainTimeoutMs ?? 30_000;
+    const startedAt = Date.now();
     const errors: unknown[] = [];
+
+    logRuntimeEvent({
+      event: "shutdown_started",
+      drainableIds: Array.from(drainables.keys()),
+      drainTimeoutMs,
+    });
 
     for (const [id, target] of drainables) {
       try {
@@ -72,6 +83,12 @@ export const lifecycle = {
     }
 
     this.shutdown();
+
+    logRuntimeEvent({
+      event: "shutdown_completed",
+      durationMs: Date.now() - startedAt,
+      errors: errors.length,
+    });
 
     if (errors.length > 0) {
       const aggregate = new Error(

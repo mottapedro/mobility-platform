@@ -23,6 +23,10 @@
 
 type JobFn = () => Promise<void>;
 
+import { logRuntimeEvent } from "../../shared/logging/runtimeLog";
+
+const SCHEDULER_NAME = "matchingJobScheduler";
+
 export interface DrainOptions {
   /**
    * Hard upper bound, in milliseconds, on how long `drain` will wait for
@@ -57,6 +61,11 @@ export class MatchingJobScheduler {
       });
     });
     this.pending.add(job);
+    logRuntimeEvent({
+      event: "job_scheduled",
+      scheduler: SCHEDULER_NAME,
+      pendingCount: this.pending.size,
+    });
   }
 
   /**
@@ -67,11 +76,22 @@ export class MatchingJobScheduler {
     const timeoutMs = options.timeoutMs ?? 5000;
     if (this.pending.size === 0) return;
 
+    const startedAt = Date.now();
+    const jobsAwaited = this.pending.size;
+    logRuntimeEvent({
+      event: "drain_started",
+      scheduler: SCHEDULER_NAME,
+      pendingCount: jobsAwaited,
+      timeoutMs,
+    });
+
     const snapshot = Array.from(this.pending);
     let timeoutHandle: NodeJS.Timeout | undefined;
+    let timedOut = false;
 
     const timeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => {
+        timedOut = true;
         reject(
           new Error(
             `MatchingJobScheduler.drain() timed out after ${timeoutMs}ms with ${this.pending.size} jobs in flight`,
@@ -86,6 +106,13 @@ export class MatchingJobScheduler {
       await Promise.race([Promise.all(snapshot), timeout]);
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      logRuntimeEvent({
+        event: "drain_completed",
+        scheduler: SCHEDULER_NAME,
+        durationMs: Date.now() - startedAt,
+        jobsAwaited,
+        timedOut,
+      });
     }
   }
 
