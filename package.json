@@ -21,6 +21,7 @@
     "audit:godnetwork": "ts-node -r tsconfig-paths/register scripts/network/audit-godnetwork-governance.ts",
     "postinstall": "prisma generate",
     "test": "jest --runInBand --forceExit",
+    "test:contracts": "jest --runInBand --forceExit --testPathPatterns=tests/contracts/",
     "test:e2e": "playwright test --config playwright.config.ts"
   },
   "keywords": [],

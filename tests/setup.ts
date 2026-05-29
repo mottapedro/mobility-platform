@@ -6,17 +6,10 @@ import { referralFallbackScheduler } from "../src/infra/async/ReferralFallbackSc
 
 export { prisma };
 
-// TEST DATA POLICY — DO NOT REMOVE
-//
-// Production drivers use @driver.com and mottapedro01@gmail.com.
-// ALL test-created records must use one of the TEST_EMAIL_DOMAINS below.
-// The cleanup helpers delete ONLY those records.
-// Production data (Pedro Paulo Motta, João Luiz, etc.) is NEVER touched.
-//
-// FORBIDDEN in tests:
-//   prisma.*.deleteMany({})          ← no naked deleteMany
-//   prisma.$executeRaw("TRUNCATE…")  ← no truncate
-//   prisma.user.deleteMany()         ← no unfiltered deleteMany
+// TEST DATA POLICY — see AGENTS.md §6 for the canonical statement.
+// Summary: every test-created record MUST use an email ending in one of the
+// TEST_EMAIL_DOMAINS below; cleanTestData() is the only sanctioned destructive
+// operation. Naked deleteMany / TRUNCATE / unfiltered deletes are forbidden.
 
 const TEST_EMAIL_DOMAINS = [
   "@test.com",

@@ -45,6 +45,12 @@ jobs:
       - name: Apply migrations
         run: npx prisma migrate deploy
 
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Schema contract gate (schema ↔ client ↔ DB)
+        run: npm run test:contracts
+
       - name: Seed golden network
         run: npm run seed:golden
 
