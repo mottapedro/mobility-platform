@@ -22,6 +22,18 @@ Existing governance assets:
 
 ## 2. Schema Change Pipeline (mandatory, no exceptions)
 
+> **Known incident — `DomainEventType` ordering (2026-05-26):** Migration
+> `20260526190329` was originally written as `ALTER TYPE "DomainEventType" ADD VALUE 'DRIVER_REFERRED'`
+> assuming the type existed — but no prior migration in the chain created it.
+> Failed on every fresh DB with `SQLSTATE 42704 — type "DomainEventType" does not exist`.
+> Root cause: author developed against a local DB that already had the type
+> (from a later migration already applied locally) and did not notice the implicit
+> forward dependency. Fix: the migration was updated to `CREATE TYPE "DomainEventType"
+> AS ENUM ('DRIVER_REFERRED')` wrapped in a DO $$ EXCEPTION block (idempotent).
+> **Derived rule:** any migration using `ALTER TYPE` must either (a) confirm a
+> prior migration in the same chain creates the type, or (b) include the
+> `CREATE TYPE` itself.
+
 Every change to `prisma/schema.prisma` MUST execute the following steps in order. Each is a hard gate — no commit if any step fails.
 
 ```
