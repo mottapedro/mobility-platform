@@ -120,12 +120,12 @@ model RideRequest {
   rootDriverId String?
 
   // Governed Sequential Dispatch — queue state persistence (Phase 2)
-  // currentStage: most recent matching tier the dispatcher escalated to
+  // currentDispatchStage: most recent dispatch stage the runtime escalated to
   // excludedDriverIds: drivers that already rejected/expired this ride; never re-offered
   // queueSnapshot: optional cached candidate list for the current stage (nullable = recompute)
   // currentCandidateDriverId: driver whose offer is currently PENDING (null between candidates)
   // lastOfferExpiredAt: most recent PENDING→EXPIRED transition (audit)
-  currentStage             MatchLevel?
+  currentDispatchStage     DispatchStage?
   excludedDriverIds        String[]    @default([])
   queueSnapshot            Json?
   currentCandidateDriverId String?
@@ -223,12 +223,13 @@ enum RideOfferStatus {
   EXPIRED
 }
 
-// Governed Sequential Dispatch — matching tier persisted on RideRequest.currentStage
-enum MatchLevel {
-  REFERRED
-  NETWORK_L1
-  NETWORK_L2
-  NETWORK_L3
+// Governed Sequential Dispatch — runtime dispatch stage persisted on
+// RideRequest.currentDispatchStage. Values are aligned 1:1 with the telemetry
+// `stage` codes emitted by MatchRideUseCase.dispatchSingle. Distinct from the
+// application-layer `type MatchLevel` (priority classification) by design.
+enum DispatchStage {
+  REFERRAL_DIRECT
+  REFERRAL_NETWORK
   REGION
   GLOBAL
 }

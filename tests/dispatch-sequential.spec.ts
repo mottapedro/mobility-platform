@@ -111,7 +111,9 @@ describe("Governed Sequential Dispatch — invariants", () => {
     const rideRow = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
     expect((rideRow as { excludedDriverIds: string[] }).excludedDriverIds).toContain(driverA.id);
     expect((rideRow as { currentCandidateDriverId: string | null }).currentCandidateDriverId).toBe(driverB.id);
-    expect((rideRow as { currentStage: string | null }).currentStage).not.toBeNull();
+    // Dispatch stage separation: persisted enum is DispatchStage, value aligns
+    // with telemetry stage codes (REFERRAL_NETWORK after escalation from REFERRED).
+    expect((rideRow as { currentDispatchStage: string | null }).currentDispatchStage).toBe("REFERRAL_NETWORK");
 
     // Phase 3: lifecycle status escalated from WAITING_REFERRAL to WAITING_PARTNER
     // when the referred driver rejected and the partner-network search began.

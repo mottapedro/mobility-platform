@@ -223,20 +223,9 @@ export class MatchRideUseCase {
   // Phase 2 hardens this with a partial unique index `(rideRequestId) WHERE
   // status='PENDING'` so concurrent dispatchers cannot race; the pre-check
   // remains as a fast path for telemetry (`single_active_offer_enforced`).
-  // Persists queue state on RideRequest: currentStage + currentCandidateDriverId.
-  // Returns the Prisma MatchLevel enum literal (superset of the application-
-  // layer MatchLevel — includes REGION and GLOBAL alongside REFERRED/NETWORK_*).
-  private stageToPersistedLevel(
-    stage: "REFERRAL_DIRECT" | "REFERRAL_NETWORK" | "REGION" | "GLOBAL"
-  ): "REFERRED" | "NETWORK_L1" | "REGION" | "GLOBAL" {
-    switch (stage) {
-      case "REFERRAL_DIRECT":  return "REFERRED";
-      case "REFERRAL_NETWORK": return "NETWORK_L1";
-      case "REGION":           return "REGION";
-      case "GLOBAL":           return "GLOBAL";
-    }
-  }
-
+  // Persists queue state on RideRequest: currentDispatchStage +
+  // currentCandidateDriverId. The `stage` parameter type is the Prisma
+  // DispatchStage enum's literal union — aligned 1:1 with telemetry codes.
   private async dispatchSingle(
     rideId: string,
     driverId: string,
@@ -265,7 +254,7 @@ export class MatchRideUseCase {
         await prisma.rideRequest.update({
           where: { id: rideId },
           data: {
-            currentStage: this.stageToPersistedLevel(stage),
+            currentDispatchStage: stage,
             currentCandidateDriverId: driverId,
           },
         });
@@ -446,7 +435,7 @@ export class MatchRideUseCase {
         where: { id: rideId },
         data: {
           status: "WAITING_REFERRAL",
-          currentStage: "REFERRED",
+          currentDispatchStage: "REFERRAL_DIRECT",
           currentCandidateDriverId: referredDriverId,
         },
       });
