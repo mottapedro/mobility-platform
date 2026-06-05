@@ -1,7 +1,7 @@
 # AGENTS.md — Mobility Platform Engineering Constitution
 
 > Single source of truth for engineering conventions, mandatory pipelines, and merge-blocking rules. Tool-agnostic: read by Copilot, Cursor, Cline, Claude Code, and humans.
-> Last revision: 2026-05-28 (refactor `currentStage → currentDispatchStage` aftermath).
+> Last revision: 2026-06-05 (Aliado commit and push governance protocol added §12).
 
 ---
 
@@ -162,9 +162,10 @@ Single DMMF-driven harness ([tests/contracts/schema-contract.spec.ts](tests/cont
 ## 10. Branch and commit conventions
 
 - Feature branches: `feat/<area>-<short-description>` (current: `feat/aliado-v2-domain-hardening`).
-- Commit subject: `<type>(<scope>): <imperative summary>` — types: `feat`, `fix`, `refactor`, `chore`, `test`, `docs`. Match existing history.
+- Commit subject: `<type>(<scope>): <imperative summary>` — see §12 for allowed scopes.
 - Use `-m` flags repeatedly for multi-paragraph body; do not embed newlines in a single `-m`.
 - Never `git push --force`, `git reset --hard` on a published branch, or `--no-verify` to bypass hooks. Diagnose; do not bypass.
+- Every commit must be preceded by the pre-commit checklist in §12 and followed by the post-commit checklist in §12.
 
 ---
 
@@ -173,3 +174,57 @@ Single DMMF-driven harness ([tests/contracts/schema-contract.spec.ts](tests/cont
 - Treat undocumented friction as a governance gap. Open a PR to update this file before adding a workaround.
 - Schema drift is never "the test's fault" — it is always a contract integrity issue. Fix the contract.
 - Sequential dispatch invariants are not negotiable for perceived performance gains. Optimize within the invariant, not around it.
+
+---
+
+## 12. Commit and Push Protocol (Aliado — mandatory)
+
+No commit may be created automatically after an isolated fix. Every commit requires the full pre-commit checklist to pass and the full post-commit checklist to confirm delivery.
+
+### Pre-commit checklist (all items required)
+
+1. Run tests related to the change.
+2. Validate lint and typecheck (`npx tsc --noEmit -p tsconfig.json`).
+3. Confirm there are no unrelated changes in the workspace (`git diff --stat`).
+4. Confirm the current branch is the active PR branch.
+5. Confirm the commit represents a complete functional delivery, not just a point fix.
+6. Generate evidence of the validation (test output, tsc output, migrate status — whichever applies).
+
+### Post-commit checklist (all items required)
+
+1. Execute `git push`.
+2. Confirm the commit appears on the remote branch.
+3. Confirm the PR contains the commit.
+4. Only then consider the task complete.
+
+### Allowed commit scopes
+
+| Scope | Use for |
+|---|---|
+| `feat(aliado-v2)` | Aliado V2 domain features |
+| `feat(domain)` | Core domain model changes |
+| `feat(network-governance)` | Network governance features |
+| `feat(dispatch)` | Dispatch runtime features |
+| `feat(payment)` | Payment domain features |
+| `fix(domain)` | Domain bug fixes |
+| `fix(network)` | Network layer bug fixes |
+| `fix(dispatch)` | Dispatch runtime bug fixes |
+| `test(governance)` | Governance test suite additions/fixes |
+| `test(runtime)` | Runtime contract test additions/fixes |
+| `ci(governance)` | CI pipeline and governance tooling |
+| `docs(governance)` | Engineering constitution updates (AGENTS.md) |
+| `refactor(aliado-v2)` | Aliado V2 refactors (no behavior change) |
+| `chore(governance)` | Governance scaffolding, tooling, scripts |
+
+### Forbidden scope patterns
+
+The following scope patterns are **forbidden** unless the task is exclusively technical and has been pre-approved:
+
+```
+fix(types)
+fix(eslint)
+fix(any)
+fix(authApi)
+```
+
+Do not base commit subjects on file names or isolated technical details. The scope must reflect the domain or subsystem being changed.
