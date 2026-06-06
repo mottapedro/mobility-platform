@@ -50,9 +50,14 @@ export class AcceptancePolicyEngine {
       };
     }
 
-    const cutoff = new Date(
+    const rawCutoff = new Date(
       scheduledAt.getTime() - OPERATIONAL_CUTOFF_HOURS * 60 * 60 * 1000
     );
+    // Clamp: never set cutoff in the past — short-notice rides get at least
+    // 5 minutes of dispatch window so the matching job can run.
+    const cutoff = rawCutoff.getTime() > Date.now() + 5 * 60 * 1000
+      ? rawCutoff
+      : new Date(Date.now() + 5 * 60 * 1000);
 
     // Scheduled referral window: min(30 min, time until cutoff from now)
     const msUntilCutoff = cutoff.getTime() - Date.now();

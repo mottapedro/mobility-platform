@@ -28,14 +28,26 @@ function normalizeContext(raw: unknown): RideContext {
 }
 
 
-let distanceKm: number | null = null;
-let durationMin: number | null = null;
-
-if (FEATURES.DISTANCE_CALC_ENABLED) {
-  // FUTURO: integração Google Maps
-  // distanceKm = ...
-  // durationMin = ...
+// ─── Haversine distance estimator ─────────────────────────────────────────
+function haversineKm(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number
+): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
+
+// Price model: R$5 base flag + R$2.50/km (urban Brazil estimate)
+const PRICE_BASE_BRL = 5.0;
+const PRICE_PER_KM_BRL = 2.5;
+// Duration estimate: avg 30 km/h in urban traffic
+const AVG_SPEED_KMH = 30;
 
 export class RideController {
   async create(req: Request, res: Response) {
@@ -43,7 +55,27 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds } = req.body;
+      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds,
+        originLat: rawOriginLat, originLng: rawOriginLng,
+        destinationLat: rawDestLat, destinationLng: rawDestLng,
+      } = req.body;
+
+      // Parse coordinate pairs (body may use number or string; accept only numbers)
+      const originLat      = typeof rawOriginLat === "number" ? rawOriginLat : null;
+      const originLng      = typeof rawOriginLng === "number" ? rawOriginLng : null;
+      const destinationLat = typeof rawDestLat   === "number" ? rawDestLat   : null;
+      const destinationLng = typeof rawDestLng   === "number" ? rawDestLng   : null;
+
+      // Compute estimates when all four coordinates are present
+      let distanceKm: number | null = null;
+      let durationMin: number | null = null;
+      let priceEstimated: number | null = null;
+
+      if (originLat !== null && originLng !== null && destinationLat !== null && destinationLng !== null) {
+        distanceKm     = Math.round(haversineKm(originLat, originLng, destinationLat, destinationLng) * 10) / 10;
+        durationMin    = Math.round((distanceKm / AVG_SPEED_KMH) * 60);
+        priceEstimated = Math.round((PRICE_BASE_BRL + PRICE_PER_KM_BRL * distanceKm) * 100) / 100;
+      }
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
@@ -173,6 +205,11 @@ export class RideController {
           status: initialStatus,
           distanceKm,
           durationMin,
+          priceEstimated,
+          originLat,
+          originLng,
+          destinationLat,
+          destinationLng,
           context: safeContext,
         },
         include: {
