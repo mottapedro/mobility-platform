@@ -363,7 +363,14 @@ export class RideController {
         });
       }
 
-      return res.status(200).json(ride);
+      // Map priceEstimated/priceOffered → priceBrl to match frontend Ride type.
+      // Same pattern as getDriverOffers in driver.controller.ts.
+      const payload = {
+        ...ride,
+        priceBrl: ride.priceOffered ?? ride.priceEstimated ?? null,
+      };
+
+      return res.status(200).json(payload);
     } catch (error) {
       console.error("🔥 ERRO GET:", error);
 
