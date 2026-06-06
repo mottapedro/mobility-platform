@@ -14,7 +14,7 @@
  *  2. Root DRIVER with 1 D2D child → descendants has 1 node, depth=1
  *  3. Non-root DRIVER → ancestors populated with inviter
  *  4. rootDriver is full object (name + slug), not just an ID string
- *  5. inviteUrls present for driver with publicSlug
+ *  5. inviteUrls present for driver with referralCode
  *  6. PASSENGER → operationalOwner populated, targetActorExpected='passenger'
  *  7. PASSENGER → flowType=DRIVER_TO_PASSENGER
  *  8. Shape completeness: flowType, targetActorExpected, genealogy.me present
@@ -195,8 +195,8 @@ describe("GET /network/context — NetworkContext shape alignment", () => {
     expect(rootDriver.slug).toBe(`slug-ctx-r4${t}`);
   });
 
-  // 5. inviteUrls present for driver with publicSlug
-  it("inviteUrls are present for a driver with publicSlug", async () => {
+  // 5. inviteUrls present for driver with referralCode
+  it("inviteUrls are present for a driver with referralCode", async () => {
     const t = tag();
     const root = await makeDriver(`r5${t}`);
 
@@ -207,16 +207,16 @@ describe("GET /network/context — NetworkContext shape alignment", () => {
     const { inviteUrls } = res.body;
     expect(inviteUrls).not.toBeNull();
     expect(typeof inviteUrls.d2p).toBe("string");
-    expect(inviteUrls.d2p).toContain(`/invite/d2p/slug-ctx-r5${t}`);
+    expect(inviteUrls.d2p).toContain(`/invite/d2p/rc-ctx-r5${t}`);
     expect(typeof inviteUrls.d2d).toBe("string");
-    expect(inviteUrls.d2d).toContain(`/invite/d2d/slug-ctx-r5${t}`);
+    expect(inviteUrls.d2d).toContain(`/invite/d2d/rc-ctx-r5${t}`);
     expect(inviteUrls.p2p).toBeNull();
 
     // Legacy fields must remain while frontend migration is in progress.
     expect(typeof inviteUrls.driverToPassenger).toBe("string");
-    expect(inviteUrls.driverToPassenger).toContain(`/invite/d2p/slug-ctx-r5${t}`);
+    expect(inviteUrls.driverToPassenger).toContain(`/invite/d2p/rc-ctx-r5${t}`);
     expect(typeof inviteUrls.driverToDriver).toBe("string");
-    expect(inviteUrls.driverToDriver).toContain(`/invite/d2d/slug-ctx-r5${t}`);
+    expect(inviteUrls.driverToDriver).toContain(`/invite/d2d/rc-ctx-r5${t}`);
 
     // Governance: driver context MUST NOT expose a passenger-flow alias.
     expect(inviteUrls.passengerToPassenger).toBeNull();
@@ -369,7 +369,7 @@ describe("GET /network/context — NetworkContext shape alignment", () => {
     expect(inviteUrls.d2d).toBeNull();
     expect(inviteUrls.d2p).toBeNull();
     expect(typeof inviteUrls.p2p).toBe("string");
-    expect(inviteUrls.p2p).toContain(`/invite/p2p/pslug-r13p${t}`);
+    expect(inviteUrls.p2p).toContain(`/invite/p2p/prc-r13p${t}`);
 
     // Governance: passenger context MUST NOT leak P2P link via driver aliases.
     // Reusing the p2p URL as driverToPassenger would allow the frontend to

@@ -166,7 +166,6 @@ async function buildLateral(
 // ── Invite URL builder ────────────────────────────────────────────────────────
 
 function buildDriverInviteUrls(
-  publicSlug: string | null,
   referralCode: string | null
 ): {
   d2d: string;
@@ -176,7 +175,7 @@ function buildDriverInviteUrls(
   driverToDriver: string;
   passengerToPassenger: null;
 } | null {
-  const ref = publicSlug ?? referralCode;
+  const ref = referralCode;
   if (!ref) return null;
   const d2p = `${FRONTEND_BASE_URL}/invite/d2p/${encodeURIComponent(ref)}`;
   const d2d = `${FRONTEND_BASE_URL}/invite/d2d/${encodeURIComponent(ref)}`;
@@ -424,7 +423,7 @@ export async function buildNetworkContextForDriver(
     rootDriver: rootDriverActor,
     genealogy,
     networkMetrics,
-    inviteUrls: buildDriverInviteUrls(driver.publicSlug, driver.referralCode),
+    inviteUrls: buildDriverInviteUrls(driver.referralCode),
     capabilities,
   };
 }
@@ -552,7 +551,7 @@ export async function buildNetworkContextForPassenger(
     },
   };
 
-  const ref = passenger.publicSlug ?? passenger.referralCode;
+  const ref = passenger.referralCode;
   const p2pUrl = ref
     ? `${FRONTEND_BASE_URL}/invite/p2p/${encodeURIComponent(ref)}`
     : null;
