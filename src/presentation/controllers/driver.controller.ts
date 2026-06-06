@@ -300,9 +300,19 @@ export class DriverController {
               destination: true,
               scheduledAt: true,
               status: true,
+              priceEstimated: true,
+              priceOffered: true,
+              distanceKm: true,
+              durationMin: true,
+              context: true,
+              originLat: true,
+              originLng: true,
+              destinationLat: true,
+              destinationLng: true,
               passenger: {
                 select: {
                   id: true,
+                  referredByDriverId: true,
                   user: { select: { name: true, phone: true } },
                 },
               },
@@ -312,7 +322,20 @@ export class DriverController {
         orderBy: { createdAt: "desc" },
       });
 
-      return res.status(200).json(offers);
+      const payload = offers.map((offer) => {
+        const rr = offer.rideRequest;
+        const ctx = rr.context as Record<string, unknown> | null;
+        return {
+          ...offer,
+          rideRequest: {
+            ...rr,
+            priceBrl: rr.priceOffered ?? rr.priceEstimated ?? null,
+            regionalContext: ctx?.regionalContext ?? null,
+          },
+        };
+      });
+
+      return res.status(200).json(payload);
     } catch (error) {
       console.error("Erro ao carregar ofertas:", error);
       return res.status(500).json({
