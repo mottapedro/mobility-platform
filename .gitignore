@@ -4,3 +4,7 @@ node_modules
 
 /src/generated/prisma
 /dist
+
+# Local debug/diagnostic scripts (not for version control)
+dbcheck.cjs
+validate-out.txt

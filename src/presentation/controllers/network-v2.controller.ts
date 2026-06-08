@@ -24,8 +24,9 @@ function paramId(req: Request, key: string): string {
 export class NetworkV2Controller {
   static async getOnboardingContext(req: Request, res: Response) {
     const slug = paramId(req, "slug");
+    const flow = typeof req.query.flow === "string" ? req.query.flow : undefined;
     try {
-      const ctx = await resolveOnboardingContext(slug);
+      const ctx = await resolveOnboardingContext(slug, flow);
       return res.json(ctx);
     } catch (err) {
       if (err instanceof OnboardingContextError) {
