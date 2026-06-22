@@ -120,7 +120,7 @@ export class RideController {
       // valida passageiro
       const passengerExists = await prisma.passenger.findUnique({
         where: { id: passengerId },
-        select: { id: true, referredByDriverId: true, user: { select: { name: true } } },
+        select: { id: true, rootDriverId: true, user: { select: { name: true } } },
       });
 
       console.log("🔥 PASSENGER:", passengerExists);
@@ -131,10 +131,9 @@ export class RideController {
         });
       }
 
-      // ─── Regra de negócio: referral define status inicial ──────────────────
-      const initialStatus = passengerExists.referredByDriverId
-        ? "WAITING_REFERRAL"
-        : "MATCHING";
+      // O dono da demanda é o rootDriver do passageiro.
+      const rootDriverId = passengerExists.rootDriverId;
+      const initialDispatchStage: "OWNER_DISPATCH" | "NETWORK_DISPATCH" = rootDriverId ? "OWNER_DISPATCH" : "NETWORK_DISPATCH";
 
       // valida data
       const date = new Date(scheduledAt);
@@ -166,12 +165,8 @@ export class RideController {
           status: {
             in: [
               "PENDING",
-              "MATCHING",
-              "WAITING_REFERRAL",
-              "WAITING_PARTNER",
-              "WAITING_GENERAL",
-              "WAITING_DRIVER",
               "ACCEPTED",
+              "IN_PROGRESS",
             ],
           },
         },
@@ -202,7 +197,8 @@ export class RideController {
           destination: destinationTrimmed,
           scheduledAt: date,
           operationalCutoffAt: policy.operationalCutoffAt,
-          status: initialStatus,
+          status: "PENDING",
+          currentDispatchStage: initialDispatchStage,
           distanceKm,
           durationMin,
           priceEstimated,
@@ -210,6 +206,7 @@ export class RideController {
           originLng,
           destinationLat,
           destinationLng,
+          rootDriverId: rootDriverId,
           context: safeContext,
         },
         include: {
@@ -241,8 +238,9 @@ export class RideController {
       // 🚀 Dispara o matching em background (não bloqueia HTTP)
       console.log("RIDE CREATED:", {
         id: ride.id,
-        status: initialStatus,
-        targetDriverId: passengerExists.referredByDriverId ?? null,
+        status: ride.status,
+        dispatchStage: ride.currentDispatchStage,
+        rootDriverId: ride.rootDriverId,
       });
 
       matchingJobScheduler.schedule(async () => {
@@ -286,7 +284,7 @@ export class RideController {
       const ride = await prisma.rideRequest.findUnique({
         where: { id },
         select: {
-          status: true,
+          currentDispatchStage: true,
           passenger: { select: { referredByDriverId: true } },
         },
       });
@@ -295,16 +293,16 @@ export class RideController {
         return res.status(404).json({ error: "Corrida não encontrada" });
       }
 
-      if (ride.status !== "WAITING_REFERRAL") {
+      if (ride.currentDispatchStage !== "OWNER_DISPATCH") {
         return res.status(409).json({
-          error: "Corrida não está em WAITING_REFERRAL",
-          currentStatus: ride.status,
+          error: "Corrida não está em OWNER_DISPATCH",
+          currentDispatchStage: ride.currentDispatchStage,
         });
       }
 
       const referredDriverId = ride.passenger.referredByDriverId;
 
-      // Expirar offer pendente do driver indicado
+      // Expirar offer pendente do motorista dono
       if (referredDriverId) {
         await prisma.rideOffer.updateMany({
           where: { rideRequestId: id, driverId: referredDriverId, status: "PENDING" },
@@ -312,15 +310,15 @@ export class RideController {
         });
       }
 
-      // WAITING_REFERRAL → MATCHING
+      // OWNER_DISPATCH → NETWORK_DISPATCH
       await prisma.rideRequest.update({
         where: { id },
-        data: { status: "MATCHING" },
+        data: { currentDispatchStage: "NETWORK_DISPATCH" },
       });
 
       console.log(`🔄 Fallback manual disparado para corrida ${id}`);
 
-      // Dispara matching geral excluindo o driver indicado
+      // Dispara matching geral excluindo o driver dono
       matchingJobScheduler.schedule(async () => {
         try {
           const matchRideUseCase = new MatchRideUseCase();
@@ -333,7 +331,7 @@ export class RideController {
           if (!matched) {
             await prisma.rideRequest.update({
               where: { id },
-              data: { status: "EXPIRED" },
+              data: { status: "CANCELLED" },
             });
             console.log(`⏱️ Corrida ${id} expirada — sem drivers no fallback manual`);
           }

@@ -1,4 +1,4 @@
-﻿import { prisma } from "../../infra/prisma/client";
+import { prisma } from "../../infra/prisma/client";
 import { Prisma } from "@prisma/client";
 import { MatchRideUseCase } from "./MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
@@ -49,7 +49,7 @@ export class RespondToRideOfferUseCase {
             id: { not: offerId },
             status: "PENDING",
           },
-          data: { status: "EXPIRED" },
+          data: { status: "REJECTED" },
         });
 
         await tx.rideRequest.update({
@@ -73,6 +73,7 @@ export class RespondToRideOfferUseCase {
           status: true,
           scheduledAt: true,
           operationalCutoffAt: true,
+          currentDispatchStage: true,
           passenger: { select: { referredByDriverId: true } },
         },
       });
@@ -110,65 +111,37 @@ export class RespondToRideOfferUseCase {
         });
         await prisma.rideRequest.update({
           where: { id: offer.rideRequestId },
-          data: { status: "EXPIRED" },
+          data: { status: "CANCELLED" },
         });
         return { accepted: false };
       }
 
-      const isWaitingReferral = ride?.status === "WAITING_REFERRAL";
-      const isReferredDriver  = ride?.passenger?.referredByDriverId === offer.driverId;
-
-      if (isWaitingReferral && isReferredDriver) {
-        // Phase 3: escalate from referral exclusivity to partner-network status.
+      // If owner rejects, move to network dispatch
+      if (ride?.currentDispatchStage === "OWNER_DISPATCH") {
         await prisma.rideRequest.update({
           where: { id: offer.rideRequestId },
-          data: { status: "WAITING_PARTNER" },
+          data: { currentDispatchStage: "NETWORK_DISPATCH" },
         });
+      }
 
-        const matchRide = new MatchRideUseCase();
-        const { matched } = await matchRide.execute({
-          rideId: offer.rideRequestId,
-          level: "NETWORK_L1",
-          excludedDriverIds: [offer.driverId],
+      const matchRide = new MatchRideUseCase();
+      const { matched } = await matchRide.dispatchNextCandidate({ rideId: offer.rideRequestId });
+
+      logMatchingEvent({
+        rideId: offer.rideRequestId,
+        event: "OFFER_REDISTRIBUTED",
+        metadata: { matched },
+      });
+
+      if (!matched) {
+        // If no more candidates, move to OWNER_RECOVERY
+        await prisma.rideRequest.update({
+          where: {
+            id: offer.rideRequestId,
+            currentDispatchStage: "NETWORK_DISPATCH",
+          },
+          data: { currentDispatchStage: "OWNER_RECOVERY" },
         });
-
-        logMatchingEvent({
-          rideId: offer.rideRequestId,
-          event: "OFFER_REDISTRIBUTED",
-          metadata: { matched, fromLevel: "WAITING_REFERRAL" },
-        });
-
-        if (!matched) {
-          await prisma.rideRequest.update({
-            where: { id: offer.rideRequestId },
-            data: { status: "EXPIRED" },
-          });
-        }
-      } else {
-        const pendingCount = await prisma.rideOffer.count({
-          where: { rideRequestId: offer.rideRequestId, status: "PENDING" },
-        });
-
-        if (pendingCount === 0) {
-          const matchRide = new MatchRideUseCase();
-          const { matched } = await matchRide.dispatchNextCandidate({ rideId: offer.rideRequestId });
-
-          logMatchingEvent({
-            rideId: offer.rideRequestId,
-            event: "OFFER_REDISTRIBUTED",
-            metadata: { matched },
-          });
-
-          if (!matched) {
-            await prisma.rideRequest.update({
-              where: {
-                id: offer.rideRequestId,
-                status: { in: ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_PARTNER", "WAITING_GENERAL"] },
-              },
-              data: { status: "EXPIRED" },
-            });
-          }
-        }
       }
     }
 

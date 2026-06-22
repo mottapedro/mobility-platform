@@ -48,6 +48,38 @@ Every change to `prisma/schema.prisma` MUST execute the following steps in order
 
 Why `migrate deploy` instead of `migrate dev`: an old migration (`20260526190329_add_driver_referred_event`) references a `RevenueSplit` table the shadow DB cannot reproduce, so `migrate dev` is permanently blocked. Apply migrations explicitly.
 
+### Regras para Enums
+
+Enums são considerados ativos críticos.
+
+Antes de remover valores:
+
+1. Inventariar dados existentes.
+
+```sql
+SELECT status, COUNT(*)
+FROM "<Table>"
+GROUP BY status;
+```
+
+2. Criar migration de saneamento.
+3. Executar saneamento.
+4. Contrair o enum.
+
+Jamais remover valores de enum sem auditoria prévia.
+
+### Regras para Dados Econômicos
+
+As entidades abaixo são consideradas imutáveis:
+
+- `Settlement`
+- `RevenueSplit`
+- `RewardDistribution`
+
+Correções devem ser feitas via eventos compensatórios.
+
+Nunca executar `DELETE` ou `UPDATE` destrutivo em produção.
+
 ---
 
 ## 3. Rename Rule — Expand / Migrate / Contract
@@ -149,6 +181,67 @@ Single DMMF-driven harness ([tests/contracts/schema-contract.spec.ts](tests/cont
 | `npm run audit:godnetwork` | relational graph governance audit |
 | `npm run seed:golden` | seed the golden network fixture |
 
+### Seeds e GodNetwork
+
+O **GodNetwork** é a rede de dados de referência utilizada para homologação, testes E2E, regressão e demonstrações.
+
+**Estrutura de seeds:**
+
+```
+prisma/seeds/
+├── god-network.seed.ts      # Rede dourada completa
+├── drivers.seed.ts          # Motoristas seed
+├── passengers.seed.ts       # Passageiros seed
+├── rides.seed.ts            # Corridas em todos os status
+├── offers.seed.ts           # Ofertas em todos os status
+├── settlements.seed.ts      # Dados econômicos (homologação only)
+└── operational-zones.seed.ts # Zonas operacionais
+```
+
+**Scripts NPM:**
+
+```json
+{
+  "seed:god-network": "tsx prisma/seeds/god-network.seed.ts",
+  "seed:homolog": "tsx prisma/seeds/homolog.seed.ts",
+  "seed:reset": "prisma migrate reset --force && npm run seed:god-network"
+}
+```
+
+**Cenários E2E obrigatórios:**
+
+- **E2E-001:** Passenger cria corrida → Driver recebe oferta → Driver aceita → Ride ACCEPTED
+- **E2E-002:** `/invite/d2p/{code}` → redirect → onboarding → cadastro
+- **E2E-003:** Referral → Cadastro → Corrida → Ownership
+
+**Convenções de IDs:**
+
+Utilizar IDs previsíveis:
+
+```
+drv_root_a, drv_root_b, psg_001, ride_001, offer_001
+```
+
+**Regras de seeds:**
+
+- Seeds devem ser **idempotentes** (usar `upsert()`, jamais `create()` isoladamente)
+- É proibido editar dados seed manualmente no banco
+- É proibido criar usuários de teste fora das seeds
+- É proibido utilizar IDs aleatórios
+- É proibido depender de dados existentes na máquina do desenvolvedor
+
+**Dados obrigatórios por entidade:**
+
+- **Driver seed:** `id, name, email, phone, referralCode, rating, operationalZones, vehicle, pixKey`
+- **Passenger seed:** `id, name, email, phone, rootDriverId`
+- **Ownership:** toda seed deve possuir `rootDriverId` e `operationalOwnerId`
+
+**Execução:**
+
+- Desenvolvimento: `npm run seed:god-network`
+- Homologação: `npm run seed:homolog`
+- Reset completo: `npm run db:reset && npm run seed:god-network`
+
 ---
 
 ## 9. Platform notes
@@ -228,3 +321,38 @@ fix(authApi)
 ```
 
 Do not base commit subjects on file names or isolated technical details. The scope must reflect the domain or subsystem being changed.
+
+### PR Template
+
+Todo PR deve conter:
+
+```markdown
+## Objetivo
+[Descrição clara do que está sendo resolvido]
+
+## Impacto arquitetural
+[Camadas/modules afetados]
+
+## Alterações de schema
+[Sim/Não — se sim, anexar migration revisada]
+
+## Plano de rollback
+[Como reverter se necessário]
+
+## Evidências de testes
+- [ ] `npm test` passou
+- [ ] `npm run test:e2e` passou
+- [ ] `npm run test:contracts` passou
+- [ ] `npx tsc --noEmit` limpo
+- [ ] `npx prisma migrate status` sem drift
+```
+
+BLOCKED UNTIL LIFECYCLE STABILIZATION
+
+- RewardDistribution
+- DispatchAttempt
+- OperationalZone
+- ReferralNetworkRankingService
+- REGION -> REGIONAL rename
+- Settlement refactor
+- Ownership refactor

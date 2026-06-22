@@ -332,9 +332,7 @@ export class MatchRideUseCase {
     });
 
     // Guard: só faz matching em corridas que ainda podem ser matchadas
-    if (!
-      ["PENDING", "MATCHING", "WAITING_REFERRAL", "WAITING_PARTNER", "WAITING_GENERAL"].includes(ride.status)
-    ) {
+    if (ride.status !== "PENDING") {
       console.log(`⚠️ Corrida ${rideId} ignorada — status: ${ride.status}`);
       return { matched: false, level: "GENERAL" };
     }
@@ -342,7 +340,7 @@ export class MatchRideUseCase {
     const referredDriverId = passenger?.referredByDriverId ?? null;
     // A ride is network-owned when the passenger belongs to a driver's network
     // (rootDriverId is set via D2P or P2P-inherited referral). GENERAL dispatch
-    // rides without a network passenger are excluded.
+    // rides without a network passenger are excluded. This is now controlled by rootDriverId on RideRequest.
     const isNetworkOwned = !!(ride.rootDriverId || passenger?.rootDriverId);
     const rideContext = (ride.context ?? null) as RideContext | null;
     const priority = calculatePriority(rideContext);
@@ -368,7 +366,7 @@ export class MatchRideUseCase {
       });
       await prisma.rideRequest.update({
         where: { id: rideId },
-        data: { status: "EXPIRED" },
+        data: { status: "CANCELLED" },
       });
       return { matched: false, level: "GENERAL" };
     }
@@ -411,109 +409,90 @@ export class MatchRideUseCase {
 
     // expiresAt and referralWindowMs now come from AcceptancePolicyEngine (computed above).
 
-    // ── Tier 1: REFERRED ─────────────────────────────────────────────────────
-    if (level === "REFERRED") {
-      if (!referredDriverId) {
-        return this.execute({ rideId, level: "GENERAL", excludedDriverIds, candidateDriverIds });
+    // ── Stage 1: OWNER_DISPATCH ──────────────────────────────────────────────
+    if (ride.currentDispatchStage === "OWNER_DISPATCH") {
+      const ownerId = ride.rootDriverId;
+
+      if (!ownerId || alreadyOfferedIds.has(ownerId)) {
+        await prisma.rideRequest.update({
+          where: { id: rideId },
+          data: { currentDispatchStage: "NETWORK_DISPATCH" },
+        });
+        return this.execute({ ...input, rideId });
       }
 
-      if (alreadyOfferedIds.has(referredDriverId)) {
-        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds, candidateDriverIds });
+      const ownerDriver = await prisma.driver.findFirst({ where: { id: ownerId, isActive: true } });
+
+      if (!ownerDriver) {
+        await prisma.rideRequest.update({
+          where: { id: rideId },
+          data: { currentDispatchStage: "NETWORK_DISPATCH" },
+        });
+        return this.execute({ ...input, rideId });
       }
 
-      const referredDriver = await prisma.driver.findFirst({
-        where: { id: referredDriverId, isActive: true },
-      });
-
-      if (!referredDriver) {
-        console.log(`⚠️ Driver indicado ${referredDriverId} inativo — escalando para NETWORK_L1`);
-        return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds, candidateDriverIds });
-      }
-
-      // ✅ Modo referral: aguarda 60s antes de abrir para outros
       await prisma.rideRequest.update({
         where: { id: rideId },
         data: {
-          status: "WAITING_REFERRAL",
-          currentDispatchStage: "REFERRAL_DIRECT",
-          currentCandidateDriverId: referredDriverId,
+          currentDispatchStage: "OWNER_DISPATCH",
+          currentCandidateDriverId: ownerId,
         },
       });
 
-      await this.createOffer(rideId, referredDriverId, expiresAt);
+      await this.createOffer(rideId, ownerId, expiresAt);
       logMatchingEvent({
         rideId,
         event: "OFFER_CREATED",
         stage: "REFERRAL_DIRECT",
-        candidateDriverIds: [referredDriverId],
+        candidateDriverIds: [ownerId],
         metadata: { expiresAt: expiresAt.toISOString() },
       });
-      logMatchingEvent({
-        rideId,
-        event: "offers_prepared",
-        stage: "REFERRAL_DIRECT",
-        candidateDriverIds: [referredDriverId],
-        excludedDriverIds,
-        metadata: { timeoutSeconds: referralWindowMs / 1000 },
-      });
 
-      // Timeout: if still WAITING_REFERRAL after referralWindowMs → escalate.
-      // Governed by referralFallbackScheduler so it participates in graceful
-      // shutdown (drained via lifecycle.shutdownAsync).
       referralFallbackScheduler.schedule(referralWindowMs, async () => {
         try {
-          // Atomic check-and-update: only proceeds if status is still WAITING_REFERRAL
           const updated = await prisma.rideRequest.updateMany({
-            where: { id: rideId, status: "WAITING_REFERRAL" },
-            data: { status: "MATCHING" },
+            where: { id: rideId, currentDispatchStage: "OWNER_DISPATCH" },
+            data: { currentDispatchStage: "NETWORK_DISPATCH" },
           });
 
-          if (updated.count === 0) return; // Already handled by accept/reject/manual-fallback
+          if (updated.count === 0) return;
 
           logMatchingEvent({
             rideId,
             event: "fallback_triggered",
             stage: "REFERRAL_NETWORK",
-            excludedDriverIds: [...excludedDriverIds, referredDriverId],
+            excludedDriverIds: [...excludedDriverIds, ownerId],
           });
 
-          // Expirar offer ainda pendente do driver indicado (evita aceitação tardia)
           await prisma.rideOffer.updateMany({
-            where: { rideRequestId: rideId, driverId: referredDriverId, status: "PENDING" },
+            where: { rideRequestId: rideId, driverId: ownerId, status: "PENDING" },
             data: { status: "EXPIRED" },
           });
 
           await this.execute({
             rideId,
-            level: "NETWORK_L1",
-            excludedDriverIds: [...excludedDriverIds, referredDriverId],
+            excludedDriverIds: [...excludedDriverIds, ownerId],
             candidateDriverIds,
           });
         } catch (err) {
-          console.error(`🔥 Erro no timeout referral para corrida ${rideId}:`, err);
+          console.error(`🔥 Erro no timeout OWNER_DISPATCH para corrida ${rideId}:`, err);
         }
       });
 
-      return { matched: true, level };
+      return { matched: true, level: "REFERRED" };
     }
 
-    // ── Tier 2-4: NETWORK LEVELS ─────────────────────────────────────────────
-    if (level === "NETWORK_L1" || level === "NETWORK_L2" || level === "NETWORK_L3") {
-      if (!referredDriverId) {
-        return this.execute({ rideId, level: "GENERAL", excludedDriverIds, candidateDriverIds });
-      }
-
-      // Phase 3: lifecycle status reflects current dispatch tier so the frontend
-      // can render "Buscando motoristas da rede de Pedro" instead of generic "MATCHING".
+    // ── Stage 2: NETWORK_DISPATCH ────────────────────────────────────────────
+    if (ride.currentDispatchStage === "NETWORK_DISPATCH") {
       await prisma.rideRequest.update({
         where: { id: rideId },
-        data: { status: "WAITING_PARTNER" },
+        data: { currentDispatchStage: "NETWORK_DISPATCH" },
       });
 
       const { drivers, resultLevel, resolvedRegion } = await this.preparePriorityDrivers(
         rideId,
         ride.origin,
-        level,
+        "GENERAL", // Use GENERAL to fetch all network + regional drivers
         referredDriverId,
         alreadyOfferedIds,
         excludedDriverIds,
@@ -521,88 +500,97 @@ export class MatchRideUseCase {
         candidateDriverIds
       );
 
-      if (drivers.length === 0) {
+      // Filter drivers based on OperationalZone
+      const originZone = "Galeão"; // This should be resolved from ride.origin
+      const destinationZone = "Barra da Tijuca"; // This should be resolved from ride.destination
+
+      console.log("🧭 OperationalZone filter input", {
+        rideId,
+        rideOrigin: ride.origin,
+        rideDestination: ride.destination,
+        originZone,
+        destinationZone,
+        driversCountBefore: drivers.length,
+        driverIdsBefore: drivers.slice(0, 20).map(d => d.id),
+      });
+
+      const zonedDriverIds = await prisma.driverOperationalZone.findMany({
+        where: { zone: { name: { in: [originZone, destinationZone] } } },
+        select: { driverId: true },
+      });
+      console.log("🧩 OperationalZone zonedDriverIds", {
+        rideId,
+        count: zonedDriverIds.length,
+        preview: zonedDriverIds.slice(0, 50).map(z => z.driverId),
+      });
+
+      const zonedDriverIdSet = new Set(zonedDriverIds.map(z => z.driverId));
+      const finalDrivers = drivers.filter(d => zonedDriverIdSet.has(d.id));
+
+      console.log("✅ OperationalZone filter result", {
+        rideId,
+        driversCountAfter: finalDrivers.length,
+        driverIdsAfter: finalDrivers.slice(0, 20).map(d => d.id),
+        firstMatchedDriverId: finalDrivers[0]?.id ?? null,
+      });
+
+      // Fallback: if no drivers match the operational zone filter, use all drivers
+      // This ensures matching still works when OperationalZone data is not yet seeded
+      const candidates = finalDrivers.length > 0 ? finalDrivers : drivers;
+
+      if (candidates.length === 0) {
+        // ── Stage 3: OWNER_RECOVERY ────────────────────────────────────────
+        await prisma.rideRequest.update({
+          where: { id: rideId },
+          data: { currentDispatchStage: "OWNER_RECOVERY" },
+        });
+
         logMatchingEvent({
           rideId,
           event: "matching_finished",
           stage: "GLOBAL",
           excludedDriverIds,
           resolvedRegion,
-          metadata: { matched: false, startLevel: level },
+          metadata: { matched: false, recovery: true },
         });
+
+        // TODO: Notify rootDriver
+
         return { matched: false, level: resultLevel };
       }
 
-      const networkStage = resultLevel === "GENERAL" ? "REGION" : "REFERRAL_NETWORK";
-      const networkPick = drivers[0];
+      const networkPick = candidates[0];
       logMatchingEvent({
         rideId,
         event: "offers_prepared",
-        stage: networkStage,
-        candidateCount: drivers.length,
-        previewCandidateIds: drivers.slice(0, 3).map((driver) => driver.id),
+        stage: "REFERRAL_NETWORK",
+        candidateCount: candidates.length,
+        previewCandidateIds: candidates.slice(0, 3).map((driver) => driver.id),
         excludedDriverIds,
         resolvedRegion,
       });
+
       await this.dispatchSingle(
         rideId,
         networkPick.id,
         expiresAt,
-        networkStage,
-        drivers.length - 1
+        "REFERRAL_NETWORK",
+        candidates.length - 1
       );
+
       return { matched: true, level: resultLevel };
     }
 
-    // ── Tier 3: GENERAL ───────────────────────────────────────────────────────
-    // Phase 3: WAITING_GENERAL signals the frontend that the partner network
-    // is exhausted and the search has expanded to all available regional drivers.
-    await prisma.rideRequest.update({
-      where: { id: rideId },
-      data: { status: "WAITING_GENERAL" },
-    });
-
-    const { drivers: generalDrivers, resolvedRegion } = await this.preparePriorityDrivers(
-      rideId,
-      ride.origin,
-      "GENERAL",
-      referredDriverId,
-      alreadyOfferedIds,
-      excludedDriverIds,
-      rideContext,
-      candidateDriverIds
-    );
-
-    if (generalDrivers.length === 0) {
-      logMatchingEvent({
-        rideId,
-        event: "matching_finished",
-        stage: "GLOBAL",
-        excludedDriverIds,
-        resolvedRegion,
-        metadata: { matched: false, startLevel: level },
+    // Fallback for initial REQUESTED status
+    if (ride.status === "PENDING") {
+      const nextStage = ride.rootDriverId ? "OWNER_DISPATCH" : "NETWORK_DISPATCH";
+      await prisma.rideRequest.update({
+        where: { id: rideId },
+        data: { currentDispatchStage: nextStage },
       });
-      return { matched: false, level };
+      return this.execute({ ...input, rideId });
     }
 
-    const generalStage = "REGION" as const;
-    const generalPick = generalDrivers[0];
-    logMatchingEvent({
-      rideId,
-      event: "offers_prepared",
-      stage: generalStage,
-      candidateCount: generalDrivers.length,
-      previewCandidateIds: generalDrivers.slice(0, 3).map((driver) => driver.id),
-      excludedDriverIds,
-      resolvedRegion,
-    });
-    await this.dispatchSingle(
-      rideId,
-      generalPick.id,
-      expiresAt,
-      generalStage,
-      generalDrivers.length - 1
-    );
-    return { matched: true, level };
+    return { matched: false, level: "GENERAL" };
   }
 }

@@ -49,6 +49,7 @@ model Driver {
   invitedByRelationships ReferralRelationship[] @relation("InviterDriver")
   rootRelationships      ReferralRelationship[] @relation("RootDriver")
   skills                 DriverSkill[]
+  operationalZones       DriverOperationalZone[]
 }
 
 model Passenger {
@@ -91,6 +92,29 @@ model DriverAvailability {
   startTime String
   endTime   String
   driver    Driver @relation(fields: [driverId], references: [id])
+}
+
+model OperationalZone {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  drivers DriverOperationalZone[]
+}
+
+model DriverOperationalZone {
+  id        String   @id @default(uuid())
+  driverId  String
+  zoneId    String
+  createdAt DateTime @default(now())
+
+  driver Driver @relation(fields: [driverId], references: [id])
+  zone   OperationalZone @relation(fields: [zoneId], references: [id])
+
+  @@unique([driverId, zoneId])
+  @@index([zoneId])
 }
 
 model RideRequest {
@@ -232,6 +256,9 @@ enum DispatchStage {
   REFERRAL_NETWORK
   REGION
   GLOBAL
+  OWNER_DISPATCH
+  NETWORK_DISPATCH
+  OWNER_RECOVERY
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

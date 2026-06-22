@@ -1,0 +1,6 @@
+-- Migration: Add missing DispatchStage values
+-- Adds OWNER_DISPATCH, NETWORK_DISPATCH, OWNER_RECOVERY to align schema with code.
+
+ALTER TYPE "DispatchStage" ADD VALUE IF NOT EXISTS 'OWNER_DISPATCH';
+ALTER TYPE "DispatchStage" ADD VALUE IF NOT EXISTS 'NETWORK_DISPATCH';
+ALTER TYPE "DispatchStage" ADD VALUE IF NOT EXISTS 'OWNER_RECOVERY';
