@@ -1,3 +1,4 @@
+import { RideOfferStatus } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { MatchRideUseCase } from "./MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
@@ -9,7 +10,7 @@ export class ExpireOffersService {
 
     const expiredOffers = await prisma.rideOffer.findMany({
       where: {
-        status: "PENDING",
+        status: RideOfferStatus.PENDING,
         expiresAt: { lt: now },
       },
       select: { id: true, rideRequestId: true, driverId: true },
@@ -22,7 +23,7 @@ export class ExpireOffersService {
 
     await prisma.rideOffer.updateMany({
       where: { id: { in: offerIds } },
-      data: { status: "EXPIRED" },
+      data: { status: RideOfferStatus.EXPIRED },
     });
 
     // Phase 2: persist the rejection of each expired candidate on the parent
@@ -64,7 +65,7 @@ export class ExpireOffersService {
       by: ["rideRequestId"],
       where: {
         rideRequestId: { in: rideIds },
-        status: { notIn: ["EXPIRED", "REJECTED"] },
+        status: { in: ["PENDING"] },
       },
       _count: true,
     });
@@ -78,20 +79,14 @@ export class ExpireOffersService {
 
     if (ridesToRematch.length === 0) return;
 
-    // Excluir corridas em WAITING_REFERRAL — o timeout de 60s já trata o fallback delas
-    const waitingReferralRides = await prisma.rideRequest.findMany({
-      where: { id: { in: ridesToRematch }, status: "WAITING_REFERRAL" },
-      select: { id: true },
-    });
-    const waitingSet = new Set(waitingReferralRides.map((r) => r.id));
-    const rematchCandidates = ridesToRematch.filter((id) => !waitingSet.has(id));
-
-    if (rematchCandidates.length === 0) return;
+    // In Model B, all dispatch happens while status=REQUESTED, so no need to
+    // exclude WAITING_REFERRAL (which doesn't exist). Dispatch stages are tracked
+    // via dispatchStage field.
 
     const matchRide = new MatchRideUseCase();
     const expiredRideIds: string[] = [];
 
-    for (const rideId of rematchCandidates) {
+    for (const rideId of ridesToRematch) {
       // Check operational cutoff before attempting re-match.
       const ride = await prisma.rideRequest.findUnique({
         where: { id: rideId },
@@ -126,9 +121,9 @@ export class ExpireOffersService {
       await prisma.rideRequest.updateMany({
         where: {
           id: { in: expiredRideIds },
-          status: { in: ["PENDING", "MATCHING", "WAITING_DRIVER", "WAITING_PARTNER", "WAITING_GENERAL"] },
+          status: "PENDING",
         },
-        data: { status: "EXPIRED" },
+        data: { status: "CANCELLED" },
       });
 
       console.log(`❌ ${expiredRideIds.length} corrida(s) expirada(s) — sem drivers disponíveis`);

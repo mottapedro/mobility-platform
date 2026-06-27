@@ -20,7 +20,9 @@ export interface OwnershipMetrics {
   growthLast30Days: number;
 }
 
-const COMPLETED_LIKE: RideStatus[] = [RideStatus.COMPLETED, RideStatus.PAID];
+// In Model B, payment is tracked separately and does not affect ride status.
+// Rides terminate at COMPLETED.
+const COMPLETED_RIDES: RideStatus[] = [RideStatus.COMPLETED];
 
 export async function getOwnershipMetrics(
   driverId: string,
@@ -65,7 +67,7 @@ export async function getOwnershipMetrics(
     db.rideRequest.count({
       where: {
         rootDriverId: driverId,
-        status: { in: COMPLETED_LIKE },
+        status: { in: COMPLETED_RIDES },
         scheduledAt: { gte: since },
       },
     }),
@@ -109,7 +111,7 @@ async function computeRetention(
   const rides = await db.rideRequest.findMany({
     where: {
       rootDriverId: driverId,
-      status: { in: COMPLETED_LIKE },
+      status: { in: COMPLETED_RIDES },
       scheduledAt: { gte: since },
     },
     select: { passengerId: true },

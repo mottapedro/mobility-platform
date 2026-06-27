@@ -4,11 +4,9 @@ import { prisma } from "../../infra/prisma/client";
 import { resolveReferralFlowType } from "./ReferralFlowResolverService";
 import { resolveDriverRoot } from "./DriverRootResolverService";
 import { ReferralRelationshipError } from "./errors";
+import { RootOwnershipProjectionService } from "../ownership/RootOwnershipProjectionService";
 
-type Db = Pick<
-  typeof prisma,
-  "driver" | "driverReferral" | "passenger" | "referralRelationship"
->;
+type Db = typeof prisma;
 
 export interface RecordRelationshipInput {
   inviterActorType: ActorType;
@@ -63,7 +61,7 @@ export async function recordRelationship(
     );
   }
 
-  return db.referralRelationship.create({
+  const relationship = await db.referralRelationship.create({
     data: {
       flowType,
       inviterActorType: input.inviterActorType,
@@ -75,6 +73,18 @@ export async function recordRelationship(
         input.inviterActorType === ActorType.DRIVER ? input.inviterId : null,
     },
   });
+
+  // Synchronous ownership projection: passenger must have rootDriverId immediately.
+  if (input.invitedActorType === ActorType.PASSENGER) {
+    await RootOwnershipProjectionService.projectPassengerOwnership(
+      input.invitedId,
+      db
+    ).catch((err) => {
+      console.warn("[ReferralRelationship] passenger ownership projection failed", err);
+    });
+  }
+
+  return relationship;
 }
 
 /**

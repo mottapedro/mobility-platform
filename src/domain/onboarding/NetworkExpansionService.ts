@@ -3,10 +3,7 @@ import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { recordRelationship } from "../referral-network/ReferralRelationshipService";
 
-type Db = Pick<
-  typeof prisma,
-  "$transaction" | "invite" | "passenger" | "driver" | "referralRelationship" | "driverReferral"
->;
+type Db = typeof prisma;
 
 export class NetworkExpansionError extends Error {}
 

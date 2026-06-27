@@ -18,6 +18,7 @@ export type MatchingLogEvent = {
     | "OFFER_REJECTED"
     | "OFFER_REDISTRIBUTED"
     | "OPERATIONAL_CUTOFF_REACHED"
+    | "OPERATIONAL_ZONE_NOT_CONFIGURED"
     | "ACCEPTANCE_WINDOW_CALCULATED";
   stage?: MatchingLogStage;
   candidateDriverIds?: string[];

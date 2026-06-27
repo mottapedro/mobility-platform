@@ -11,10 +11,12 @@
  * @@unique([invitedActorType, invitedId]) constraint on ReferralRelationship.
  */
 
-import { ActorType, ReferralFlowType } from "../../shared/enums";
+import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
+import { RootOwnershipProjectionService } from "../ownership/RootOwnershipProjectionService";
+import { recordRelationship } from "../referral-network/ReferralRelationshipService";
 
-type Db = Pick<typeof prisma, "driverReferral" | "referralRelationship" | "driver">;
+type Db = typeof prisma;
 
 export interface SyncResult {
   checked: number;
@@ -22,23 +24,6 @@ export interface SyncResult {
   skipped: number;
 }
 
-/**
- * Walk Driver.referredByDriverId chain upward until reaching a root
- * (driver with no referredByDriverId). Max 20 hops guards against cycles.
- * Returns the input driverId itself if no chain exists.
- */
-async function resolveRootDriverId(startDriverId: string, db: Db): Promise<string> {
-  let current = startDriverId;
-  for (let i = 0; i < 20; i++) {
-    const d = await db.driver.findUnique({
-      where: { id: current },
-      select: { referredByDriverId: true },
-    });
-    if (!d || !d.referredByDriverId) return current;
-    current = d.referredByDriverId;
-  }
-  return current;
-}
 
 export const SyncProjectionJob = {
   /**
@@ -79,28 +64,34 @@ export const SyncProjectionJob = {
       return { checked, repaired: 0, skipped };
     }
 
-    // 3. Resolve rootDriverId for each gap (via referredByDriverId chain)
-    const rows = await Promise.all(
-      gaps.map(async (g) => {
-        const rootDriverId = await resolveRootDriverId(g.referredDriverId, db);
-        return {
-          flowType: ReferralFlowType.DRIVER_TO_DRIVER,
-          inviterActorType: ActorType.DRIVER,
-          inviterId: g.referrerDriverId,
-          invitedActorType: ActorType.DRIVER,
-          invitedId: g.referredDriverId,
-          rootDriverId,
-          inviterDriverId: g.referrerDriverId,
-        };
-      })
-    );
+    // 3. Project each missing direct D2D referral into the V2 graph.
+    //    recordRelationship is idempotent and resolves the correct rootDriverId.
+    let repaired = 0;
+    for (const g of gaps) {
+      try {
+        await recordRelationship(
+          {
+            inviterActorType: ActorType.DRIVER,
+            inviterId: g.referrerDriverId,
+            invitedActorType: ActorType.DRIVER,
+            invitedId: g.referredDriverId,
+          },
+          db
+        );
+        repaired++;
+      } catch (err) {
+        console.warn(
+          `[SyncProjectionJob] failed to record relationship for ${g.referredDriverId}:`,
+          (err as Error)?.message
+        );
+      }
+    }
 
-    // 4. Create missing rows — skipDuplicates for idempotency
-    const result = await db.referralRelationship.createMany({
-      data: rows,
-      skipDuplicates: true,
+    // 5. Ownership autocura: ensure Passenger/Ride/Settlement rootDriverId is consistent
+    await RootOwnershipProjectionService.reconcileOwnership(db).catch((err) => {
+      console.error("[SyncProjectionJob] ownership reconciliation failed", err);
     });
 
-    return { checked, repaired: result.count, skipped };
+    return { checked, repaired, skipped };
   },
 };

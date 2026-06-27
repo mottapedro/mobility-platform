@@ -12,10 +12,7 @@ import {
   OwnershipMetrics,
 } from "../referral-network/NetworkOwnershipService";
 
-type Db = Pick<
-  typeof prisma,
-  "invite" | "driver" | "driverReferral" | "passenger" | "referralRelationship" | "rideRequest" | "revenueSplit"
->;
+type Db = typeof prisma;
 
 export type OnboardingSource =
   | "invite"

@@ -9,5 +9,6 @@
             "approve": true,
             "matchCommandLine": true
         }
-    }
+    },
+    "geminicodeassist.outlines.automaticOutlineGeneration": true
 }

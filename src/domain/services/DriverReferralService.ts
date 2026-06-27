@@ -57,6 +57,12 @@ type ReferralDbClient = Pick<typeof prisma, "driver" | "driverReferral" | "passe
  * - Inherits edges from referrer's own referrers (level+1), capped at business depth
  * - Skips self-referrals and duplicate edges (@@unique in DB)
  */
+/**
+ * @deprecated
+ * Legacy graph write adapter. New features must use ReferralRelationshipService
+ * and RootOwnershipProjectionService instead. This function remains only for
+ * backfill and historical closure-table maintenance during the V1→V2 transition.
+ */
 export async function createDriverReferralChain(
   newDriverId: string,
   referrerDriverId: string,

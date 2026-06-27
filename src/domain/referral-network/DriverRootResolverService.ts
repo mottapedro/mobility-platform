@@ -2,7 +2,7 @@ import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { DriverRootResolutionError } from "./errors";
 
-type Db = Pick<typeof prisma, "driver" | "driverReferral" | "passenger" | "referralRelationship">;
+type Db = typeof prisma;
 
 /**
  * Resolves the operational root driver in the Aliado network for any actor.
@@ -39,20 +39,25 @@ async function resolveDriverRootForDriver(
   if (!driver) {
     throw new DriverRootResolutionError(`Driver ${driverId} not found`);
   }
-  if (!driver.referredByDriverId) {
-    return driver.id;
-  }
 
-  // Walk closure: highest-level edge where this driver is the referred party
-  // points to the deepest ancestor = operational root.
+  // Walk closure: the highest-level edge where this driver is the referred party
+  // points to the deepest ancestor. In the GodNetwork closure table, that deepest
+  // ancestor is the operational root of this driver. This is the source of truth;
+  // driver.referredByDriverId is a convenience denormalization that may be null
+  // on legacy or seeded data.
   const deepest = await db.driverReferral.findFirst({
     where: { referredDriverId: driverId },
     orderBy: { level: "desc" },
-    select: { referrerDriverId: true },
+    select: { referrerDriverId: true, level: true },
   });
   if (deepest) {
     return deepest.referrerDriverId;
   }
+
+  if (!driver.referredByDriverId) {
+    return driver.id;
+  }
+
   // Fallback: walk parent chain (defensive — should not happen if closure intact)
   return resolveDriverRootForDriver(driver.referredByDriverId, db);
 }

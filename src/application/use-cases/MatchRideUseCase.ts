@@ -501,34 +501,59 @@ export class MatchRideUseCase {
       );
 
       // Filter drivers based on OperationalZone
-      const originZone = "Galeão"; // This should be resolved from ride.origin
-      const destinationZone = "Barra da Tijuca"; // This should be resolved from ride.destination
+      // Resolve candidate zone names from the ride origin/destination via RegionResolver.
+      // If no operational zones are configured (or none match), the filter is a no-op
+      // so matching does not break due to missing seed data. This is a soft filter: it
+      // intersects the candidate pool with drivers assigned to the resolved zones.
+      const originRegion = this.regionResolver.resolve(ride.origin);
+      const destinationRegion = this.regionResolver.resolve(ride.destination);
+      const zoneNames = Array.from(
+        new Set([originRegion, destinationRegion].filter(Boolean))
+      );
 
       console.log("🧭 OperationalZone filter input", {
         rideId,
         rideOrigin: ride.origin,
         rideDestination: ride.destination,
-        originZone,
-        destinationZone,
+        originRegion,
+        destinationRegion,
+        zoneNames,
         driversCountBefore: drivers.length,
         driverIdsBefore: drivers.slice(0, 20).map(d => d.id),
       });
 
-      const zonedDriverIds = await prisma.driverOperationalZone.findMany({
-        where: { zone: { name: { in: [originZone, destinationZone] } } },
-        select: { driverId: true },
-      });
+      const zonedDriverIds = zoneNames.length > 0
+        ? await prisma.driverOperationalZone.findMany({
+            where: { zone: { name: { in: zoneNames } } },
+            select: { driverId: true },
+          })
+        : [];
+
       console.log("🧩 OperationalZone zonedDriverIds", {
         rideId,
+        zoneNames,
         count: zonedDriverIds.length,
         preview: zonedDriverIds.slice(0, 50).map(z => z.driverId),
       });
 
-      const zonedDriverIdSet = new Set(zonedDriverIds.map(z => z.driverId));
-      const finalDrivers = drivers.filter(d => zonedDriverIdSet.has(d.id));
+      let finalDrivers = drivers;
+      let usedOperationalZoneFilter = false;
+      if (zonedDriverIds.length > 0) {
+        usedOperationalZoneFilter = true;
+        const zonedDriverIdSet = new Set(zonedDriverIds.map(z => z.driverId));
+        finalDrivers = drivers.filter(d => zonedDriverIdSet.has(d.id));
+      } else {
+        logMatchingEvent({
+          rideId,
+          event: "OPERATIONAL_ZONE_NOT_CONFIGURED",
+          stage: "REFERRAL_NETWORK",
+          metadata: { zoneNames, reason: "no_matching_driver_operational_zones" },
+        });
+      }
 
       console.log("✅ OperationalZone filter result", {
         rideId,
+        usedOperationalZoneFilter,
         driversCountAfter: finalDrivers.length,
         driverIdsAfter: finalDrivers.slice(0, 20).map(d => d.id),
         firstMatchedDriverId: finalDrivers[0]?.id ?? null,

@@ -8,6 +8,13 @@ import { createDriverReferralChain, ReferralChainError } from "../../domain/serv
 import { assignPassengerIdentity, createPassengerReferral } from "../../domain/services/PassengerReferralService";
 import { recordRelationship } from "../../domain/referral-network/ReferralRelationshipService";
 import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
+import { RootOwnershipProjectionService } from "../../domain/ownership/RootOwnershipProjectionService";
+
+// Transaction client returned by prisma.$transaction is structurally compatible
+// with the extended prisma client but lacks the extension type branding. We use
+// a local cast to keep the transactional boundaries intact.
+type ExtendedTx = typeof prisma;
+const asExtendedTx = (tx: any): ExtendedTx => tx as ExtendedTx;
 
 class HttpError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -117,7 +124,7 @@ export class AuthController {
                 invitedActorType: ActorType.DRIVER,
                 invitedId: driver.id,
               },
-              tx
+              asExtendedTx(tx)
             ).catch((err) => {
               console.warn("[ReferralRelationship] driver→driver record failed:", err?.message);
             });
@@ -157,7 +164,7 @@ export class AuthController {
           resolvedRootDriverId = await resolveDriverRoot(
             ActorType.DRIVER,
             referrerDriverId,
-            tx
+            asExtendedTx(tx)
           ).catch(() => null);
           await recordRelationship(
             {
@@ -166,7 +173,7 @@ export class AuthController {
               invitedActorType: ActorType.PASSENGER,
               invitedId: passenger.id,
             },
-            tx
+            asExtendedTx(tx)
           ).catch((err) => {
             console.warn("[ReferralRelationship] driver→passenger record failed:", err?.message);
           });
@@ -174,7 +181,7 @@ export class AuthController {
           resolvedRootDriverId = await resolveDriverRoot(
             ActorType.PASSENGER,
             referrerPassengerId,
-            tx
+            asExtendedTx(tx)
           ).catch(() => null);
           await recordRelationship(
             {
@@ -183,18 +190,21 @@ export class AuthController {
               invitedActorType: ActorType.PASSENGER,
               invitedId: passenger.id,
             },
-            tx
+            asExtendedTx(tx)
           ).catch((err) => {
             console.warn("[ReferralRelationship] passenger→passenger record failed:", err?.message);
           });
         }
 
-        if (resolvedRootDriverId) {
-          await tx.passenger.update({
-            where: { id: passenger.id },
-            data: { rootDriverId: resolvedRootDriverId },
-          });
-        }
+        // Synchronous ownership projection: ensure Passenger.rootDriverId is set
+        // immediately after the relationship is recorded. If it failed, the
+        // resolvedRootDriverId fallback above provides a safety net.
+        await RootOwnershipProjectionService.projectPassengerOwnership(
+          passenger.id,
+          asExtendedTx(tx)
+        ).catch((err) => {
+          console.warn("[Ownership] passenger projection failed during register:", err);
+        });
 
         // Capture for use after transaction (createPassengerReferral needs to run outside tx)
         referrerPassengerIdOuter = referrerPassengerId;

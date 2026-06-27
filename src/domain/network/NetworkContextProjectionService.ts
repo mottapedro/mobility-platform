@@ -235,7 +235,7 @@ async function fetchNodeMetricsMaps(
       by: ["selectedDriverId"],
       where: {
         selectedDriverId: { in: driverIds },
-        status: { in: [RideStatus.COMPLETED, RideStatus.PAID] },
+        status: RideStatus.COMPLETED,
       },
       _count: { id: true },
     }),

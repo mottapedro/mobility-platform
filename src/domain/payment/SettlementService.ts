@@ -48,7 +48,12 @@ export async function settleConfirmedPayment(
     );
   }
 
-  const rootDriverId = intent.rideRequest.passenger.rootDriverId ?? null;
+  const rootDriverId = intent.rideRequest.passenger.rootDriverId;
+  if (!rootDriverId) {
+    throw new Error(
+      `RideRequest ${intent.rideRequestId} has no rootDriverId; settlement cannot be created without a frozen economic owner`
+    );
+  }
   const split = computeRevenueSplit({
     totalCents: intent.amountCents,
     rootDriverId,
@@ -65,7 +70,7 @@ export async function settleConfirmedPayment(
         driverCents: split.driverCents,
         platformCents: split.platformCents,
         rootDriverCents: split.rootDriverCents,
-        rootDriverId: split.rootDriverId,
+        rootDriverId: rootDriverId,
       },
     });
 
@@ -102,10 +107,8 @@ export async function settleConfirmedPayment(
       data: splitRows.map((s) => ({ ...s, settlementId: created.id })),
     });
 
-    await tx.rideRequest.update({
-      where: { id: intent.rideRequestId },
-      data: { status: RideStatus.PAID },
-    });
+    // In Model B, payment is tracked separately and does not transition ride status.
+    // The ride remains COMPLETED after settlement. Payment status lives in PaymentIntent.
 
     return created;
   });
