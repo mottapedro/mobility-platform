@@ -12,6 +12,7 @@ import { authRoutes } from "./presentation/routes/auth.routes";
 import { testRoutes } from "./presentation/routes/test.routes";
 import { godnetworkRoutes } from "./presentation/routes/godnetwork.routes";
 import { ridesPaymentRouter, pixWebhookRouter } from "./presentation/routes/payment.routes";
+import { picpayWebhookRouter } from "./modules/settlement/presentation/routes/picpay-webhook.routes";
 import { rideLifecycleRouter } from "./presentation/routes/ride-lifecycle.routes";
 import {
   onboardingRouter,
@@ -75,6 +76,7 @@ app.use("/rides", rideRoutes);
 app.use("/rides", ridesPaymentRouter);
 app.use("/rides", rideLifecycleRouter);
 app.use("/webhooks", pixWebhookRouter);
+app.use("/webhooks", picpayWebhookRouter);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
 app.use("/passengers", passengersNetworkRouter);

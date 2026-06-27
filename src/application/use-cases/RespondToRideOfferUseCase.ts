@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { MatchRideUseCase } from "./MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
+import { GeneratePaymentIntentUseCase } from "./GeneratePaymentIntentUseCase";
 
 export class OfferResponseError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -13,7 +14,7 @@ export class OfferResponseError extends Error {
 
 export class RespondToRideOfferUseCase {
 
-  async execute(offerId: string, accept: boolean): Promise<{ accepted: boolean }> {
+  async execute(offerId: string, accept: boolean): Promise<{ accepted: boolean; paymentIntent?: { id: string; brCode: string; qrCodeUrl: string } | null }> {
 
     const offer = await prisma.rideOffer.findUnique({
       where: { id: offerId },
@@ -65,6 +66,12 @@ export class RespondToRideOfferUseCase {
       });
 
       console.log(`✅ Corrida ${offer.rideRequestId} aceita pelo driver ${offer.driverId}`);
+
+      // Generate PaymentIntent (mock Pix) after successful accept
+      const paymentIntentUseCase = new GeneratePaymentIntentUseCase();
+      const paymentIntent = await paymentIntentUseCase.execute({ rideId: offer.rideRequestId });
+
+      return { accepted: true, paymentIntent };
 
     } else {
       const ride = await prisma.rideRequest.findUnique({

@@ -6,6 +6,9 @@ import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 import { matchingJobScheduler } from "../../infra/async/MatchingJobScheduler";
+import { RescheduleRideUseCase } from "../../application/use-cases/RescheduleRideUseCase";
+import { StartRideUseCase } from "../../application/use-cases/StartRideUseCase";
+import { CompleteRideUseCase } from "../../application/use-cases/CompleteRideUseCase";
 
 // ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
@@ -277,8 +280,12 @@ export class RideController {
         return res.status(400).json({ error: "Ride id inválido" });
       }
 
+      if (action === "reschedule") {
+        return this.reschedule(req, res);
+      }
+
       if (action !== "reject_referral") {
-        return res.status(400).json({ error: "Ação não suportada. Use action: 'reject_referral'" });
+        return res.status(400).json({ error: "Ação não suportada. Use action: 'reject_referral' ou 'reschedule'" });
       }
 
       const ride = await prisma.rideRequest.findUnique({
@@ -348,6 +355,133 @@ export class RideController {
       console.error("🔥 ERRO PATCH RIDE:", error);
       return res.status(500).json({
         error: "Erro ao processar fallback",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  async reschedule(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { newScheduledAt, newOrigin, newDestination, driverId: requestingDriverId } = req.body;
+
+      if (!id || typeof id !== "string") {
+        return res.status(400).json({ error: "Ride id inválido" });
+      }
+
+      if (!requestingDriverId || typeof requestingDriverId !== "string") {
+        return res.status(400).json({ error: "driverId (requesting driver) é obrigatório" });
+      }
+
+      if (!newScheduledAt) {
+        return res.status(400).json({ error: "newScheduledAt é obrigatório" });
+      }
+
+      const date = new Date(newScheduledAt);
+      if (isNaN(date.getTime())) {
+        return res.status(400).json({ error: "newScheduledAt inválido (use ISO string)" });
+      }
+
+      const useCase = new RescheduleRideUseCase();
+      const result = await useCase.execute({
+        rideId: id,
+        newScheduledAt: date,
+        newOrigin,
+        newDestination,
+        requestingDriverId,
+      });
+
+      const updatedRide = await prisma.rideRequest.findUnique({
+        where: { id },
+        include: {
+          passenger: { include: { user: true } },
+          offers: true,
+          selectedDriver: { include: { user: true } },
+        },
+      });
+
+      return res.status(200).json({
+        message: "Corrida reagendada com sucesso",
+        ride: updatedRide,
+      });
+    } catch (error) {
+      console.error("🔥 ERRO RESCHEDULE:", error);
+      return res.status(500).json({
+        error: "Erro ao reagendar corrida",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  async start(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { driverId } = req.body;
+
+      if (!id || typeof id !== "string") {
+        return res.status(400).json({ error: "Ride id inválido" });
+      }
+
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId é obrigatório" });
+      }
+
+      const useCase = new StartRideUseCase();
+      await useCase.execute({ rideId: id, driverId });
+
+      const updatedRide = await prisma.rideRequest.findUnique({
+        where: { id },
+        include: {
+          passenger: { include: { user: true } },
+          selectedDriver: { include: { user: true } },
+        },
+      });
+
+      return res.status(200).json({
+        message: "Corrida iniciada com sucesso",
+        ride: updatedRide,
+      });
+    } catch (error) {
+      console.error("🔥 ERRO START RIDE:", error);
+      return res.status(500).json({
+        error: "Erro ao iniciar corrida",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  async complete(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { driverId } = req.body;
+
+      if (!id || typeof id !== "string") {
+        return res.status(400).json({ error: "Ride id inválido" });
+      }
+
+      if (!driverId || typeof driverId !== "string") {
+        return res.status(400).json({ error: "driverId é obrigatório" });
+      }
+
+      const useCase = new CompleteRideUseCase();
+      await useCase.execute({ rideId: id, driverId });
+
+      const updatedRide = await prisma.rideRequest.findUnique({
+        where: { id },
+        include: {
+          passenger: { include: { user: true } },
+          selectedDriver: { include: { user: true } },
+        },
+      });
+
+      return res.status(200).json({
+        message: "Corrida finalizada com sucesso",
+        ride: updatedRide,
+      });
+    } catch (error) {
+      console.error("🔥 ERRO COMPLETE RIDE:", error);
+      return res.status(500).json({
+        error: "Erro ao finalizar corrida",
         details: error instanceof Error ? error.message : error,
       });
     }

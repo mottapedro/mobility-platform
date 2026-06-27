@@ -19,7 +19,10 @@ export type MatchingLogEvent = {
     | "OFFER_REDISTRIBUTED"
     | "OPERATIONAL_CUTOFF_REACHED"
     | "OPERATIONAL_ZONE_NOT_CONFIGURED"
-    | "ACCEPTANCE_WINDOW_CALCULATED";
+    | "ACCEPTANCE_WINDOW_CALCULATED"
+    | "RIDE_RESCHEDULED"
+    | "RIDE_STARTED"
+    | "RIDE_COMPLETED";
   stage?: MatchingLogStage;
   candidateDriverIds?: string[];
   /** New: total candidates in queue for current stage (replaces full id list in broadcast contexts). */
