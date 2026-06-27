@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
 
 datasource db {
@@ -162,6 +163,10 @@ model RideRequest {
   @@index([scheduledAt])
 }
 
+/// @deprecated
+/// Legacy closure-table graph. ReferralRelationship is the V2 source of truth.
+/// New features must not write here; this model remains only for historical
+/// audit and backfill during the V1→V2 transition.
 model DriverReferral {
   id String @id @default(uuid())
 
@@ -414,6 +419,8 @@ model PaymentIntent {
 }
 
 /// Settlement record produced once a PaymentIntent is confirmed.
+/// rootDriverId is a frozen snapshot of economic ownership at settlement time.
+/// It must never be recalculated after creation.
 model Settlement {
   id              String   @id @default(uuid())
   paymentIntentId String   @unique
@@ -422,12 +429,14 @@ model Settlement {
   driverCents     Int
   platformCents   Int
   rootDriverCents Int
-  rootDriverId    String?
+  rootDriverId    String
   settledAt       DateTime @default(now())
 
   paymentIntent PaymentIntent  @relation(fields: [paymentIntentId], references: [id])
   rideRequest   RideRequest    @relation(fields: [rideRequestId], references: [id])
   splits        RevenueSplit[]
+
+  @@index([rootDriverId])
 }
 
 /// Per-beneficiary split row attached to a Settlement.
