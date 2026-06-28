@@ -63,22 +63,29 @@ export class RideController {
         destinationLat: rawDestLat, destinationLng: rawDestLng,
       } = req.body;
 
-      // Parse coordinate pairs (body may use number or string; accept only numbers)
-      const originLat      = typeof rawOriginLat === "number" ? rawOriginLat : null;
-      const originLng      = typeof rawOriginLng === "number" ? rawOriginLng : null;
-      const destinationLat = typeof rawDestLat   === "number" ? rawDestLat   : null;
-      const destinationLng = typeof rawDestLng   === "number" ? rawDestLng   : null;
-
-      // Compute estimates when all four coordinates are present
-      let distanceKm: number | null = null;
-      let durationMin: number | null = null;
-      let priceEstimated: number | null = null;
-
-      if (originLat !== null && originLng !== null && destinationLat !== null && destinationLng !== null) {
-        distanceKm     = Math.round(haversineKm(originLat, originLng, destinationLat, destinationLng) * 10) / 10;
-        durationMin    = Math.round((distanceKm / AVG_SPEED_KMH) * 60);
-        priceEstimated = Math.round((PRICE_BASE_BRL + PRICE_PER_KM_BRL * distanceKm) * 100) / 100;
+      // Coordinates are mandatory for price estimation. Reject invalid input.
+      if (
+        typeof rawOriginLat !== "number" || typeof rawOriginLng !== "number" ||
+        typeof rawDestLat !== "number" || typeof rawDestLng !== "number"
+      ) {
+        return res.status(400).json({
+          error: "Invalid coordinates",
+          details: "originLat, originLng, destinationLat e destinationLng são obrigatórios e devem ser números.",
+        });
       }
+
+      const originLat      = rawOriginLat;
+      const originLng      = rawOriginLng;
+      const destinationLat = rawDestLat;
+      const destinationLng = rawDestLng;
+
+      let distanceKm: number;
+      let durationMin: number;
+      let priceEstimated: number;
+
+      distanceKm     = Math.round(haversineKm(originLat, originLng, destinationLat, destinationLng) * 10) / 10;
+      durationMin    = Math.round((distanceKm / AVG_SPEED_KMH) * 60);
+      priceEstimated = Math.round((PRICE_BASE_BRL + PRICE_PER_KM_BRL * distanceKm) * 100) / 100;
 
       // validação básica
       if (!passengerId || !origin || !destination || !scheduledAt) {
