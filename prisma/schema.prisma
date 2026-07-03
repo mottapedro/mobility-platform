@@ -100,6 +100,7 @@ model OperationalZone {
   name        String   @unique
   description String?
   isActive    Boolean  @default(true)
+  peso_esforco Float?  @default(1.0)
   createdAt   DateTime @default(now())
 
   drivers DriverOperationalZone[]

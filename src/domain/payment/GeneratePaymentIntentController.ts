@@ -4,7 +4,7 @@ import { GeneratePaymentIntentUseCase } from "../../application/use-cases/Genera
 export class GeneratePaymentIntentController {
   async generate(req: Request, res: Response) {
     try {
-      const { rideId } = req.params;
+      const rideId = req.params.id;
       const { amount } = req.body;
 
       if (!rideId || typeof rideId !== "string") {

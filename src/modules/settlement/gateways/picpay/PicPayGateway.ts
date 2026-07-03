@@ -1,15 +1,20 @@
 import "dotenv/config";
 import { PicPayAuthService } from "./PicPayAuthService";
 import { PaymentGateway, PaymentGatewayAuth } from "./types/PaymentGateway";
+import { buildStaticPixPayload } from "./staticPix";
 
 /**
- * PicPayGateway — implementação da interface PaymentGateway para o PicPay Payment Link API.
- * Documentação: https://ecommerce.picpay.com/
- * Endpoint: POST /v1/paymentlink/create
+ * PicPayGateway — implementação da interface PaymentGateway.
+ *
+ * createPaymentIntent: gera PIX Estático (EMVCo/BRCode) localmente, sem chamada HTTP.
+ *   Motivo: portabilidade da chave CNPJ pendente no PicPay; conta apta apenas para chave EVP.
+ *
+ * getPaymentStatus / cancelPayment: ainda consultam a API PicPay para rastreio via webhook.
  */
 export class PicPayGateway implements PaymentGateway {
   private readonly auth: PaymentGatewayAuth;
   private readonly apiUrl: string;
+  private readonly pixKey: string | undefined;
 
   constructor(auth?: PaymentGatewayAuth) {
     this.auth = auth ?? new PicPayAuthService();
@@ -19,6 +24,7 @@ export class PicPayGateway implements PaymentGateway {
       throw new Error("PICPAY_API_URL não configurada.");
     }
     this.apiUrl = apiUrl.replace(/\/$/, "");
+    this.pixKey = process.env.PICPAY_PIX_KEY;
   }
 
   async createPaymentIntent(input: {
@@ -26,78 +32,35 @@ export class PicPayGateway implements PaymentGateway {
     externalId: string;
     description?: string;
   }) {
-    const token = await this.auth.getAccessToken();
-
-    const url = `${this.apiUrl}/v1/paymentlink/create`;
-
-    const body = {
-      charge: {
-        name: input.description || "Corrida Aliado",
-        order_number: input.externalId.slice(-15),
-        payment: {
-          methods: ["BRCODE"],
-          brcode_arrangements: ["PIX"],
-        },
-        amounts: {
-          product: input.amountCents,
-        },
-      },
-      options: {
-        allow_create_pix_key: true,
-      },
-    };
-
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(body),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+    const pixKey = this.pixKey;
+    if (!pixKey) {
       throw new Error(
-        `Falha na conexão com PicPay (createPaymentIntent): ${message} — URL: ${url}`
+        "PICPAY_PIX_KEY nao configurada — impossivel gerar PIX Estatico sem chave EVP."
       );
     }
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => "sem corpo");
-      console.error(
-        `[PicPayGateway] createPaymentIntent FAILED — URL=${url} status=${response.status} body=${text}`
-      );
-      console.error(
-        `[PicPayGateway] createPaymentIntent response headers:`,
-        [...response.headers.entries()]
-      );
-      throw new Error(
-        `PicPay createPaymentIntent retornou ${response.status}: ${text}`
-      );
-    }
+    const amountBrl = input.amountCents / 100;
 
-    const payload: Record<string, unknown> = await response.json();
+    const brCode = buildStaticPixPayload({
+      pixKey,
+      merchantName: "Aliado Mobilidade",
+      merchantCity: "Rio de Janeiro",
+      amountBrl,
+      txid: input.externalId,
+    });
 
-    // Mapeamento da resposta oficial do PicPay Payment Link
-    const id: string = String(
-      payload.txid ?? payload.referenceId ?? payload.externalId ?? input.externalId
-    );
-    const status: string = String(payload.status ?? "PENDING");
-
-    const brCode: string | undefined =
-      typeof payload.brcode === "string" ? payload.brcode : undefined;
-
-    const qrCodeUrl: string | undefined =
-      typeof payload.link === "string" ? payload.link : undefined;
+    console.log("[PicPayGateway] PIX Estatico gerado localmente (sem HTTP)", {
+      externalId: input.externalId,
+      amountBrl,
+      brCodeLength: brCode.length,
+      brCodePreview: brCode.slice(0, 50) + "...",
+    });
 
     return {
-      id,
-      status,
+      id: input.externalId,
+      status: "PENDING",
       brCode,
-      qrCodeUrl,
+      qrCodeUrl: undefined,
     };
   }
 

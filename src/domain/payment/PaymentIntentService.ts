@@ -27,7 +27,28 @@ export async function createPaymentIntent(
   const existing = await prisma.paymentIntent.findUnique({
     where: { rideRequestId },
   });
-  if (existing) return existing;
+  if (existing) {
+    // If the cached QR code is a stale PicPay dynamic URL, regenerate it in-place.
+    const isStale = !existing.qrCode || existing.qrCode.includes("qr-code.picpay.com");
+    if (!isStale) return existing;
+
+    console.warn("[PaymentIntentService] QR code obsoleto detectado — regenerando via StaticPixProvider", {
+      intentId: existing.id,
+      rideRequestId,
+    });
+    const charge = await provider.createCharge({
+      intentId: existing.id,
+      amountCents: existing.amountCents,
+    });
+    return await prisma.paymentIntent.update({
+      where: { id: existing.id },
+      data: {
+        externalId: charge.externalId,
+        qrCode: charge.qrCode,
+        qrCodeImage: charge.qrCodeImage,
+      },
+    });
+  }
 
   const ride = await prisma.rideRequest.findUnique({
     where: { id: rideRequestId },

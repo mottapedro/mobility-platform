@@ -311,6 +311,8 @@ export class MatchRideUseCase {
   ): Promise<{ matched: boolean; level: MatchLevel }> {
     const { rideId, candidateDriverIds } = input;
 
+    console.log("🔥 BUSCANDO RIDE:", rideId);
+
     // 1. Buscar corrida e passageiro em leituras sequenciais para evitar fan-out interno no adapter
     const ride = await prisma.rideRequest.findUnique({
       where: { id: rideId },

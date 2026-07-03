@@ -7,7 +7,7 @@ const generateIntentController = new GeneratePaymentIntentController();
 
 const ridesPaymentRouter = Router();
 ridesPaymentRouter.post("/:id/payment-intent", (req, res) => controller.createIntent(req, res));
-ridesPaymentRouter.post("/:id/payment-intent/mock", (req, res) => generateIntentController.generate(req, res));
+ridesPaymentRouter.post("/:id/payment-intent/generate", (req, res) => generateIntentController.generate(req, res));
 ridesPaymentRouter.get("/:id/settlement", (req, res) => controller.getSettlement(req, res));
 
 const pixWebhookRouter = Router();

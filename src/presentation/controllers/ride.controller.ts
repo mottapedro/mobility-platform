@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
+import { PricingService } from "../../domain/pricing/services/PricingService";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 import { matchingJobScheduler } from "../../infra/async/MatchingJobScheduler";
@@ -46,9 +47,6 @@ function haversineKm(
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// Price model: R$5 base flag + R$2.50/km (urban Brazil estimate)
-const PRICE_BASE_BRL = 5.0;
-const PRICE_PER_KM_BRL = 2.5;
 // Duration estimate: avg 30 km/h in urban traffic
 const AVG_SPEED_KMH = 30;
 
@@ -79,15 +77,7 @@ export class RideController {
       const destinationLat = rawDestLat;
       const destinationLng = rawDestLng;
 
-      let distanceKm: number;
-      let durationMin: number;
-      let priceEstimated: number;
-
-      distanceKm     = Math.round(haversineKm(originLat, originLng, destinationLat, destinationLng) * 10) / 10;
-      durationMin    = Math.round((distanceKm / AVG_SPEED_KMH) * 60);
-      priceEstimated = Math.round((PRICE_BASE_BRL + PRICE_PER_KM_BRL * distanceKm) * 100) / 100;
-
-      // validação básica
+      // validação básica (deve vir antes do PricingService, que precisa dos endereços)
       if (!passengerId || !origin || !destination || !scheduledAt) {
         return res.status(400).json({
           error: "Missing fields",
@@ -122,6 +112,37 @@ export class RideController {
         return res.status(400).json({
           error: "Origin and destination must be different",
         });
+      }
+
+      // ─── Distância e precificação via PricingEngine ────────────────────────
+      const distanceKm = Math.round(haversineKm(originLat, originLng, destinationLat, destinationLng) * 10) / 10;
+      const durationMin = Math.round((distanceKm / AVG_SPEED_KMH) * 60);
+
+      // Estimar preço via PricingEngine (se habilitado) com fallback para fórmula simples
+      let priceEstimated: number;
+      if (FEATURES.PRICING_ENABLED) {
+        try {
+          const pricingService = new PricingService();
+          const pricing = await pricingService.estimate({
+            distanceKm,
+            originAddress: originTrimmed,
+            destinationAddress: destinationTrimmed,
+          });
+          priceEstimated = pricing.priceEstimated;
+          console.log("💰 PricingEngine resultado", {
+            distanceKm,
+            originRegion: pricing.originRegion,
+            destinationRegion: pricing.destinationRegion,
+            availableDriversInZone: pricing.availableDriversInZone,
+            breakdown: pricing.breakdown,
+            totalPrice: pricing.priceEstimated,
+          });
+        } catch (pricingError) {
+          console.warn("⚠️ PricingEngine fallback — usando fórmula simples:", pricingError);
+          priceEstimated = Math.round((5.0 + 2.5 * distanceKm) * 100) / 100;
+        }
+      } else {
+        priceEstimated = Math.round((5.0 + 2.5 * distanceKm) * 100) / 100;
       }
 
       // normaliza context — aceita qualquer formato, nunca rejeita
