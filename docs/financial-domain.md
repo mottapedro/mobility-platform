@@ -1,30 +1,93 @@
 # Financial Domain — Aliado Nacional
 ## Documento de Contratos Arquiteturais
 
-> **Versão:** 1.0  
+> **Versão:** 1.1  
 > **Status:** Aprovado para implementação  
-> **Princípio:** O banco de dados e o domínio são a fonte oficial da verdade. O frontend apenas renderiza DTOs.
+
+---
+
+## Princípio Fundamental
+
+> O Financial Domain é a fonte oficial da verdade para todas as informações financeiras do Aliado.
+> Nenhuma regra de precificação, cálculo de valores, divisão de receitas ou repasses deve existir fora deste domínio.
+> O frontend apenas apresenta os dados produzidos por ele.
+> Gateways de pagamento apenas executam transações.
+
+Este princípio é a referência definitiva sempre que houver dúvida sobre onde implementar uma regra financeira.
+
+---
+
+## Princípio do Snapshot Financeiro
+
+> Todo `RidePricing` representa um snapshot financeiro da corrida no momento em que foi calculado.
+> Ele não depende de configurações atuais — persiste todos os valores efetivamente utilizados no cálculo.
+
+**Exemplo:**
+
+| Momento | Platform Fee | O que o RidePricing mostra |
+|---|---|---|
+| Corrida realizada hoje | 15% | **15%** para sempre |
+| Configuração global daqui a 1 ano | 18% | irrelevante para esta corrida |
+
+O `RidePricing` nunca armazena referências para buscar valores depois. Armazena os valores.
+
+---
+
+## Versionamento da Política de Precificação
+
+Todo `RidePricing` carrega dois campos de rastreabilidade:
+
+| Campo | O que responde | Exemplo |
+|---|---|---|
+| `pricingSource` | qual política foi utilizada | `EXECUTIVE_POLICY` |
+| `pricingPolicyVersion` | qual versão da política estava vigente | `"v2"` |
+
+Isso permite responder: *"Com qual política e qual versão desta política esta corrida foi calculada?"*
+
+Essencial para auditoria financeira de corridas históricas quando políticas evoluem.
+
+---
+
+## Invariante Financeira V1
+
+```
+totalPassengerPrice = driverNetAmount + platformFeeAmount
+```
+
+**Esta invariante é válida para a Pricing Policy V1.**
+
+Futuramente, políticas com desconto, cashback ou subsídio utilizarão:
+
+```
+totalPassengerPrice = driverNetAmount + platformFeeAmount - discounts
+```
+
+A invariante não é universal — é da política vigente. O `pricingPolicyVersion` identifica qual se aplica.
 
 ---
 
 ## Visão Geral
 
-O Financial Domain é um subdomínio da plataforma Aliado responsável por **toda inteligência financeira da operação**. Ele substitui o atual `domain/payment/` e expande suas responsabilidades.
+O Financial Domain substitui e expande o atual `domain/payment/`. É responsável por **toda inteligência financeira da operação**.
 
 ### Fluxo Canônico
 
 ```
-Offer
+RideRequest
+  ↓
+PricingPolicy            ← seleciona qual estratégia se aplica
+  ↓
+RidePricingConfig        ← parâmetros daquela política
   ↓
 RouteCalculator          ← calcula distância e duração (plugável)
   ↓
-RouteResult              ← value object com distanceKm + estimatedDurationMin
+RouteResult              ← value object: distanceKm + estimatedDurationMin
   ↓
-PricingEngine            ← aplica RidePricingConfig → produz RidePricing
+PricingEngine            ← função pura: aplica política + rota → RidePricing
   ↓
-RidePricing              ← value object: source of truth financeira da corrida
+RidePricing              ← snapshot financeiro imutável da corrida
   ↓
-RideRequest (persiste)   ← priceEstimated, priceOffered, pricingVersion, rootDriverId
+RideRequest (persiste)   ← priceEstimated, pricingVersion, rootDriverId
   ↓
 PaymentIntent            ← amountCents vem de RidePricing, nunca do cliente
   ↓
@@ -63,38 +126,63 @@ RevenueSplit (ROOT_DRIVER)  ← 5% para o driver raiz
 
 ---
 
-### 1. RidePricingConfig
+### 1. PricingPolicy
+
+**Tipo:** Interface (Strategy Pattern)  
+**Localização:** `src/domain/financial/pricing/PricingPolicy.ts`  
+**Responsabilidade:** Representar a **estratégia de negócio** de precificação. Decide qual `RidePricingConfig` aplicar e quais multiplicadores são relevantes para um dado contexto.
+
+```typescript
+interface PricingPolicy {
+  name: string;
+  version: string;                            // pricingPolicyVersion
+  source: PricingSource;                      // pricingSource
+  getConfig(context: RideContext): RidePricingConfig;
+  appliesTo(context: RideContext): boolean;
+}
+```
+
+**Hierarquia de políticas:**
+
+```
+PricingPolicy (interface)
+  ├── DefaultPolicy          ← Fase 2 (v1)
+  ├── AirportPolicy          ← Fase futura
+  ├── ExecutivePolicy        ← Fase futura
+  ├── HourlyPolicy           ← Fase futura
+  ├── CorporatePolicy        ← Fase futura
+  └── PromotionalPolicy      ← Fase futura
+```
+
+O `PricingEngine` nunca muda. Novas políticas são novas implementações da interface.
+
+---
+
+### 2. RidePricingConfig
 
 **Tipo:** Configuration Object  
 **Localização:** `src/domain/financial/pricing/RidePricingConfig.ts`  
-**Responsabilidade:** Centralizar todos os parâmetros de precificação. Nunca hardcoded nos serviços.
+**Responsabilidade:** Centralizar os **parâmetros** de uma política. Nunca hardcoded nos serviços.
 
 ```typescript
 interface RidePricingConfig {
-  // Tarifa base
   baseCostPerKm: number;          // ex: 2.50 (R$/km)
   baseCostPerMinute: number;      // ex: 0.35 (R$/min)
   minimumFare: number;            // ex: 12.00 (R$)
-
-  // Taxa da plataforma
   platformFeePercent: number;     // ex: 0.15 (15%)
-
-  // Multiplicadores de contexto
   airportMultiplier: number;      // ex: 1.25
   vipMultiplier: number;          // ex: 1.30
-  nightMultiplier: number;        // ex: 1.15 (22h–06h)
+  nightMultiplier: number;        // ex: 1.15
   executiveMultiplier: number;    // ex: 1.40
-
-  // Versionamento
   pricingVersion: string;         // ex: "v1"
 }
 ```
 
-**Evolução futura:** Migrar para tabela de banco de dados `pricing_configurations` com vigência por data. Hoje: objeto de configuração em `src/config/pricing.ts`.
+**Evolução futura:** Migrar para tabela `pricing_configurations` com vigência por data.
 
 ---
 
-### 2. RouteResult
+### 3. RouteResult
 
 **Tipo:** Value Object  
 **Localização:** `src/domain/financial/routing/RouteResult.ts`  
@@ -110,11 +198,11 @@ interface RouteResult {
 
 ---
 
-### 3. RouteCalculator
+### 4. RouteCalculator
 
 **Tipo:** Port (Interface)  
 **Localização:** `src/domain/financial/routing/RouteCalculator.ts`  
-**Responsabilidade:** Definir o contrato para cálculo de rota. Plugável — trocar o provedor não altera o Pricing.
+**Responsabilidade:** Contrato para cálculo de rota. Plugável — trocar o provedor não altera o Pricing.
 
 ```typescript
 interface RouteCalculator {
@@ -129,19 +217,19 @@ interface RouteCalculator {
 
 **Adaptadores:**
 
-| Adaptador | Status | Localização |
-|---|---|---|
-| `HaversineRouteCalculator` | ✅ Fase 2 | `src/domain/financial/routing/adapters/` |
-| `GoogleMapsRouteCalculator` | 🔜 Futuro | `src/domain/financial/routing/adapters/` |
-| `MapboxRouteCalculator` | 🔜 Futuro | `src/domain/financial/routing/adapters/` |
+| Adaptador | Status |
+|---|---|
+| `HaversineRouteCalculator` | ✅ Fase 3 |
+| `GoogleMapsRouteCalculator` | 🔜 Futuro |
+| `MapboxRouteCalculator` | 🔜 Futuro |
 
 ---
 
-### 4. RidePricing
+### 5. RidePricing
 
-**Tipo:** Value Object  
+**Tipo:** Value Object — **Imutável**  
 **Localização:** `src/domain/financial/pricing/RidePricing.ts`  
-**Responsabilidade:** Resultado definitivo da precificação. Representa **tudo** que o domínio financeiro precisa saber sobre o preço de uma corrida.
+**Responsabilidade:** Snapshot financeiro definitivo da corrida. Persiste todos os valores efetivamente utilizados — nunca referências.
 
 ```typescript
 interface RidePricing {
@@ -150,68 +238,63 @@ interface RidePricing {
   estimatedDurationMin: number;
 
   // Composição do preço
-  baseFare: number;               // valor operacional da corrida
-  platformFeePercent: number;     // percentual da taxa (ex: 0.15)
-  platformFeeAmount: number;      // valor da taxa em R$
-  driverNetAmount: number;        // o que o motorista recebe (baseFare)
-  totalPassengerPrice: number;    // o que o passageiro paga (baseFare + platformFee)
+  baseFare: number;
+  platformFeePercent: number;       // valor efetivo no momento do cálculo
+  platformFeeAmount: number;
+  driverNetAmount: number;
+  totalPassengerPrice: number;
 
-  // Multiplicadores aplicados
-  multipliersApplied: string[];   // ex: ["airport", "night"]
+  // Multiplicadores efetivamente aplicados
+  multipliersApplied: string[];     // ex: ["airport", "night"]
 
-  // Auditoria
-  pricingVersion: string;         // ex: "v1"
+  // Rastreabilidade
+  pricingSource: PricingSource;     // ex: "EXECUTIVE_POLICY"
+  pricingPolicyVersion: string;     // ex: "v2"
   calculatedAt: Date;
 }
+
+// Invariante V1:
+// driverNetAmount + platformFeeAmount === totalPassengerPrice
 ```
 
-**Invariante:** `driverNetAmount + platformFeeAmount === totalPassengerPrice`
+**Imutabilidade:** após persistido, nunca alterado. Mudança de preço gera novo `RidePricing`.
 
 ---
 
-### 5. PricingEngine
+### 6. PricingEngine
 
-**Tipo:** Domain Service (função pura)  
+**Tipo:** Domain Service — Função Pura  
 **Localização:** `src/domain/financial/pricing/PricingEngine.ts`  
-**Responsabilidade:** Aplicar `RidePricingConfig` sobre `RouteResult` e `RideContext` para produzir `RidePricing`. Coração do Financial Domain.
+**Responsabilidade:** Coração do Financial Domain. Aplica `PricingPolicy` + `RouteResult` + `RideContext` e produz `RidePricing`.
 
 **Entradas:**
-- `RouteResult` — distância e duração calculadas
-- `RidePricingConfig` — parâmetros operacionais
-- `RideContext` — isVip, isAirport, isLuggage, etc.
+- `RouteResult`
+- `PricingPolicy`
+- `RideContext`
 
 **Saída:** `RidePricing`
 
 **Regras:**
 - Função pura — sem side effects, sem I/O
 - Determinística — mesma entrada → mesma saída
-- Testável isoladamente sem banco de dados
+- Testável isoladamente
 - Respeita `minimumFare`
-- Registra todos os multiplicadores aplicados em `multipliersApplied`
+- Registra todos os multiplicadores em `multipliersApplied`
+- Persiste `platformFeePercent` efetivo no `RidePricing`
 
 ---
 
-### 6. PaymentProvider
+### 7. PaymentProvider
 
 **Tipo:** Port (Interface genérica)  
-**Localização:** `src/domain/financial/payment/PaymentProvider.ts`  
-**Responsabilidade:** Abstração genérica para qualquer gateway de pagamento. O `PixProvider` existente passa a ser uma especialização.
-
-```typescript
-interface PaymentProvider {
-  createCharge(input: ChargeInput): Promise<ChargeResult>;
-  refund?(chargeId: string): Promise<void>;
-}
-```
-
-**Hierarquia:**
+**Localização:** `src/domain/financial/payment/PaymentProvider.ts`
 
 ```
-PaymentProvider          ← interface genérica
+PaymentProvider (interface)
   ↓
-PixProvider              ← especialização PIX (já existente)
+PixProvider              ← especialização PIX (existente)
   ↓
-InMemoryPixProvider      ← adaptador de teste (já existente)
+InMemoryPixProvider      ← adaptador de teste (existente)
 
 (futuro)
 PicPayProvider
@@ -222,24 +305,15 @@ PagarMeProvider
 
 ---
 
-### 7. Settlement *(existente — sem alteração de responsabilidade)*
+### 8. Settlement *(existente)*
 
-**Tipo:** Entity + Domain Service  
-**Localização:** `src/domain/payment/SettlementService.ts` → mover para `src/domain/financial/settlement/`  
-**Responsabilidade:** Liquidar um `PaymentIntent` confirmado. Produzir `Settlement` + `RevenueSplit[]`.
-
-**Mantém:** lógica atual de split 80/15/5, idempotência por `paymentIntentId`, transação atômica.
-
-**Recebe:** `rootDriverId` do `RideRequest` (campo já existente no schema, mas ainda não propagado na criação).
+Mantém lógica atual. Passa a receber `rootDriverId` do `RideRequest`.
 
 ---
 
-### 8. RevenueSplitService *(existente — sem alteração de responsabilidade)*
+### 9. RevenueSplitService *(existente)*
 
-**Tipo:** Pure Function  
-**Localização:** `src/domain/payment/RevenueSplitService.ts` → mover para `src/domain/financial/settlement/`
-
-**Regra atual (PR-2):**
+**Regra V1:**
 
 | Beneficiário | BPS | Percentual |
 |---|---|---|
@@ -247,51 +321,42 @@ PagarMeProvider
 | Platform | 1500 | 15% |
 | Root Driver | 500 | 5% |
 
-Quando `rootDriverId === null`: os 5% sobem para Platform.
+Quando `rootDriverId === null`: 5% sobem para Platform.
 
 ---
 
-### 9. RideQuoteDTO
+### 10. RideQuoteDTO
 
 **Tipo:** DTO de resposta da API  
-**Localização:** `src/presentation/dtos/RideQuoteDTO.ts`  
-**Responsabilidade:** Contrato público da API para o frontend. Extensível sem quebrar compatibilidade.
+**Localização:** `src/presentation/dtos/RideQuoteDTO.ts`
 
 ```typescript
 interface RideQuoteDTO {
-  // Identificação
   rideId: string;
-  pricingVersion: string;
+  pricingSource: string;
+  pricingPolicyVersion: string;
 
-  // Valores para exibição
   breakdown: {
     baseFare: number;               // "Serviço de Transporte"
     platformFee: number;            // "Taxa Cyborg"
     total: number;                  // "Aliado Mobilidade"
   };
 
-  // Rota
   distanceKm: number;
   estimatedDurationMin: number;
-
-  // Contexto (para exibição)
   multipliersApplied: string[];
-
-  // Expiração da cotação
-  validUntil: string;               // ISO 8601
+  validUntil: string;
 
   // Espaço para evolução futura
-  discount?: number;                // promoções
-  couponCode?: string;              // cupons
-  notes?: string;                   // observações tarifárias
+  discount?: number;
+  couponCode?: string;
+  notes?: string;
 }
 ```
 
 ---
 
-### 10. Ledger *(Placeholder — Fase futura)*
-
-**Responsabilidade futura:** Separar o ciclo de vida financeiro completo.
+### 11. Ledger *(Placeholder)*
 
 ```
 LedgerEntryType:
@@ -301,17 +366,12 @@ LedgerEntryType:
   PLATFORM_FEE_COLLECTED
   REFUND_ISSUED
   CANCELLATION_FEE
-  DISPUTE_HOLD
   RECONCILIATION_ENTRY
 ```
 
-Não implementar agora. Estrutura reservada.
-
 ---
 
-### 11. Reward *(Placeholder — Fase futura)*
-
-**Responsabilidade futura:** Distribuição de recompensas pela rede de indicações.
+### 12. Reward *(Placeholder)*
 
 ```
 RewardType:
@@ -320,78 +380,67 @@ RewardType:
   LOYALTY_CASHBACK
 ```
 
-Não implementar agora. Estrutura reservada.
-
 ---
 
-## Estrutura de Pastas — Financial Domain
+## Estrutura de Pastas
 
 ```
 src/domain/financial/
 │
 ├── pricing/
-│   ├── RidePricingConfig.ts       ← parâmetros de precificação
-│   ├── RidePricing.ts             ← value object (resultado)
-│   └── PricingEngine.ts           ← função pura de cálculo
+│   ├── PricingPolicy.ts           ← interface (strategy pattern)
+│   ├── policies/
+│   │   ├── DefaultPolicy.ts       ← Fase 2
+│   │   ├── AirportPolicy.ts       ← Futuro
+│   │   └── ExecutivePolicy.ts     ← Futuro
+│   ├── RidePricingConfig.ts       ← parâmetros
+│   ├── RidePricing.ts             ← value object imutável
+│   └── PricingEngine.ts           ← função pura
 │
 ├── routing/
-│   ├── RouteResult.ts             ← value object (rota)
-│   ├── RouteCalculator.ts         ← interface (port)
+│   ├── RouteResult.ts
+│   ├── RouteCalculator.ts
 │   └── adapters/
-│       ├── HaversineRouteCalculator.ts    ← Fase 2
-│       └── GoogleMapsRouteCalculator.ts   ← Futuro
+│       ├── HaversineRouteCalculator.ts
+│       └── GoogleMapsRouteCalculator.ts  ← Futuro
 │
 ├── payment/
-│   ├── PaymentProvider.ts         ← interface genérica
-│   ├── PaymentIntentService.ts    ← movido de domain/payment/
+│   ├── PaymentProvider.ts
+│   ├── PaymentIntentService.ts
 │   └── providers/
-│       ├── PixProvider.ts         ← existente
-│       └── InMemoryPixProvider.ts ← existente
+│       ├── PixProvider.ts
+│       └── InMemoryPixProvider.ts
 │
 └── settlement/
-    ├── SettlementService.ts       ← movido de domain/payment/
-    └── RevenueSplitService.ts     ← movido de domain/payment/
+    ├── SettlementService.ts
+    └── RevenueSplitService.ts
 ```
-
----
-
-## Regras de Ouro do Financial Domain
-
-1. **O frontend nunca envia `amountCents`.** O valor sempre vem do banco via `RidePricing`.
-2. **`rootDriverId` é imutável** após a criação da corrida.
-3. **`pricingVersion`** é obrigatório em todo `RidePricing` persistido.
-4. **`PricingEngine` é uma função pura.** Sem banco, sem I/O, sem side effects.
-5. **`RouteCalculator` é um port.** O adaptador pode ser trocado sem alterar o Pricing.
-6. **`PaymentProvider` é um port.** O gateway pode ser trocado sem alterar as regras de negócio.
-7. **`Settlement` é imutável** após a criação.
-8. **Todo número financeiro é em centavos inteiros** no banco. Conversão para reais ocorre apenas na camada de apresentação (DTO).
 
 ---
 
 ## Checklist de Auditoria Frontend x Backend
 
-Antes de qualquer deploy, verificar:
-
-- [ ] O frontend envia algum valor financeiro no request? → **Proibido**
+- [ ] O frontend envia algum valor financeiro? → **Proibido**
 - [ ] O frontend calcula taxa ou split? → **Proibido**
 - [ ] O frontend conhece `platformFeePercent`? → **Proibido**
-- [ ] O frontend conhece `SPLIT_BPS`? → **Proibido**
-- [ ] O frontend conhece `rootDriverId` para fins de cálculo? → **Proibido**
-- [ ] O frontend renderiza apenas valores recebidos do DTO? → **Obrigatório**
-- [ ] O DTO retornado pelo backend contém `pricingVersion`? → **Obrigatório**
-- [ ] O DTO retornado pelo backend contém `breakdown` estruturado? → **Obrigatório**
+- [ ] O frontend conhece `pricingPolicyVersion`? → **Proibido**
+- [ ] O frontend renderiza apenas valores do DTO? → **Obrigatório**
+- [ ] O DTO contém `pricingSource` e `pricingPolicyVersion`? → **Obrigatório**
+- [ ] O DTO contém `breakdown` estruturado? → **Obrigatório**
+- [ ] O `RidePricing` persiste os valores efetivos (não referências)? → **Obrigatório**
 
 ---
 
-## Próximas Fases
+## Tabela de Fases
 
-| Fase | Entregável | Impacto no Backend | Migration |
+| Fase | Entregável | Migration | Restart Backend |
 |---|---|---|---|
-| **2** | `RidePricing` + `RidePricingConfig` | Novo arquivo | Não |
-| **3** | `RouteCalculator` + `HaversineAdapter` | Novo arquivo | Não |
-| **4** | `PricingEngine` | Novo arquivo | Não |
-| **5** | Migration Prisma | Schema | **Sim** — restart obrigatório |
-| **6** | `RideController` atualizado | Controller | Restart |
-| **7** | `PaymentController` atualizado | Controller | Restart |
-| **8** | `RideQuoteDTO` | DTO | Não |
-| **9** | Frontend atualizado | Deploy Vercel | Auto |
+| **1** | Este documento | Não | Não |
+| **2** | `PricingPolicy`, `RidePricingConfig`, `RidePricing` | Não | Não |
+| **3** | `RouteCalculator`, `HaversineAdapter` | Não | Não |
+| **4** | `PricingEngine` | Não | Não |
+| **5** | Migration Prisma | **Sim** | **Sim** |
+| **6** | `RideController` atualizado | Não | **Sim** |
+| **7** | `PaymentController` atualizado | Não | **Sim** |
+| **8** | `RideQuoteDTO` | Não | **Sim** |
+| **9** | Frontend atualizado | Não | Auto (Vercel) |
