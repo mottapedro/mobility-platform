@@ -1,7 +1,7 @@
 /**
  * RidePricing — Value Object Imutável
  *
- * É o SNAPSHOT FINANCEIRO da corrida no momento em que foi calculado.
+ * Snapshot financeiro da corrida no momento em que foi calculado.
  * Persiste todos os valores efetivamente utilizados — nunca referências.
  *
  * Após calculado e persistido, NUNCA é alterado.
@@ -10,15 +10,27 @@
  * Invariante V1:
  *   driverNetAmount + platformFeeAmount === totalPassengerPrice
  *
- * (Válida para Pricing Policy V1. Futuro com descontos:
- *   totalPassengerPrice = driverNetAmount + platformFeeAmount - discounts)
- *
  * Fórmula Canônica V1:
- *   total = ((distanceKm × COE × zoneMultiplier) × (1 + networkLiquidityFactor))
- *           + platformFee
+ *   total = ((distanceKm × COE × zoneMultiplier)
+ *           × (1 + networkLiquidityFactor)) + platformFee
  */
 
+import { RouteCalculatorProvider } from '../routing/RouteResult'
 import { PricingSource } from './PricingPolicy'
+
+/** Contexto de observabilidade do cálculo — PricingTrace */
+export interface PricingTrace {
+  /** Política utilizada */
+  policyUsed: PricingSource
+  /** Versão da política vigente no momento */
+  policyVersion: string
+  /** Adaptador de rota utilizado */
+  calculatedBy: RouteCalculatorProvider
+  /** Tempo de cálculo em ms — para diagnóstico de performance */
+  calculationDurationMs: number
+  /** Timestamp da requisição original */
+  requestedAt: Date
+}
 
 export interface RidePricing {
   // ── Rota ────────────────────────────────────────────────────────────────
@@ -26,44 +38,28 @@ export interface RidePricing {
   estimatedDurationMin: number
 
   // ── Custo Operacional (COE) ─────────────────────────────────────────────
-  /** Valor do COE efetivamente aplicado no cálculo — snapshot */
   coeApplied: number
-
-  /** distanceKm × coeApplied */
   baseOperationalCost: number
 
   // ── Ajustes aplicados ───────────────────────────────────────────────────
-  /** Multiplicador de zona efetivamente aplicado */
   zoneMultiplierApplied: number
-
-  /** baseOperationalCost × zoneMultiplierApplied */
   zoneAdjustment: number
-
-  /** Fator de liquidez da rede efetivamente aplicado */
   networkLiquidityFactor: number
-
-  /** zoneAdjustment × (1 + networkLiquidityFactor) */
   networkAdjustment: number
 
   // ── Resultado financeiro ─────────────────────────────────────────────────
-  /** O que o motorista recebe. baseFare = networkAdjustment (≥ minimumFare) */
   driverNetAmount: number
-
-  /** Taxa da plataforma efetivamente aplicada */
   platformFeeAmount: number
-
-  /** Total pago pelo passageiro = driverNetAmount + platformFeeAmount */
   totalPassengerPrice: number
 
   // ── Rastreabilidade ──────────────────────────────────────────────────────
-  /** Lista de multiplicadores aplicados — ex: ["airport", "night"] */
   multipliersApplied: string[]
-
-  /** Qual política foi utilizada — ex: "AIRPORT_POLICY" */
   pricingSource: PricingSource
-
-  /** Versão da política vigente no momento do cálculo — ex: "v1" */
   pricingPolicyVersion: string
+
+  // ── Observabilidade ──────────────────────────────────────────────────────
+  /** PricingTrace — contexto completo do cálculo para auditoria */
+  pricingTrace: PricingTrace
 
   // ── Auditoria ────────────────────────────────────────────────────────────
   calculatedAt: Date
@@ -71,7 +67,10 @@ export interface RidePricing {
 
 /**
  * Valida a invariante financeira V1.
- * Lança erro se violada — nunca persiste um RidePricing inconsistente.
+ * Lança erro se violada — nunca persiste RidePricing inconsistente.
+ *
+ * V1: driverNetAmount + platformFeeAmount === totalPassengerPrice
+ * Futuro: totalPassengerPrice = driverNetAmount + platformFeeAmount - discounts
  */
 export function assertRidePricingInvariant(pricing: RidePricing): void {
   const expected = Math.round(
@@ -82,7 +81,8 @@ export function assertRidePricingInvariant(pricing: RidePricing): void {
   if (expected !== actual) {
     throw new Error(
       `[RidePricing] Invariante financeira violada: ` +
-      `driverNet(${pricing.driverNetAmount}) + platformFee(${pricing.platformFeeAmount}) ` +
+      `driverNet(${pricing.driverNetAmount}) + ` +
+      `platformFee(${pricing.platformFeeAmount}) ` +
       `= ${expected / 100} ≠ total(${pricing.totalPassengerPrice})`
     )
   }
