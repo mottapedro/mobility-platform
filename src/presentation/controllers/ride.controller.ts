@@ -4,14 +4,15 @@ import { prisma } from "../../infra/prisma/client";
 import { FEATURES } from "../../config/features";
 import { MatchRideUseCase } from "../../application/use-cases/MatchRideUseCase";
 import { PricingService } from "../../domain/pricing/services/PricingService";
+import { HaversineRouteCalculator } from "../../domain/pricing/RouteCalculator";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 import { matchingJobScheduler } from "../../infra/async/MatchingJobScheduler";
 import { RescheduleRideUseCase } from "../../application/use-cases/RescheduleRideUseCase";
 import { StartRideUseCase } from "../../application/use-cases/StartRideUseCase";
 import { CompleteRideUseCase } from "../../application/use-cases/CompleteRideUseCase";
+import type { RidePricing } from "../../domain/pricing/RidePricing";
 
-// ─── Tipo do contexto da corrida ────────────────────────────────────────────
 export interface RideContext {
   isVip?:     boolean;
   isAirport?: boolean;
@@ -31,24 +32,7 @@ function normalizeContext(raw: unknown): RideContext {
   };
 }
 
-
-// ─── Haversine distance estimator ─────────────────────────────────────────
-function haversineKm(
-  lat1: number, lng1: number,
-  lat2: number, lng2: number
-): number {
-  const R = 6371;
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-// Duration estimate: avg 30 km/h in urban traffic
-const AVG_SPEED_KMH = 30;
+const routeCalc = new HaversineRouteCalculator();
 
 export class RideController {
   async create(req: Request, res: Response) {
@@ -56,12 +40,13 @@ export class RideController {
     console.log("🔥 BODY:", req.body);
 
     try {
-      const { passengerId, origin, destination, scheduledAt, context: rawContext, candidateDriverIds,
+      const {
+        passengerId, origin, destination, scheduledAt,
+        context: rawContext, candidateDriverIds,
         originLat: rawOriginLat, originLng: rawOriginLng,
         destinationLat: rawDestLat, destinationLng: rawDestLng,
       } = req.body;
 
-      // Coordinates are mandatory for price estimation. Reject invalid input.
       if (
         typeof rawOriginLat !== "number" || typeof rawOriginLng !== "number" ||
         typeof rawDestLat !== "number" || typeof rawDestLng !== "number"
@@ -72,12 +57,6 @@ export class RideController {
         });
       }
 
-      const originLat      = rawOriginLat;
-      const originLng      = rawOriginLng;
-      const destinationLat = rawDestLat;
-      const destinationLng = rawDestLng;
-
-      // validação básica (deve vir antes do PricingService, que precisa dos endereços)
       if (!passengerId || !origin || !destination || !scheduledAt) {
         return res.status(400).json({
           error: "Missing fields",
@@ -85,7 +64,6 @@ export class RideController {
         });
       }
 
-      // valida tipos e conteúdo
       if (
         typeof passengerId !== "string" ||
         typeof origin !== "string" ||
@@ -94,8 +72,7 @@ export class RideController {
       ) {
         return res.status(400).json({
           error: "Invalid field types",
-          details:
-            "passengerId, origin, destination e scheduledAt devem ser strings",
+          details: "passengerId, origin, destination e scheduledAt devem ser strings",
         });
       }
 
@@ -103,52 +80,50 @@ export class RideController {
       const destinationTrimmed = destination.trim();
 
       if (!originTrimmed || !destinationTrimmed) {
-        return res.status(400).json({
-          error: "Origin and destination cannot be empty",
-        });
+        return res.status(400).json({ error: "Origin and destination cannot be empty" });
       }
 
       if (originTrimmed.toLowerCase() === destinationTrimmed.toLowerCase()) {
-        return res.status(400).json({
-          error: "Origin and destination must be different",
-        });
+        return res.status(400).json({ error: "Origin and destination must be different" });
       }
 
-      // ─── Distância e precificação via PricingEngine ────────────────────────
-      const distanceKm = Math.round(haversineKm(originLat, originLng, destinationLat, destinationLng) * 10) / 10;
-      const durationMin = Math.round((distanceKm / AVG_SPEED_KMH) * 60);
+      // ─── RouteCalculator → distância e duração ─────────────────────────────
+      const route = await routeCalc.calculate(
+        { lat: rawOriginLat, lng: rawOriginLng },
+        { lat: rawDestLat, lng: rawDestLng },
+      );
+      const { distanceKm, estimatedDurationMin } = route;
 
-      // Estimar preço via PricingEngine (se habilitado) com fallback para fórmula simples
-      let priceEstimated: number;
+      // ─── PricingEngine → RidePricing ────────────────────────────────────────
+      let ridePricing: RidePricing | null = null;
+
       if (FEATURES.PRICING_ENABLED) {
         try {
           const pricingService = new PricingService();
-          const pricing = await pricingService.estimate({
+          ridePricing = await pricingService.estimate({
             distanceKm,
+            estimatedDurationMin,
             originAddress: originTrimmed,
             destinationAddress: destinationTrimmed,
           });
-          priceEstimated = pricing.priceEstimated;
           console.log("💰 PricingEngine resultado", {
             distanceKm,
-            originRegion: pricing.originRegion,
-            destinationRegion: pricing.destinationRegion,
-            availableDriversInZone: pricing.availableDriversInZone,
-            breakdown: pricing.breakdown,
-            totalPrice: pricing.priceEstimated,
+            driverNetAmount: ridePricing.driverNetAmount,
+            platformFee: ridePricing.platformFee,
+            totalPassengerPrice: ridePricing.totalPassengerPrice,
+            pricingVersion: ridePricing.pricingVersion,
           });
         } catch (pricingError) {
           console.warn("⚠️ PricingEngine fallback — usando fórmula simples:", pricingError);
-          priceEstimated = Math.round((5.0 + 2.5 * distanceKm) * 100) / 100;
         }
-      } else {
-        priceEstimated = Math.round((5.0 + 2.5 * distanceKm) * 100) / 100;
       }
 
-      // normaliza context — aceita qualquer formato, nunca rejeita
+      const priceEstimated = ridePricing
+        ? ridePricing.totalPassengerPrice
+        : Math.round((5.0 + 2.5 * distanceKm) * 100) / 100;
+
       const context = normalizeContext(rawContext);
 
-      // valida passageiro
       const passengerExists = await prisma.passenger.findUnique({
         where: { id: passengerId },
         select: { id: true, rootDriverId: true, user: { select: { name: true } } },
@@ -157,18 +132,14 @@ export class RideController {
       console.log("🔥 PASSENGER:", passengerExists);
 
       if (!passengerExists) {
-        return res.status(404).json({
-          error: "Passenger not found",
-        });
+        return res.status(404).json({ error: "Passenger not found" });
       }
 
-      // O dono da demanda é o rootDriver do passageiro.
       const rootDriverId = passengerExists.rootDriverId;
-      const initialDispatchStage: "OWNER_DISPATCH" | "NETWORK_DISPATCH" = rootDriverId ? "OWNER_DISPATCH" : "NETWORK_DISPATCH";
+      const initialDispatchStage: "OWNER_DISPATCH" | "NETWORK_DISPATCH" =
+        rootDriverId ? "OWNER_DISPATCH" : "NETWORK_DISPATCH";
 
-      // valida data
       const date = new Date(scheduledAt);
-
       if (isNaN(date.getTime())) {
         return res.status(400).json({
           error: "Invalid scheduledAt",
@@ -176,16 +147,11 @@ export class RideController {
         });
       }
 
-      const now = new Date();
-
-      if (date <= now) {
-        return res.status(400).json({
-          error: "scheduledAt must be a future date",
-        });
+      if (date <= new Date()) {
+        return res.status(400).json({ error: "scheduledAt must be a future date" });
       }
 
-      // ─── FASE 3: Validação de conflito de horário ───────────────────────────
-      const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutos
+      const CONFLICT_WINDOW_MS = 30 * 60 * 1000;
       const windowStart = new Date(date.getTime() - CONFLICT_WINDOW_MS);
       const windowEnd   = new Date(date.getTime() + CONFLICT_WINDOW_MS);
 
@@ -193,13 +159,7 @@ export class RideController {
         where: {
           passengerId,
           scheduledAt: { gte: windowStart, lte: windowEnd },
-          status: {
-            in: [
-              "PENDING",
-              "ACCEPTED",
-              "IN_PROGRESS",
-            ],
-          },
+          status: { in: ["PENDING", "ACCEPTED", "IN_PROGRESS"] },
         },
       });
 
@@ -210,7 +170,6 @@ export class RideController {
           conflictingRideId: conflictingRide.id,
         });
       }
-      // ───────────────────────────────────────────────────────────────────────
 
       const safeContext: Prisma.InputJsonValue = {
         isVip:     context.isVip     ?? false,
@@ -231,27 +190,24 @@ export class RideController {
           status: "PENDING",
           currentDispatchStage: initialDispatchStage,
           distanceKm,
-          durationMin,
+          durationMin: estimatedDurationMin,
           priceEstimated,
-          originLat,
-          originLng,
-          destinationLat,
-          destinationLng,
-          rootDriverId: rootDriverId,
+          originLat: rawOriginLat,
+          originLng: rawOriginLng,
+          destinationLat: rawDestLat,
+          destinationLng: rawDestLng,
+          rootDriverId,
           context: safeContext,
+          // Pricing breakdown (null when engine disabled or errored)
+          baseFare:        ridePricing?.baseFare        ?? null,
+          platformFee:     ridePricing?.platformFee     ?? null,
+          driverNetAmount: ridePricing?.driverNetAmount ?? null,
+          pricingVersion:  ridePricing?.pricingVersion  ?? null,
         },
         include: {
-          passenger: {
-            include: {
-              user: true,
-            },
-          },
+          passenger: { include: { user: true } },
           offers: true,
-          selectedDriver: {
-            include: {
-              user: true,
-            },
-          },
+          selectedDriver: { include: { user: true } },
         },
       });
 
@@ -266,7 +222,6 @@ export class RideController {
         },
       });
 
-      // 🚀 Dispara o matching em background (não bloqueia HTTP)
       console.log("RIDE CREATED:", {
         id: ride.id,
         status: ride.status,
@@ -285,13 +240,25 @@ export class RideController {
         }
       });
 
+      // RideQuote DTO — frontend only renders this, never calculates
+      const quote = ridePricing ? {
+        baseFare:            ridePricing.baseFare,
+        driverNetAmount:     ridePricing.driverNetAmount,
+        platformFee:         ridePricing.platformFee,
+        totalPassengerPrice: ridePricing.totalPassengerPrice,
+        distanceKm:          ridePricing.distanceKm,
+        estimatedDurationMin: ridePricing.estimatedDurationMin,
+        pricingVersion:      ridePricing.pricingVersion,
+        breakdown:           ridePricing.breakdown,
+      } : null;
+
       return res.status(201).json({
         message: "Corrida criada com sucesso",
         ride,
+        quote,
       });
     } catch (error) {
       console.error("🔥 ERRO REAL:", error);
-
       return res.status(500).json({
         error: "Erro ao criar corrida",
         details: error instanceof Error ? error.message : error,
@@ -337,7 +304,6 @@ export class RideController {
 
       const referredDriverId = ride.passenger.referredByDriverId;
 
-      // Expirar offer pendente do motorista dono
       if (referredDriverId) {
         await prisma.rideOffer.updateMany({
           where: { rideRequestId: id, driverId: referredDriverId, status: "PENDING" },
@@ -345,7 +311,6 @@ export class RideController {
         });
       }
 
-      // OWNER_DISPATCH → NETWORK_DISPATCH
       await prisma.rideRequest.update({
         where: { id },
         data: { currentDispatchStage: "NETWORK_DISPATCH" },
@@ -353,7 +318,6 @@ export class RideController {
 
       console.log(`🔄 Fallback manual disparado para corrida ${id}`);
 
-      // Dispara matching geral excluindo o driver dono
       matchingJobScheduler.schedule(async () => {
         try {
           const matchRideUseCase = new MatchRideUseCase();
@@ -411,7 +375,7 @@ export class RideController {
       }
 
       const useCase = new RescheduleRideUseCase();
-      const result = await useCase.execute({
+      await useCase.execute({
         rideId: id,
         newScheduledAt: date,
         newOrigin,
@@ -465,10 +429,7 @@ export class RideController {
         },
       });
 
-      return res.status(200).json({
-        message: "Corrida iniciada com sucesso",
-        ride: updatedRide,
-      });
+      return res.status(200).json({ message: "Corrida iniciada com sucesso", ride: updatedRide });
     } catch (error) {
       console.error("🔥 ERRO START RIDE:", error);
       return res.status(500).json({
@@ -502,10 +463,7 @@ export class RideController {
         },
       });
 
-      return res.status(200).json({
-        message: "Corrida finalizada com sucesso",
-        ride: updatedRide,
-      });
+      return res.status(200).json({ message: "Corrida finalizada com sucesso", ride: updatedRide });
     } catch (error) {
       console.error("🔥 ERRO COMPLETE RIDE:", error);
       return res.status(500).json({
@@ -520,9 +478,7 @@ export class RideController {
       const { id } = req.params;
 
       if (!id || Array.isArray(id)) {
-        return res.status(400).json({
-          error: "Ride id is required",
-        });
+        return res.status(400).json({ error: "Ride id is required" });
       }
 
       console.log("🔥 BUSCANDO RIDE:", id);
@@ -530,38 +486,22 @@ export class RideController {
       const ride = await prisma.rideRequest.findUnique({
         where: { id },
         include: {
-          passenger: {
-            include: {
-              user: true,
-            },
-          },
+          passenger: { include: { user: true } },
           offers: {
             include: {
-              driver: {
-                include: {
-                  user: true,
-                },
-              },
+              driver: { include: { user: true } },
             },
           },
-          selectedDriver: {
-            include: {
-              user: true,
-            },
-          },
+          selectedDriver: { include: { user: true } },
         },
       });
 
       console.log("🔥 RIDE ENCONTRADA:", ride);
 
       if (!ride) {
-        return res.status(404).json({
-          error: "Ride not found",
-        });
+        return res.status(404).json({ error: "Ride not found" });
       }
 
-      // Map priceEstimated/priceOffered → priceBrl to match frontend Ride type.
-      // Same pattern as getDriverOffers in driver.controller.ts.
       const payload = {
         ...ride,
         priceBrl: ride.priceOffered ?? ride.priceEstimated ?? null,
@@ -570,7 +510,6 @@ export class RideController {
       return res.status(200).json(payload);
     } catch (error) {
       console.error("🔥 ERRO GET:", error);
-
       return res.status(500).json({
         error: "Erro ao buscar corrida",
         details: error instanceof Error ? error.message : error,

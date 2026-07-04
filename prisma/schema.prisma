@@ -157,6 +157,12 @@ model RideRequest {
   currentCandidateDriverId String?
   lastOfferExpiredAt       DateTime?
 
+  // Pricing breakdown — persisted by PricingEngine at ride creation
+  baseFare        Float?
+  platformFee     Float?
+  driverNetAmount Float?
+  pricingVersion  String?
+
   // V2 — payment domain (PR-2)
   paymentIntent PaymentIntent?
   settlement    Settlement?

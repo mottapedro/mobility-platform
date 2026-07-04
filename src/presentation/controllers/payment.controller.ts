@@ -25,12 +25,9 @@ function crc16(payload: string): string {
 
 function buildStaticPix(amountCents: number, txid: string): string {
   const amountBrl = (amountCents / 100).toFixed(2);
-  // txid must be alphanumeric only, max 25 chars
   const safeTxid = txid.replace(/[^A-Za-z0-9]/g, "").slice(0, 25) || "ALIADO";
-
   const mai = tlv("00", "BR.GOV.BCB.PIX") + tlv("01", PIX_KEY);
   const additionalData = tlv("05", safeTxid);
-
   const body =
     tlv("00", "01") +
     tlv("26", mai) +
@@ -42,7 +39,6 @@ function buildStaticPix(amountCents: number, txid: string): string {
     tlv("60", MERCHANT_CITY.slice(0, 15)) +
     tlv("62", additionalData) +
     "6304";
-
   return body + crc16(body);
 }
 // ──────────────────────────────────────────────────────────────────────────────
@@ -56,23 +52,39 @@ interface PaymentIntentResponseDTO {
   success: boolean;
   rideId: string;
   intentId: string;
+  externalId: string;
   totalPrice: number;
+  amount: number;
   qrCode: string;
   breakdown: BreakdownItem[];
-  amount: number; // alias em BRL para compatibilidade com o frontend
 }
 
 export class PaymentController {
   async createIntent(req: Request, res: Response) {
     try {
       const rideId = String(req.params.id);
-      const amountCents = Number(req.body?.amountCents);
 
-      if (!Number.isInteger(amountCents) || amountCents <= 0) {
-        return res.status(400).json({ error: "amountCents must be a positive integer" });
+      // ── Preço vem do banco (autoritativo) — nunca do body ───────────────────
+      const ride = await prisma.rideRequest.findUnique({
+        where: { id: rideId },
+        select: { id: true, priceOffered: true, priceEstimated: true },
+      });
+
+      if (!ride) {
+        return res.status(404).json({ error: `RideRequest ${rideId} not found` });
       }
 
-      // ── Verificar/criar PaymentIntent no banco ───────────────────────────
+      const priceBrl = ride.priceOffered ?? ride.priceEstimated;
+      if (!priceBrl || priceBrl <= 0) {
+        return res.status(422).json({
+          error: "Ride has no computed price. PricingEngine must run at ride creation.",
+          code: "MISSING_PRICE",
+        });
+      }
+
+      const amountCents = Math.round(priceBrl * 100);
+
+      // ── Verificar/criar PaymentIntent no banco ────────────────────────────
       let intent = await prisma.paymentIntent.findUnique({
         where: { rideRequestId: rideId },
       });
@@ -80,13 +92,6 @@ export class PaymentController {
       const needsQr = !intent || !intent.qrCode || intent.qrCode.includes("qr-code.picpay.com");
 
       if (!intent) {
-        const ride = await prisma.rideRequest.findUnique({
-          where: { id: rideId },
-          select: { id: true },
-        });
-        if (!ride) {
-          return res.status(404).json({ error: `RideRequest ${rideId} not found` });
-        }
         intent = await prisma.paymentIntent.create({
           data: { rideRequestId: rideId, amountCents },
         });
@@ -102,26 +107,39 @@ export class PaymentController {
         });
       }
 
-      // ── Breakdown financeiro ─────────────────────────────────────────────
-      const platformFee = Number(
-        parseFloat(process.env.PLATFORM_FEE_VALIDATION ?? "2.50").toFixed(2)
-      );
+      // ── Breakdown financeiro (lido dos campos persistidos) ─────────────────
+      const rideWithPricing = await prisma.rideRequest.findUnique({
+        where: { id: rideId },
+        select: { driverNetAmount: true, platformFee: true },
+      });
+
       const totalPrice = Number((amountCents / 100).toFixed(2));
-      const driverAmount = Number(Math.max(0, totalPrice - platformFee).toFixed(2));
 
-      const breakdown: BreakdownItem[] = [
-        { label: "Serviço de Transporte", value: driverAmount },
-        { label: "Taxa Cyborg",           value: platformFee  },
-      ];
+      let breakdown: BreakdownItem[];
+      if (rideWithPricing?.driverNetAmount != null && rideWithPricing?.platformFee != null) {
+        breakdown = [
+          { label: "Serviço de Transporte", value: rideWithPricing.driverNetAmount },
+          { label: "Taxa Cyborg",           value: rideWithPricing.platformFee },
+        ];
+      } else {
+        // Fallback para corridas sem breakdown persistido (pre-PricingEngine)
+        const platformFee = Number(parseFloat(process.env.PLATFORM_FEE_VALIDATION ?? "2.50").toFixed(2));
+        const driverAmount = Number(Math.max(0, totalPrice - platformFee).toFixed(2));
+        breakdown = [
+          { label: "Serviço de Transporte", value: driverAmount },
+          { label: "Taxa Cyborg",           value: platformFee },
+        ];
+      }
 
-      console.log(`[INLINE PIX] Intent gerada para corrida ${rideId}. Total: R$ ${totalPrice} | Motorista: R$ ${driverAmount} | Taxa: R$ ${platformFee}`);
+      console.log(`[INLINE PIX] Intent para corrida ${rideId}. Total: R$ ${totalPrice}`);
 
       const responseBody: PaymentIntentResponseDTO = {
         success:    true,
         rideId,
         intentId:   intent.id,
+        externalId: intent.externalId ?? `static_pix_${intent.id}`,
         totalPrice,
-        amount:     totalPrice, // campo que o PixModal lê como displayAmount
+        amount:     totalPrice,
         qrCode:     intent.qrCode ?? "",
         breakdown,
       };
