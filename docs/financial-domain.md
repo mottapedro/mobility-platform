@@ -1,7 +1,7 @@
 # Financial Domain — Aliado Nacional
 ## Documento de Contratos Arquiteturais
 
-> **Versão:** 1.1  
+> **Versão:** 1.2  
 > **Status:** Aprovado para implementação  
 
 ---
@@ -13,38 +13,119 @@
 > O frontend apenas apresenta os dados produzidos por ele.
 > Gateways de pagamento apenas executam transações.
 
-Este princípio é a referência definitiva sempre que houver dúvida sobre onde implementar uma regra financeira.
+---
+
+## Modelo Econômico do ALIADO
+
+O ALIADO não usa precificação orientada a oferta e demanda.
+
+**A maioria das plataformas:**
+```
+Oferta e demanda → Preço → Motorista recebe o restante
+```
+
+**O ALIADO:**
+```
+Custo operacional do motorista
+  ↓
+Preço mínimo sustentável
+  ↓
+Ajuste de zona operacional
+  ↓
+Fator de liquidez da rede
+  ↓
+Taxa da plataforma
+  ↓
+Preço final ao passageiro
+```
+
+> O motorista é o ativo estratégico da plataforma. O pricing nasce do seu custo, não do mercado.
+
+---
+
+## Fórmula Canônica V1
+
+```
+Total = ((distanceKm × COE × zoneMultiplier) × (1 + networkLiquidityFactor)) + platformFee
+```
+
+| Componente | Descrição |
+|---|---|
+| `COE` | Custo Operacional por Km — patrimônio intelectual da Cyborg |
+| `zoneMultiplier` | Política operacional por zona (não surge/dinâmica) |
+| `networkLiquidityFactor` | Disponibilidade da rede — maior escassez = maior fator |
+| `platformFee` | Taxa fixa da plataforma — transparente ao passageiro |
+
+---
+
+## Pipeline do PricingEngine
+
+Cada responsabilidade isolada em sua própria etapa:
+
+```
+RouteCalculator
+  ↓ distanceKm, estimatedDurationMin
+OperationalCostCalculator
+  ↓ driverOperationalCost (COE × distance)
+ZonePolicy
+  ↓ zoneAdjustment (operationalCost × zoneMultiplier)
+NetworkPolicy
+  ↓ networkAdjustment (zoneAdjustment × (1 + networkLiquidityFactor))
+PlatformPolicy
+  ↓ platformFee (fixo)
+PricingEngine (orquestrador)
+  ↓
+RidePricing (snapshot imutável)
+```
+
+O `PricingEngine` orquestra — nunca contém `if` de política.
+Novas políticas = novas implementações. Engine nunca muda.
+
+---
+
+## COE — Custo Operacional por Km
+
+O COE é o verdadeiro patrimônio intelectual da Cyborg.
+
+Responde: *Quanto custa operar um veículo executivo por quilômetro?*
+
+**Hoje:** valor configurado em `RidePricingConfig`.
+
+**Futuro — DriverOperationalProfile:**
+```
+combustível + pneus + óleo + seguro + IPVA
++ manutenção + depreciação + lavagem
++ tempo parado + retorno vazio
+  ↓
+OperationalCostEngine
+  ↓
+COE personalizado por motorista
+```
+
+A arquitetura atual deve permitir essa evolução sem refatoração estrutural.
 
 ---
 
 ## Princípio do Snapshot Financeiro
 
-> Todo `RidePricing` representa um snapshot financeiro da corrida no momento em que foi calculado.
-> Ele não depende de configurações atuais — persiste todos os valores efetivamente utilizados no cálculo.
+> Todo `RidePricing` é um snapshot financeiro imutável da corrida no momento em que foi calculado.
+> Ele não referencia configurações externas — persiste todos os valores efetivamente utilizados.
 
 **Exemplo:**
 
-| Momento | Platform Fee | O que o RidePricing mostra |
+| Momento | Platform Fee config | O que o RidePricing mostra |
 |---|---|---|
-| Corrida realizada hoje | 15% | **15%** para sempre |
-| Configuração global daqui a 1 ano | 18% | irrelevante para esta corrida |
-
-O `RidePricing` nunca armazena referências para buscar valores depois. Armazena os valores.
+| Corrida realizada hoje | 15% | **15% para sempre** |
+| Config daqui a 1 ano | 18% | irrelevante para esta corrida |
 
 ---
 
-## Versionamento da Política de Precificação
+## Versionamento da Política
 
-Todo `RidePricing` carrega dois campos de rastreabilidade:
-
-| Campo | O que responde | Exemplo |
+| Campo | Responde | Exemplo |
 |---|---|---|
 | `pricingSource` | qual política foi utilizada | `EXECUTIVE_POLICY` |
-| `pricingPolicyVersion` | qual versão da política estava vigente | `"v2"` |
-
-Isso permite responder: *"Com qual política e qual versão desta política esta corrida foi calculada?"*
-
-Essencial para auditoria financeira de corridas históricas quando políticas evoluem.
+| `pricingPolicyVersion` | qual versão estava vigente | `"v2"` |
 
 ---
 
@@ -54,71 +135,30 @@ Essencial para auditoria financeira de corridas históricas quando políticas ev
 totalPassengerPrice = driverNetAmount + platformFeeAmount
 ```
 
-**Esta invariante é válida para a Pricing Policy V1.**
+Válida para Pricing Policy V1.
 
-Futuramente, políticas com desconto, cashback ou subsídio utilizarão:
-
+**Futuro (com descontos):**
 ```
 totalPassengerPrice = driverNetAmount + platformFeeAmount - discounts
 ```
-
-A invariante não é universal — é da política vigente. O `pricingPolicyVersion` identifica qual se aplica.
-
----
-
-## Visão Geral
-
-O Financial Domain substitui e expande o atual `domain/payment/`. É responsável por **toda inteligência financeira da operação**.
-
-### Fluxo Canônico
-
-```
-RideRequest
-  ↓
-PricingPolicy            ← seleciona qual estratégia se aplica
-  ↓
-RidePricingConfig        ← parâmetros daquela política
-  ↓
-RouteCalculator          ← calcula distância e duração (plugável)
-  ↓
-RouteResult              ← value object: distanceKm + estimatedDurationMin
-  ↓
-PricingEngine            ← função pura: aplica política + rota → RidePricing
-  ↓
-RidePricing              ← snapshot financeiro imutável da corrida
-  ↓
-RideRequest (persiste)   ← priceEstimated, pricingVersion, rootDriverId
-  ↓
-PaymentIntent            ← amountCents vem de RidePricing, nunca do cliente
-  ↓
-SettlementService        ← Settlement + RevenueSplit
-  ↓
-DomainEvents             ← RIDE_SETTLED, REWARD_DISTRIBUTED
-```
-
-### Regra fundamental
-
-> O frontend **nunca** envia `amountCents`.  
-> O frontend **nunca** conhece percentuais, taxas ou regras de split.  
-> O frontend recebe um `RideQuoteDTO` e renderiza.
 
 ---
 
 ## Ownership da Demanda
 
-Toda entidade financeira deve conseguir responder: **quem é o driver raiz responsável pela origem desta demanda?**
+Toda entidade financeira deve responder: **quem é o driver raiz desta demanda?**
 
 ```
 Passenger.rootDriverId
   ↓
-RideRequest.rootDriverId    ← congelado no momento da criação
+RideRequest.rootDriverId    ← congelado na criação
   ↓
-Settlement.rootDriverId     ← propagado do RideRequest
+Settlement.rootDriverId     ← propagado
   ↓
-RevenueSplit (ROOT_DRIVER)  ← 5% para o driver raiz
+RevenueSplit (ROOT_DRIVER)  ← 5%
 ```
 
-**Regra:** `rootDriverId` é imutável após a criação da corrida. Mesmo que a rede evolua depois, o histórico financeiro preserva a genealogia operacional do momento da oferta.
+`rootDriverId` é imutável após a criação da corrida.
 
 ---
 
@@ -128,65 +168,73 @@ RevenueSplit (ROOT_DRIVER)  ← 5% para o driver raiz
 
 ### 1. PricingPolicy
 
-**Tipo:** Interface (Strategy Pattern)  
-**Localização:** `src/domain/financial/pricing/PricingPolicy.ts`  
-**Responsabilidade:** Representar a **estratégia de negócio** de precificação. Decide qual `RidePricingConfig` aplicar e quais multiplicadores são relevantes para um dado contexto.
+**Tipo:** Interface (Strategy Pattern)
+**Localização:** `src/domain/financial/pricing/PricingPolicy.ts`
+**Responsabilidade:** Estratégia de negócio — decide qual `RidePricingConfig` aplicar.
 
 ```typescript
 interface PricingPolicy {
   name: string;
-  version: string;                            // pricingPolicyVersion
-  source: PricingSource;                      // pricingSource
+  version: string;
+  source: PricingSource;
   getConfig(context: RideContext): RidePricingConfig;
   appliesTo(context: RideContext): boolean;
 }
 ```
 
-**Hierarquia de políticas:**
-
+**Hierarquia:**
 ```
 PricingPolicy (interface)
-  ├── DefaultPolicy          ← Fase 2 (v1)
-  ├── AirportPolicy          ← Fase futura
-  ├── ExecutivePolicy        ← Fase futura
-  ├── HourlyPolicy           ← Fase futura
-  ├── CorporatePolicy        ← Fase futura
-  └── PromotionalPolicy      ← Fase futura
+  ├── DefaultPolicy          ← Fase 2
+  ├── AirportPolicy          ← Futuro
+  ├── ExecutivePolicy        ← Futuro
+  ├── HourlyPolicy           ← Futuro
+  ├── CorporatePolicy        ← Futuro
+  └── PromotionalPolicy      ← Futuro
 ```
-
-O `PricingEngine` nunca muda. Novas políticas são novas implementações da interface.
 
 ---
 
 ### 2. RidePricingConfig
 
-**Tipo:** Configuration Object  
-**Localização:** `src/domain/financial/pricing/RidePricingConfig.ts`  
-**Responsabilidade:** Centralizar os **parâmetros** de uma política. Nunca hardcoded nos serviços.
+**Tipo:** Configuration Object
+**Localização:** `src/domain/financial/pricing/RidePricingConfig.ts`
 
 ```typescript
 interface RidePricingConfig {
-  baseCostPerKm: number;          // ex: 2.50 (R$/km)
-  baseCostPerMinute: number;      // ex: 0.35 (R$/min)
-  minimumFare: number;            // ex: 12.00 (R$)
-  platformFeePercent: number;     // ex: 0.15 (15%)
-  airportMultiplier: number;      // ex: 1.25
-  vipMultiplier: number;          // ex: 1.30
-  nightMultiplier: number;        // ex: 1.15
-  executiveMultiplier: number;    // ex: 1.40
+  // Custo operacional
+  coePerKm: number;               // Custo Operacional/km (COE)
+  coePerMinute: number;           // Custo Operacional/min
+  minimumFare: number;            // Tarifa mínima
+
+  // Taxa da plataforma
+  platformFeeFixed: number;       // Taxa fixa (R$)
+  platformFeePercent?: number;    // Taxa percentual (opcional futuro)
+
+  // Multiplicadores de zona
+  zoneMultipliers: {
+    urban: number;                // ex: 1.0
+    mountain: number;             // ex: 1.4
+    countryside: number;          // ex: 1.7
+    intermunicipal: number;       // ex: 2.0
+    airport: number;              // ex: 1.2
+    emptyReturn: number;          // ex: 1.5
+  };
+
+  // Fator de liquidez da rede
+  networkLiquidityFactor: number; // ex: 0.10 (10%)
+
+  // Versionamento
   pricingVersion: string;         // ex: "v1"
 }
 ```
-
-**Evolução futura:** Migrar para tabela `pricing_configurations` com vigência por data.
 
 ---
 
 ### 3. RouteResult
 
-**Tipo:** Value Object  
-**Localização:** `src/domain/financial/routing/RouteResult.ts`  
-**Responsabilidade:** Transportar o resultado do cálculo de rota. Imutável.
+**Tipo:** Value Object
+**Localização:** `src/domain/financial/routing/RouteResult.ts`
 
 ```typescript
 interface RouteResult {
@@ -200,9 +248,8 @@ interface RouteResult {
 
 ### 4. RouteCalculator
 
-**Tipo:** Port (Interface)  
-**Localização:** `src/domain/financial/routing/RouteCalculator.ts`  
-**Responsabilidade:** Contrato para cálculo de rota. Plugável — trocar o provedor não altera o Pricing.
+**Tipo:** Port (Interface)
+**Localização:** `src/domain/financial/routing/RouteCalculator.ts`
 
 ```typescript
 interface RouteCalculator {
@@ -215,21 +262,17 @@ interface RouteCalculator {
 }
 ```
 
-**Adaptadores:**
-
 | Adaptador | Status |
 |---|---|
 | `HaversineRouteCalculator` | ✅ Fase 3 |
 | `GoogleMapsRouteCalculator` | 🔜 Futuro |
-| `MapboxRouteCalculator` | 🔜 Futuro |
 
 ---
 
 ### 5. RidePricing
 
-**Tipo:** Value Object — **Imutável**  
-**Localização:** `src/domain/financial/pricing/RidePricing.ts`  
-**Responsabilidade:** Snapshot financeiro definitivo da corrida. Persiste todos os valores efetivamente utilizados — nunca referências.
+**Tipo:** Value Object — **Imutável**
+**Localização:** `src/domain/financial/pricing/RidePricing.ts`
 
 ```typescript
 interface RidePricing {
@@ -237,70 +280,69 @@ interface RidePricing {
   distanceKm: number;
   estimatedDurationMin: number;
 
-  // Composição do preço
-  baseFare: number;
-  platformFeePercent: number;       // valor efetivo no momento do cálculo
-  platformFeeAmount: number;
-  driverNetAmount: number;
-  totalPassengerPrice: number;
+  // Custo operacional (COE)
+  coeApplied: number;             // valor do COE efetivo
+  baseOperationalCost: number;    // distanceKm × COE
 
-  // Multiplicadores efetivamente aplicados
-  multipliersApplied: string[];     // ex: ["airport", "night"]
+  // Ajustes aplicados
+  zoneMultiplierApplied: number;
+  zoneAdjustment: number;         // após multiplicador de zona
+  networkLiquidityFactor: number;
+  networkAdjustment: number;      // após fator de rede
 
-  // Rastreabilidade
-  pricingSource: PricingSource;     // ex: "EXECUTIVE_POLICY"
-  pricingPolicyVersion: string;     // ex: "v2"
+  // Resultado financeiro
+  driverNetAmount: number;        // o que o motorista recebe
+  platformFeeAmount: number;      // taxa da plataforma
+  totalPassengerPrice: number;    // total pago pelo passageiro
+
+  // Multiplicadores e políticas aplicadas
+  multipliersApplied: string[];
+  pricingSource: PricingSource;
+  pricingPolicyVersion: string;
+
+  // Auditoria
   calculatedAt: Date;
 }
-
-// Invariante V1:
-// driverNetAmount + platformFeeAmount === totalPassengerPrice
 ```
 
-**Imutabilidade:** após persistido, nunca alterado. Mudança de preço gera novo `RidePricing`.
+**Invariante V1:** `driverNetAmount + platformFeeAmount === totalPassengerPrice`
 
 ---
 
 ### 6. PricingEngine
 
-**Tipo:** Domain Service — Função Pura  
-**Localização:** `src/domain/financial/pricing/PricingEngine.ts`  
-**Responsabilidade:** Coração do Financial Domain. Aplica `PricingPolicy` + `RouteResult` + `RideContext` e produz `RidePricing`.
+**Tipo:** Domain Service — Função Pura
+**Localização:** `src/domain/financial/pricing/PricingEngine.ts`
+**Responsabilidade:** Orquestra o pipeline e produz `RidePricing`.
 
-**Entradas:**
-- `RouteResult`
-- `PricingPolicy`
-- `RideContext`
-
-**Saída:** `RidePricing`
+**Pipeline interno:**
+```
+1. OperationalCostCalculator  → baseOperationalCost = distanceKm × COE
+2. ZonePolicy                 → zoneAdjustment = baseOperationalCost × zoneMultiplier
+3. NetworkPolicy              → networkAdjustment = zoneAdjustment × (1 + networkLiquidityFactor)
+4. PlatformPolicy             → platformFee = fixo
+5. Composição final           → RidePricing
+```
 
 **Regras:**
-- Função pura — sem side effects, sem I/O
-- Determinística — mesma entrada → mesma saída
+- Função pura — sem I/O, sem side effects
+- Determinística
 - Testável isoladamente
 - Respeita `minimumFare`
-- Registra todos os multiplicadores em `multipliersApplied`
-- Persiste `platformFeePercent` efetivo no `RidePricing`
 
 ---
 
 ### 7. PaymentProvider
 
-**Tipo:** Port (Interface genérica)  
+**Tipo:** Port (Interface genérica)
 **Localização:** `src/domain/financial/payment/PaymentProvider.ts`
 
 ```
-PaymentProvider (interface)
-  ↓
-PixProvider              ← especialização PIX (existente)
-  ↓
-InMemoryPixProvider      ← adaptador de teste (existente)
-
-(futuro)
-PicPayProvider
-MercadoPagoProvider
-PagSeguroProvider
-PagarMeProvider
+PaymentProvider
+  ├── PixProvider (existente)
+  │     └── InMemoryPixProvider (existente)
+  ├── PicPayProvider (futuro)
+  └── MercadoPagoProvider (futuro)
 ```
 
 ---
@@ -313,21 +355,17 @@ Mantém lógica atual. Passa a receber `rootDriverId` do `RideRequest`.
 
 ### 9. RevenueSplitService *(existente)*
 
-**Regra V1:**
-
-| Beneficiário | BPS | Percentual |
+| Beneficiário | BPS | % |
 |---|---|---|
 | Driver | 8000 | 80% |
 | Platform | 1500 | 15% |
 | Root Driver | 500 | 5% |
 
-Quando `rootDriverId === null`: 5% sobem para Platform.
-
 ---
 
 ### 10. RideQuoteDTO
 
-**Tipo:** DTO de resposta da API  
+**Tipo:** DTO de resposta da API
 **Localização:** `src/presentation/dtos/RideQuoteDTO.ts`
 
 ```typescript
@@ -337,9 +375,9 @@ interface RideQuoteDTO {
   pricingPolicyVersion: string;
 
   breakdown: {
-    baseFare: number;               // "Serviço de Transporte"
-    platformFee: number;            // "Taxa Cyborg"
-    total: number;                  // "Aliado Mobilidade"
+    baseFare: number;             // "Serviço de Transporte"
+    platformFee: number;          // "Taxa Cyborg"
+    total: number;                // "Aliado Mobilidade"
   };
 
   distanceKm: number;
@@ -347,7 +385,7 @@ interface RideQuoteDTO {
   multipliersApplied: string[];
   validUntil: string;
 
-  // Espaço para evolução futura
+  // Evolução futura
   discount?: number;
   couponCode?: string;
   notes?: string;
@@ -359,14 +397,8 @@ interface RideQuoteDTO {
 ### 11. Ledger *(Placeholder)*
 
 ```
-LedgerEntryType:
-  PAYMENT_RECEIVED
-  DRIVER_PAYOUT_SCHEDULED
-  DRIVER_PAYOUT_SETTLED
-  PLATFORM_FEE_COLLECTED
-  REFUND_ISSUED
-  CANCELLATION_FEE
-  RECONCILIATION_ENTRY
+PAYMENT_RECEIVED | DRIVER_PAYOUT_SCHEDULED | DRIVER_PAYOUT_SETTLED
+PLATFORM_FEE_COLLECTED | REFUND_ISSUED | RECONCILIATION_ENTRY
 ```
 
 ---
@@ -374,10 +406,7 @@ LedgerEntryType:
 ### 12. Reward *(Placeholder)*
 
 ```
-RewardType:
-  NETWORK_RIDE_COMMISSION
-  REFERRAL_BONUS
-  LOYALTY_CASHBACK
+NETWORK_RIDE_COMMISSION | REFERRAL_BONUS | LOYALTY_CASHBACK
 ```
 
 ---
@@ -388,14 +417,14 @@ RewardType:
 src/domain/financial/
 │
 ├── pricing/
-│   ├── PricingPolicy.ts           ← interface (strategy pattern)
+│   ├── PricingPolicy.ts
 │   ├── policies/
 │   │   ├── DefaultPolicy.ts       ← Fase 2
 │   │   ├── AirportPolicy.ts       ← Futuro
 │   │   └── ExecutivePolicy.ts     ← Futuro
-│   ├── RidePricingConfig.ts       ← parâmetros
-│   ├── RidePricing.ts             ← value object imutável
-│   └── PricingEngine.ts           ← função pura
+│   ├── RidePricingConfig.ts
+│   ├── RidePricing.ts
+│   └── PricingEngine.ts
 │
 ├── routing/
 │   ├── RouteResult.ts
@@ -421,13 +450,13 @@ src/domain/financial/
 ## Checklist de Auditoria Frontend x Backend
 
 - [ ] O frontend envia algum valor financeiro? → **Proibido**
-- [ ] O frontend calcula taxa ou split? → **Proibido**
+- [ ] O frontend calcula COE, zona ou liquidez? → **Proibido**
 - [ ] O frontend conhece `platformFeePercent`? → **Proibido**
-- [ ] O frontend conhece `pricingPolicyVersion`? → **Proibido**
 - [ ] O frontend renderiza apenas valores do DTO? → **Obrigatório**
 - [ ] O DTO contém `pricingSource` e `pricingPolicyVersion`? → **Obrigatório**
 - [ ] O DTO contém `breakdown` estruturado? → **Obrigatório**
 - [ ] O `RidePricing` persiste os valores efetivos (não referências)? → **Obrigatório**
+- [ ] O `COE` aplicado está salvo no snapshot? → **Obrigatório**
 
 ---
 
@@ -438,7 +467,7 @@ src/domain/financial/
 | **1** | Este documento | Não | Não |
 | **2** | `PricingPolicy`, `RidePricingConfig`, `RidePricing` | Não | Não |
 | **3** | `RouteCalculator`, `HaversineAdapter` | Não | Não |
-| **4** | `PricingEngine` | Não | Não |
+| **4** | `PricingEngine` + `OperationalCostCalculator` + policies | Não | Não |
 | **5** | Migration Prisma | **Sim** | **Sim** |
 | **6** | `RideController` atualizado | Não | **Sim** |
 | **7** | `PaymentController` atualizado | Não | **Sim** |
