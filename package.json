@@ -22,6 +22,7 @@
     "postinstall": "prisma generate",
     "test": "jest --runInBand --forceExit",
     "test:contracts": "jest --runInBand --forceExit --testPathPatterns=tests/contracts/",
+    "test:smoke": "jest --runInBand --forceExit --testPathPatterns=e2e/smoke/",
     "test:e2e": "playwright test --config playwright.config.ts"
   },
   "keywords": [],
