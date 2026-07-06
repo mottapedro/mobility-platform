@@ -163,6 +163,17 @@ model RideRequest {
   driverNetAmount Float?
   pricingVersion  String?
 
+
+  // Trip Execution Domain — timestamps de micro-estados (Fase 4)
+  // ADD ONLY — nunca remover após persistido.
+  // Corridas anteriores ficam com todos os campos NULL (sem efeito).
+  navigationStartedAt  DateTime?  // driver iniciou navegação ao passageiro
+  pickupArrivedAt      DateTime?  // driver chegou ao local de embarque
+  boardingAt           DateTime?  // passageiro confirmou embarque
+  tripStartedAt        DateTime?  // viagem iniciada (driver → destino)
+  destinationArrivedAt DateTime?  // driver chegou ao destino
+  completedAt          DateTime?  // viagem encerrada
+
   // V2 — payment domain (PR-2)
   paymentIntent PaymentIntent?
   settlement    Settlement?
@@ -504,3 +515,4 @@ model Invite {
   @@index([ownerActorType, ownerId])
   @@index([expectedFlowType])
 }
+
