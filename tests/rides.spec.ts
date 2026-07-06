@@ -26,6 +26,8 @@ describe("POST /rides", () => {
         origin: "Barra",
         destination: "Centro",
         scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
+        originLat: -22.9068, originLng: -43.1729,
+        destinationLat: -22.8833, destinationLng: -43.1072,
         context: {
           vip: true,
           airport: false,

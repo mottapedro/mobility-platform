@@ -447,7 +447,7 @@ model Settlement {
   driverCents     Int
   platformCents   Int
   rootDriverCents Int
-  rootDriverId    String
+  rootDriverId    String?
   settledAt       DateTime @default(now())
 
   paymentIntent PaymentIntent  @relation(fields: [paymentIntentId], references: [id])

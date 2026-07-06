@@ -180,13 +180,16 @@ describe("PaymentIntentService.handlePixWebhook", () => {
       DomainEventType.REWARD_DISTRIBUTED,
     ]);
 
+    // Model B: payment status lives in PaymentIntent, ride stays COMPLETED
     const updatedRide = await prisma.rideRequest.findUnique({ where: { id: ride.id } });
-    expect(updatedRide?.status).toBe(RideStatus.PAID);
+    expect(updatedRide?.status).toBe(RideStatus.COMPLETED);
+    const finalIntent = await prisma.paymentIntent.findUnique({ where: { rideRequestId: ride.id } });
+    expect(finalIntent?.status).toBe(PaymentStatus.CONFIRMED);
   });
 
   it("is idempotent on duplicate CONFIRMED webhooks — only one Settlement", async () => {
     const driver = await makeDriver("wh.idem.driver@test.com");
-    const passenger = await makePassenger("wh.idem.passenger@test.com", null);
+    const passenger = await makePassenger("wh.idem.passenger@test.com", driver.id);
     const ride = await makeRide(passenger.id, driver.id);
 
     const provider = new InMemoryPixProvider();
