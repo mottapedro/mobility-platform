@@ -4,6 +4,7 @@ import { getDriverNetworkSnapshot } from "../../domain/services/DriverReferralSe
 import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
 import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
 import { listDriverSkills } from "../../domain/skills/DriverSkillService";
+import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwnershipService";
 import { ReferralFlowType } from "../../shared/enums";
 
 export class DriverController {
@@ -117,8 +118,15 @@ export class DriverController {
         return res.status(404).json({ error: "Driver não encontrado ou inativo" });
       }
 
-      const network = await getDriverNetworkSnapshot(driverId);
-      return res.status(200).json(network);
+      const [network, ownership] = await Promise.all([
+        getDriverNetworkSnapshot(driverId),
+        getOwnershipMetrics(driverId).catch(() => null),
+      ]);
+      return res.status(200).json({
+        ...network,
+        ridesCompleted: ownership?.completedRidesAttributedToTree ?? 0,
+        estimatedRevenue: ownership ? ownership.settledRevenueShareCents / 100 : 0,
+      });
     } catch (error) {
       console.error("Erro ao carregar rede do driver:", error);
       return res.status(500).json({

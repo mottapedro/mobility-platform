@@ -50,13 +50,19 @@ export class ProcessRideSettlementUseCase {
       });
       if (existing) return existing;
 
-      // Buscar PaymentIntent para vincular (obrigatório pelo schema)
-      const paymentIntent = await tx.paymentIntent.findUnique({
+      // Buscar PaymentIntent para vincular; se não houver (corrida sem PIX / pagamento
+      // em dinheiro), cria um intent sintético CONFIRMED para satisfazer o schema.
+      const existingIntent = await tx.paymentIntent.findUnique({
         where: { rideRequestId: rideId },
       });
-      if (!paymentIntent) {
-        throw new Error(`PaymentIntent not found for ride ${rideId}`);
-      }
+      const paymentIntent = existingIntent ?? await tx.paymentIntent.create({
+        data: {
+          rideRequestId: rideId,
+          amountCents: grossCents,
+          status: "CONFIRMED",
+          confirmedAt: new Date(),
+        },
+      });
 
       // Criar Settlement (Invariantes 1 e 2: entidade única, imutável)
       const s = await tx.settlement.create({
