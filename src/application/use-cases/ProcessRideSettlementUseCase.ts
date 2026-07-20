@@ -38,8 +38,8 @@ export class ProcessRideSettlementUseCase {
     }
 
     const grossCents = Math.round(grossReais * 100);
-    const platformCents = Math.round(grossCents * 0.10); // 10%
-    const driverCents = grossCents - platformCents; // 90%
+    const platformCents = 250; // R$2,50 fixo — taxa Cyborg Tecnologia
+    const driverCents = grossCents - platformCents;
     const rootDriverCents = 0; // Root driver não recebe split direto nesta fase
 
     // 3. Transação atômica: Settlement + RevenueSplits (Invariantes 1, 2, 4)
@@ -84,14 +84,14 @@ export class ProcessRideSettlementUseCase {
             settlementId: s.id,
             beneficiaryType: "PLATFORM",
             amountCents: platformCents,
-            percentBps: 1000, // 10.00%
+            percentBps: Math.round((platformCents / grossCents) * 10000),
           },
           {
             settlementId: s.id,
             beneficiaryType: "DRIVER",
             beneficiaryDriverId: ride.selectedDriverId,
             amountCents: driverCents,
-            percentBps: 9000, // 90.00%
+            percentBps: Math.round((driverCents / grossCents) * 10000),
           },
         ],
       });

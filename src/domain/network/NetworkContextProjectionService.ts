@@ -524,11 +524,23 @@ export async function buildNetworkContextForPassenger(
     }
   }
 
-  // Parallel: ancestors, lateral, ownership
-  const [ancestors, lateral, ownership] = await Promise.all([
+  // Parallel: ancestors, lateral, passenger's own P2P referral counts
+  // NOTE: do NOT use getOwnershipMetrics(rootDriverId) here — that returns the
+  // root driver's full-network revenue, not this passenger's cashback.
+  // Cashback rule: only rides from passengers this passenger directly/indirectly
+  // referred (P2P sub-tree). Rate not yet defined → estimatedRevenue always 0.
+  const [ancestors, lateral, p2pReferralCount, p2pRideCount] = await Promise.all([
     walkAncestors(ActorType.PASSENGER, actorId, db),
     buildLateral(ActorType.PASSENGER, actorId, db),
-    getOwnershipMetrics(rootDriverId, {}, db),
+    // Count passengers referred by this passenger (level 1 only for now)
+    db.passenger.count({ where: { referredByPassengerId: actorId } }),
+    // Count completed rides taken by passengers this passenger referred
+    db.rideRequest.count({
+      where: {
+        status: RideStatus.COMPLETED,
+        passenger: { referredByPassengerId: actorId },
+      },
+    }),
   ]);
 
   const genealogy: Genealogy = {
@@ -540,14 +552,14 @@ export async function buildNetworkContextForPassenger(
   };
 
   const networkMetrics = {
-    totalActors: ownership.totalDriversInTree + ownership.totalPassengersInTree,
-    activeCount: ownership.totalDriversInTree,
+    totalActors: p2pReferralCount,
+    activeCount: 0,
     depth: ancestors.length,
-    ridesFromNetwork: ownership.completedRidesAttributedToTree,
-    estimatedRevenue: ownership.settledRevenueShareCents / 100,
+    ridesFromNetwork: p2pRideCount,
+    estimatedRevenue: 0, // Cashback rate not yet defined
     growth: {
-      last7Days: ownership.growthLast7Days,
-      last30Days: ownership.growthLast30Days,
+      last7Days: 0,
+      last30Days: 0,
     },
   };
 
