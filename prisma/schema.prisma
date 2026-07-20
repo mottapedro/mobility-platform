@@ -51,6 +51,7 @@ model Driver {
   rootRelationships      ReferralRelationship[] @relation("RootDriver")
   skills                 DriverSkill[]
   operationalZones       DriverOperationalZone[]
+  locationPings          DriverLocationPing[]
 }
 
 model Passenger {
@@ -157,10 +158,15 @@ model RideRequest {
   currentCandidateDriverId String?
   lastOfferExpiredAt       DateTime?
 
-  // Pricing breakdown — persisted by PricingEngine at ride creation
-  baseFare        Float?
-  platformFee     Float?
-  driverNetAmount Float?
+  // Pricing Snapshot — ADR-001 §5 — immutable, persisted at ride creation
+  // ADD ONLY — never recalculate after persisted.
+  baseCOE         Float?   // distanceKm × R$1,20/km
+  zoneMultiplier  Float?   // peso_esforco from OperationalZone
+  liquidityMargin Float?   // 0.20 (normal) or 0.55 (scarcity)
+  liquidityAmount Float?   // baseFare × liquidityMargin
+  baseFare        Float?   // baseCOE × zoneMultiplier
+  driverNetAmount Float?   // baseFare + liquidityAmount
+  platformFee     Float?   // R$2,50 — Taxa Operacional Cyborg
   pricingVersion  String?
 
 
@@ -177,6 +183,7 @@ model RideRequest {
   // V2 — payment domain (PR-2)
   paymentIntent PaymentIntent?
   settlement    Settlement?
+  locationPings DriverLocationPing[]
 
   @@index([scheduledAt])
 }
@@ -268,6 +275,7 @@ enum RideOfferStatus {
   ACCEPTED
   REJECTED
   EXPIRED
+  PAID
 }
 
 // Governed Sequential Dispatch — runtime dispatch stage persisted on
@@ -401,6 +409,7 @@ enum DomainEventType {
   LINEAGE_RESOLVED
   SKILL_ASSIGNED
   DRIVER_REFERRED
+  TRIP_EXECUTION_STARTED
 }
 
 /// Canonical taxonomy of how a node participates in a driver's network.
@@ -472,6 +481,22 @@ model RevenueSplit {
 
   @@index([settlementId])
   @@index([beneficiaryDriverId])
+}
+
+model DriverLocationPing {
+  id            String      @id @default(uuid())
+  rideRequestId String
+  driverId      String
+  lat           Float
+  lng           Float
+  recordedAt    DateTime
+  receivedAt    DateTime    @default(now())
+  source        String      @default("LIVE")
+
+  rideRequest   RideRequest @relation(fields: [rideRequestId], references: [id])
+  driver        Driver      @relation(fields: [driverId], references: [id])
+
+  @@index([rideRequestId, receivedAt(sort: Desc)])
 }
 
 /// Lightweight event sourcing. Every domain-relevant transition is recorded

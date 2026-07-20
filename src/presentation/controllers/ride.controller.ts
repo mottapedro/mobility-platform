@@ -198,7 +198,11 @@ export class RideController {
           destinationLng: rawDestLng,
           rootDriverId,
           context: safeContext,
-          // Pricing breakdown (null when engine disabled or errored)
+          // Pricing Snapshot — ADR-001 §5 (null when engine disabled or errored)
+          baseCOE:         ridePricing?.baseCOE         ?? null,
+          zoneMultiplier:  ridePricing?.zoneMultiplier  ?? null,
+          liquidityMargin: ridePricing?.liquidityMargin ?? null,
+          liquidityAmount: ridePricing?.liquidityAmount ?? null,
           baseFare:        ridePricing?.baseFare        ?? null,
           platformFee:     ridePricing?.platformFee     ?? null,
           driverNetAmount: ridePricing?.driverNetAmount ?? null,
@@ -240,8 +244,13 @@ export class RideController {
         }
       });
 
-      // RideQuote DTO — frontend only renders this, never calculates
+      // RideQuote DTO — ADR-001 §5 Pricing Snapshot exposed to frontend.
+      // Frontend only renders these values — never recalculates.
       const quote = ridePricing ? {
+        baseCOE:             ridePricing.baseCOE,
+        zoneMultiplier:      ridePricing.zoneMultiplier,
+        liquidityMargin:     ridePricing.liquidityMargin,
+        liquidityAmount:     ridePricing.liquidityAmount,
         baseFare:            ridePricing.baseFare,
         driverNetAmount:     ridePricing.driverNetAmount,
         platformFee:         ridePricing.platformFee,

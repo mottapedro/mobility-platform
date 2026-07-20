@@ -1,21 +1,18 @@
 /**
- * Pure revenue-split calculator for the Aliado payment domain.
+ * ADR-001 — Economic Domain (MVP)
  *
- * Rule (PR-2):
- *   - Driver:       80%  (8000 bps)
- *   - Platform:     15%  (1500 bps)
- *   - Root driver:   5%  ( 500 bps)
+ * RevenueSplitService: liquidates pre-calculated values from the Pricing Snapshot.
  *
- * When rootDriverId is null, the 5% rolls into Platform — total cents are
- * always preserved. Integer-cents math; the floor remainder lands on the
- * root-driver bucket so the sum invariant holds.
+ * Rule (ADR-001 §3 + §4):
+ *   - Platform fee : R$2,50 fixed (PLATFORM_FEE_CENTS constant)
+ *   - Driver share : totalCents - platformFeeCents
+ *   - Root driver  : 0 (reserved for RevenueSplit V2 / Ownership phase)
+ *
+ * REMOVED: percentage-based 80/15/5 split model.
+ * Settlement does NOT recalculate prices — it liquidates what the Pricing Engine persisted.
  */
 
-export const SPLIT_BPS = {
-  DRIVER: 8000,
-  PLATFORM: 1500,
-  ROOT_DRIVER: 500,
-} as const;
+export const PLATFORM_FEE_CENTS = 250; // R$2,50 — Taxa Operacional Cyborg (MVP)
 
 export interface ComputeRevenueSplitInput {
   totalCents: number;
@@ -41,26 +38,20 @@ export function computeRevenueSplit(
   if (totalCents <= 0) {
     throw new Error(`totalCents must be > 0, got ${totalCents}`);
   }
-
-  const driverCents = Math.floor((totalCents * SPLIT_BPS.DRIVER) / 10_000);
-  const platformBase = Math.floor((totalCents * SPLIT_BPS.PLATFORM) / 10_000);
-  const remainder = totalCents - driverCents - platformBase;
-
-  if (rootDriverId === null) {
-    return {
-      totalCents,
-      driverCents,
-      platformCents: platformBase + remainder,
-      rootDriverCents: 0,
-      rootDriverId: null,
-    };
+  if (totalCents <= PLATFORM_FEE_CENTS) {
+    throw new Error(
+      `totalCents (${totalCents}) must exceed platform fee (${PLATFORM_FEE_CENTS})`
+    );
   }
+
+  const platformCents = PLATFORM_FEE_CENTS;
+  const driverCents = totalCents - platformCents;
 
   return {
     totalCents,
     driverCents,
-    platformCents: platformBase,
-    rootDriverCents: remainder,
+    platformCents,
+    rootDriverCents: 0, // Reserved for RevenueSplit V2 (ADR-001 §8 step 7)
     rootDriverId,
   };
 }

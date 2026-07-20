@@ -22,7 +22,7 @@
 import { DomainEventType, SplitBeneficiaryType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { EventBus, recordAndPublish } from "../../domain/shared/events/EventBus";
-import { SPLIT_BPS } from "../../domain/payment/RevenueSplitService";
+import { PLATFORM_FEE_CENTS } from "../../domain/payment/RevenueSplitService";
 
 type Db = Pick<
   typeof prisma,
@@ -81,31 +81,26 @@ export async function execute(
   const driverId = rideRequest?.selectedDriverId ?? null;
   const rootDriverId = settlement.rootDriverId;
 
+  // ADR-001 §4: 2 rows — PLATFORM (R$2,50 fixed) + DRIVER (remainder).
+  // percentBps derived from actual cents ratio (not hardcoded BPS constants).
+  // ROOT_DRIVER row reserved for RevenueSplit V2 (ADR-001 §8 step 7).
+  void PLATFORM_FEE_CENTS; // referenced to satisfy import — used at computeRevenueSplit layer
+  const total = settlement.totalCents;
   await db.revenueSplit.createMany({
     data: [
-      {
-        settlementId: settlement.id,
-        beneficiaryType: SplitBeneficiaryType.DRIVER,
-        beneficiaryDriverId: driverId,
-        amountCents: settlement.driverCents,
-        percentBps: SPLIT_BPS.DRIVER,
-      },
       {
         settlementId: settlement.id,
         beneficiaryType: SplitBeneficiaryType.PLATFORM,
         beneficiaryDriverId: null,
         amountCents: settlement.platformCents,
-        percentBps:
-          rootDriverId === null
-            ? SPLIT_BPS.PLATFORM + SPLIT_BPS.ROOT_DRIVER
-            : SPLIT_BPS.PLATFORM,
+        percentBps: Math.round((settlement.platformCents / total) * 10_000),
       },
       {
         settlementId: settlement.id,
-        beneficiaryType: SplitBeneficiaryType.ROOT_DRIVER,
-        beneficiaryDriverId: rootDriverId,
-        amountCents: settlement.rootDriverCents,
-        percentBps: rootDriverId === null ? 0 : SPLIT_BPS.ROOT_DRIVER,
+        beneficiaryType: SplitBeneficiaryType.DRIVER,
+        beneficiaryDriverId: driverId,
+        amountCents: settlement.driverCents,
+        percentBps: Math.round((settlement.driverCents / total) * 10_000),
       },
     ],
   });

@@ -97,13 +97,16 @@ export class PricingEngine {
     });
 
     return {
-      baseFare,
-      liquidityAmount,
-      platformFee,
-      driverNetAmount,
-      totalPassengerPrice,
       distanceKm,
       estimatedDurationMin,
+      baseCOE: this.round(baseCOE),
+      zoneMultiplier: zoneCoeff,
+      liquidityMargin,
+      liquidityAmount,
+      baseFare,
+      driverNetAmount,
+      platformFee,
+      totalPassengerPrice,
       pricingVersion: PRICING_CONFIG.pricingVersion,
       breakdown,
     };

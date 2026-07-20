@@ -5,21 +5,23 @@ import {
   EventBus,
   recordAndPublish,
 } from "../shared/events/EventBus";
-import { computeRevenueSplit, SPLIT_BPS } from "./RevenueSplitService";
+import { computeRevenueSplit, PLATFORM_FEE_CENTS } from "./RevenueSplitService";
 
 /**
  * SettlementService — synchronous, idempotent settlement of a confirmed
  * PaymentIntent.
  *
+ * ADR-001 §4: Settlement liquidates pre-persisted Pricing Snapshot values.
+ * It does NOT recalculate prices or apply percentage splits.
+ *
  * Pipeline (single transaction):
  *   1. Re-load PaymentIntent (must be CONFIRMED)
  *   2. Resolve rootDriverId via RideRequest.passenger.rootDriverId
- *   3. computeRevenueSplit() → driver / platform / root cents
- *   4. Insert Settlement + 3 RevenueSplit rows
- *   5. Transition RideRequest.status → PAID
+ *   3. computeRevenueSplit() → platformCents=R$2,50 fixed / driverCents=remainder
+ *   4. Insert Settlement + 2 RevenueSplit rows (PLATFORM + DRIVER)
  *
  * After commit (outside the tx):
- *   6. Persist + publish RIDE_SETTLED and REWARD_DISTRIBUTED domain events.
+ *   5. Persist + publish RIDE_SETTLED and REWARD_DISTRIBUTED domain events.
  *
  * Idempotency: if a Settlement already exists for this PaymentIntent, returns
  * it untouched and skips the events.
@@ -48,12 +50,7 @@ export async function settleConfirmedPayment(
     );
   }
 
-  const rootDriverId = intent.rideRequest.passenger.rootDriverId;
-  if (!rootDriverId) {
-    throw new Error(
-      `RideRequest ${intent.rideRequestId} has no rootDriverId; settlement cannot be created without a frozen economic owner`
-    );
-  }
+  const rootDriverId = intent.rideRequest.passenger.rootDriverId ?? null;
   const split = computeRevenueSplit({
     totalCents: intent.amountCents,
     rootDriverId,
@@ -74,6 +71,8 @@ export async function settleConfirmedPayment(
       },
     });
 
+    // ADR-001 §4: 2 rows — PLATFORM (R$2,50 fixed) + DRIVER (remainder).
+    // ROOT_DRIVER row reserved for RevenueSplit V2 (ADR-001 §8 step 7).
     const splitRows: Array<{
       beneficiaryType: SplitBeneficiaryType;
       beneficiaryDriverId: string | null;
@@ -81,25 +80,16 @@ export async function settleConfirmedPayment(
       percentBps: number;
     }> = [
       {
-        beneficiaryType: SplitBeneficiaryType.DRIVER,
-        beneficiaryDriverId: driverId,
-        amountCents: split.driverCents,
-        percentBps: SPLIT_BPS.DRIVER,
-      },
-      {
         beneficiaryType: SplitBeneficiaryType.PLATFORM,
         beneficiaryDriverId: null,
         amountCents: split.platformCents,
-        percentBps:
-          split.rootDriverId === null
-            ? SPLIT_BPS.PLATFORM + SPLIT_BPS.ROOT_DRIVER
-            : SPLIT_BPS.PLATFORM,
+        percentBps: Math.round((split.platformCents / split.totalCents) * 10_000),
       },
       {
-        beneficiaryType: SplitBeneficiaryType.ROOT_DRIVER,
-        beneficiaryDriverId: split.rootDriverId,
-        amountCents: split.rootDriverCents,
-        percentBps: split.rootDriverId === null ? 0 : SPLIT_BPS.ROOT_DRIVER,
+        beneficiaryType: SplitBeneficiaryType.DRIVER,
+        beneficiaryDriverId: driverId,
+        amountCents: split.driverCents,
+        percentBps: Math.round((split.driverCents / split.totalCents) * 10_000),
       },
     ];
 
