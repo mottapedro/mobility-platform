@@ -32,6 +32,8 @@ export const prisma = new PrismaClient({ adapter }).$extends(
 );
 
 export type PrismaTransaction = Prisma.TransactionClient;
+/** Tipo do cliente Prisma estendido — use em vez de `PrismaClient` puro. */
+export type ExtendedPrismaClient = typeof prisma;
 
 let poolClosed = false;
 

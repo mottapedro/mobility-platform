@@ -412,6 +412,38 @@ enum DomainEventType {
   TRIP_EXECUTION_STARTED
 }
 
+/// Política de distribuição de receita operacional.
+/// O percentual do Root Driver não é gravado diretamente no Settlement —
+/// é referenciado via esta entidade para suportar campanhas e tiers
+/// sem deploy de código (dados, não código).
+model RevenuePolicy {
+  id             String    @id @default(uuid())
+  /// Identificador único de negócio — imutável após criação.
+  code           String    @unique
+  name           String
+  /// Incrementado a cada nova vigência do mesmo code (ROOT_DRIVER_STANDARD v1, v2…).
+  version        Int       @default(1)
+  /// Base de cálculo: OPERATIONAL_REVENUE = driverNetAmount.
+  baseType       RevenuePolicyBaseType @default(OPERATIONAL_REVENUE)
+  /// Basis points sobre baseType. Ex: 500 = 5%.
+  rootDriverBps  Int
+  effectiveFrom  DateTime?
+  effectiveUntil DateTime?
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+
+  settlements    Settlement[]
+
+  @@unique([code, version])
+  @@index([isActive, effectiveFrom, effectiveUntil])
+}
+
+enum RevenuePolicyBaseType {
+  /// Base = driverNetAmount (Receita Operacional).
+  /// A Taxa Operacional Cyborg (platformFee) nunca integra esta base.
+  OPERATIONAL_REVENUE
+}
+
 /// Canonical taxonomy of how a node participates in a driver's network.
 /// Used by NetworkOwnershipService projections and downstream analytics.
 enum OwnershipType {
@@ -459,11 +491,19 @@ model Settlement {
   rootDriverId    String?
   settledAt       DateTime @default(now())
 
-  paymentIntent PaymentIntent  @relation(fields: [paymentIntentId], references: [id])
-  rideRequest   RideRequest    @relation(fields: [rideRequestId], references: [id])
+  /// FK para a política de distribuição vigente no momento da liquidação.
+  /// Preserva auditabilidade: mesmo que a política evolua (v2, v3), o
+  /// settlement permanece vinculado à versão exata que o originou.
+  revenuePolicyId      String?
+  revenuePolicyVersion Int?
+
+  paymentIntent PaymentIntent   @relation(fields: [paymentIntentId], references: [id])
+  rideRequest   RideRequest     @relation(fields: [rideRequestId], references: [id])
+  revenuePolicy RevenuePolicy?  @relation(fields: [revenuePolicyId], references: [id])
   splits        RevenueSplit[]
 
   @@index([rootDriverId])
+  @@index([revenuePolicyId])
 }
 
 /// Per-beneficiary split row attached to a Settlement.
