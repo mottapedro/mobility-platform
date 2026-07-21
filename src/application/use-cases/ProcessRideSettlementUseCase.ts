@@ -1,5 +1,6 @@
 import { prisma } from "../../infra/prisma/client";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
+import { computeRevenueSplit } from "../../domain/payment/RevenueSplitService";
 
 export interface ProcessRideSettlementInput {
   rideId: string;
@@ -31,16 +32,17 @@ export class ProcessRideSettlementUseCase {
 
     const rootDriverId = ride.passenger?.rootDriverId ?? ride.selectedDriverId;
 
-    // 2. Calcular valores (Modelo 10%)
+    // 2. Liquidar valores do Pricing Snapshot (ADR-001 §4 — Settlement não recalcula)
     const grossReais = ride.priceOffered ?? ride.priceEstimated ?? 0;
     if (grossReais <= 0) {
       throw new Error(`Invalid gross amount for ride ${rideId}: ${grossReais}`);
     }
 
     const grossCents = Math.round(grossReais * 100);
-    const platformCents = 250; // R$2,50 fixo — taxa Cyborg Tecnologia
-    const driverCents = grossCents - platformCents;
-    const rootDriverCents = 0; // Root driver não recebe split direto nesta fase
+    const { platformCents, driverCents, rootDriverCents } = computeRevenueSplit({
+      totalCents: grossCents,
+      rootDriverId,
+    });
 
     // 3. Transação atômica: Settlement + RevenueSplits (Invariantes 1, 2, 4)
     const settlement = await prisma.$transaction(async (tx) => {

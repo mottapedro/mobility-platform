@@ -8,7 +8,7 @@ import { prisma } from "../setup";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { InMemoryPixProvider } from "../../src/domain/payment/providers/InMemoryPixProvider";
 import { execute as orchestrate } from "../../src/application/services/PixPaymentOrchestrator";
-import { SPLIT_BPS } from "../../src/domain/payment/RevenueSplitService";
+import { PLATFORM_FEE_CENTS } from "../../src/domain/payment/RevenueSplitService";
 
 async function makeDriver(email: string) {
   const u = await prisma.user.create({
@@ -68,6 +68,7 @@ async function seedRide(
 }
 
 describe("PixPaymentOrchestrator", () => {
+  // ADR-001 §3: platformFee = R$2,50 fixed; driver = total - 2,50; rootDriver = 0
   it("generates QR, confirms settlement, distributes rewards (with rootDriver)", async () => {
     const totalCents = 10_000;
     const { rideId } = await seedRide("happy", { withRoot: true });
@@ -108,12 +109,12 @@ describe("PixPaymentOrchestrator", () => {
     // so RewardDistributionService is idempotent and returns distributed:false
     expect(result.distributed).toBe(false);
 
-    const driverExpected = Math.floor(totalCents * SPLIT_BPS.DRIVER / 10_000);
-    const rootExpected = Math.floor(totalCents * SPLIT_BPS.ROOT_DRIVER / 10_000);
-    const platformExpected = totalCents - driverExpected - rootExpected;
-    expect(result.driverCents).toBe(driverExpected);
+    // ADR-001 §3: fixed-fee model — no percentage split
+    const platformExpected = PLATFORM_FEE_CENTS; // R$2,50
+    const driverExpected = totalCents - platformExpected;
     expect(result.platformCents).toBe(platformExpected);
-    expect(result.rootDriverCents).toBe(rootExpected);
+    expect(result.driverCents).toBe(driverExpected);
+    expect(result.rootDriverCents).toBe(0); // Reserved for RevenueSplit V2
     expect(result.rootDriverId).not.toBeNull();
 
     // Full event chain fired
@@ -143,7 +144,7 @@ describe("PixPaymentOrchestrator", () => {
     expect(second.intent.id).toBe(first.intent.id);
   });
 
-  it("no-root: platform absorbs root share, rootDriverCents=0", async () => {
+  it("no-root: rootDriverCents=0; full driver/platform split still applies", async () => {
     const totalCents = 8_000;
     const { rideId } = await seedRide("noroot", { withRoot: false });
 
@@ -154,9 +155,8 @@ describe("PixPaymentOrchestrator", () => {
     );
 
     expect(result.settled).toBe(true);
-    const driverExpected = Math.floor(totalCents * SPLIT_BPS.DRIVER / 10_000);
-    expect(result.driverCents).toBe(driverExpected);
-    expect(result.platformCents).toBe(totalCents - driverExpected);
+    expect(result.platformCents).toBe(PLATFORM_FEE_CENTS);          // R$2,50
+    expect(result.driverCents).toBe(totalCents - PLATFORM_FEE_CENTS); // remainder
     expect(result.rootDriverCents).toBe(0);
     expect(result.rootDriverId).toBeNull();
   });

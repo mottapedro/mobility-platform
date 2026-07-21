@@ -22,7 +22,6 @@
 import { DomainEventType, SplitBeneficiaryType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { EventBus, recordAndPublish } from "../../domain/shared/events/EventBus";
-import { PLATFORM_FEE_CENTS } from "../../domain/payment/RevenueSplitService";
 
 type Db = Pick<
   typeof prisma,
@@ -84,7 +83,6 @@ export async function execute(
   // ADR-001 §4: 2 rows — PLATFORM (R$2,50 fixed) + DRIVER (remainder).
   // percentBps derived from actual cents ratio (not hardcoded BPS constants).
   // ROOT_DRIVER row reserved for RevenueSplit V2 (ADR-001 §8 step 7).
-  void PLATFORM_FEE_CENTS; // referenced to satisfy import — used at computeRevenueSplit layer
   const total = settlement.totalCents;
   await db.revenueSplit.createMany({
     data: [

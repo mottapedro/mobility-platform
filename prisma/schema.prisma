@@ -136,8 +136,8 @@ model RideRequest {
   durationMin         Int?
   originLat           Float?
   originLng           Float?
-  priceEstimated      Float?
-  priceOffered        Float?
+  priceEstimated      Float?   // alias for Pricing Snapshot totalPassengerPrice (ADR-001 §5)
+  priceOffered        Float?   // final accepted price (may differ from estimate)
   context             Json?
   offers              RideOffer[]
   passenger           Passenger   @relation(fields: [passengerId], references: [id])
