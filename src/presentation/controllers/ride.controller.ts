@@ -12,7 +12,8 @@ import { RescheduleRideUseCase } from "../../application/use-cases/RescheduleRid
 import { StartRideUseCase } from "../../application/use-cases/StartRideUseCase";
 import { CompleteRideUseCase } from "../../application/use-cases/CompleteRideUseCase";
 import type { RidePricing } from "../../domain/pricing/RidePricing";
-import { resolveOwnership } from "../../domain/ownership/OwnershipResolver";
+import { resolveOwnershipV2 } from "../../domain/ownership/OwnershipResolver";
+import { OwnershipPolicyRepository } from "../../domain/ownership/OwnershipPolicyRepository";
 
 export interface RideContext {
   isVip?:     boolean;
@@ -181,10 +182,19 @@ export class RideController {
 
       const policy = AcceptancePolicyEngine.computePolicy(date);
 
-      // ADR-004: resolver ownership antes da persistência
-      const ownerResolution = resolveOwnership({
-        passengerRootDriverId: rootDriverId ?? null,
-      });
+      // ADR-004 Step 2: resolver OwnershipPolicy vigente, depois resolver ownership via V2
+      const ownershipPolicyRepo = new OwnershipPolicyRepository(prisma);
+      const ownershipPolicy = await ownershipPolicyRepo.resolveForRide(date);
+      const ownerResolution = ownershipPolicy
+        ? resolveOwnershipV2({
+            policy: ownershipPolicy,
+            strategyInput: { passengerRootDriverId: rootDriverId ?? null },
+          })
+        : // Fallback V1 se nenhuma política estiver vigente (não deve ocorrer em produção)
+          { ownerId: rootDriverId ?? null, ownerType: rootDriverId ? "ROOT_DRIVER" as const : "NONE" as const,
+            ownershipPolicyCode: "PASSENGER_ROOTDRIVER_DIRECT", ownershipPolicyId: null,
+            ownershipPolicyVersion: null, ownershipResolutionVersion: 1,
+            resolutionSource: "passenger.rootDriverId" };
 
       // Corrida + OwnershipSnapshot em uma transação — snapshot imutável desde o início
       const ride = await prisma.$transaction(async (tx) => {
@@ -230,6 +240,8 @@ export class RideController {
             ownerId:                     ownerResolution.ownerId,
             ownerType:                   ownerResolution.ownerType,
             ownershipPolicyCode:         ownerResolution.ownershipPolicyCode,
+            ownershipPolicyId:           ownerResolution.ownershipPolicyId,
+            ownershipPolicyVersion:      ownerResolution.ownershipPolicyVersion,
             ownershipResolutionVersion:  ownerResolution.ownershipResolutionVersion,
             resolutionSource:            ownerResolution.resolutionSource,
           },
