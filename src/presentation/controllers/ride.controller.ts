@@ -12,6 +12,7 @@ import { RescheduleRideUseCase } from "../../application/use-cases/RescheduleRid
 import { StartRideUseCase } from "../../application/use-cases/StartRideUseCase";
 import { CompleteRideUseCase } from "../../application/use-cases/CompleteRideUseCase";
 import type { RidePricing } from "../../domain/pricing/RidePricing";
+import { resolveOwnership } from "../../domain/ownership/OwnershipResolver";
 
 export interface RideContext {
   isVip?:     boolean;
@@ -180,39 +181,61 @@ export class RideController {
 
       const policy = AcceptancePolicyEngine.computePolicy(date);
 
-      const ride = await prisma.rideRequest.create({
-        data: {
-          passengerId,
-          origin: originTrimmed,
-          destination: destinationTrimmed,
-          scheduledAt: date,
-          operationalCutoffAt: policy.operationalCutoffAt,
-          status: "PENDING",
-          currentDispatchStage: initialDispatchStage,
-          distanceKm,
-          durationMin: estimatedDurationMin,
-          priceEstimated,
-          originLat: rawOriginLat,
-          originLng: rawOriginLng,
-          destinationLat: rawDestLat,
-          destinationLng: rawDestLng,
-          rootDriverId,
-          context: safeContext,
-          // Pricing Snapshot — ADR-001 §5 (null when engine disabled or errored)
-          baseCOE:         ridePricing?.baseCOE         ?? null,
-          zoneMultiplier:  ridePricing?.zoneMultiplier  ?? null,
-          liquidityMargin: ridePricing?.liquidityMargin ?? null,
-          liquidityAmount: ridePricing?.liquidityAmount ?? null,
-          baseFare:        ridePricing?.baseFare        ?? null,
-          platformFee:     ridePricing?.platformFee     ?? null,
-          driverNetAmount: ridePricing?.driverNetAmount ?? null,
-          pricingVersion:  ridePricing?.pricingVersion  ?? null,
-        },
-        include: {
-          passenger: { include: { user: true } },
-          offers: true,
-          selectedDriver: { include: { user: true } },
-        },
+      // ADR-004: resolver ownership antes da persistência
+      const ownerResolution = resolveOwnership({
+        passengerRootDriverId: rootDriverId ?? null,
+      });
+
+      // Corrida + OwnershipSnapshot em uma transação — snapshot imutável desde o início
+      const ride = await prisma.$transaction(async (tx) => {
+        const created = await tx.rideRequest.create({
+          data: {
+            passengerId,
+            origin: originTrimmed,
+            destination: destinationTrimmed,
+            scheduledAt: date,
+            operationalCutoffAt: policy.operationalCutoffAt,
+            status: "PENDING",
+            currentDispatchStage: initialDispatchStage,
+            distanceKm,
+            durationMin: estimatedDurationMin,
+            priceEstimated,
+            originLat: rawOriginLat,
+            originLng: rawOriginLng,
+            destinationLat: rawDestLat,
+            destinationLng: rawDestLng,
+            rootDriverId,
+            context: safeContext,
+            // Pricing Snapshot — ADR-001 §5 (null when engine disabled or errored)
+            baseCOE:         ridePricing?.baseCOE         ?? null,
+            zoneMultiplier:  ridePricing?.zoneMultiplier  ?? null,
+            liquidityMargin: ridePricing?.liquidityMargin ?? null,
+            liquidityAmount: ridePricing?.liquidityAmount ?? null,
+            baseFare:        ridePricing?.baseFare        ?? null,
+            platformFee:     ridePricing?.platformFee     ?? null,
+            driverNetAmount: ridePricing?.driverNetAmount ?? null,
+            pricingVersion:  ridePricing?.pricingVersion  ?? null,
+          },
+          include: {
+            passenger: { include: { user: true } },
+            offers: true,
+            selectedDriver: { include: { user: true } },
+          },
+        });
+
+        // ADR-004: OwnershipSnapshot persistido na mesma transação — imutável daqui em diante
+        await tx.ownershipSnapshot.create({
+          data: {
+            rideId:                      created.id,
+            ownerId:                     ownerResolution.ownerId,
+            ownerType:                   ownerResolution.ownerType,
+            ownershipPolicyCode:         ownerResolution.ownershipPolicyCode,
+            ownershipResolutionVersion:  ownerResolution.ownershipResolutionVersion,
+            resolutionSource:            ownerResolution.resolutionSource,
+          },
+        });
+
+        return created;
       });
 
       logMatchingEvent({

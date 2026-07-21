@@ -145,6 +145,11 @@ export async function cleanTestData(): Promise<void> {
       where: { aggregateType: "Ride", aggregateId: { in: testRideRequestIds } },
     });
 
+    // ADR-004: OwnershipSnapshot has FK to RideRequest — must delete before the ride.
+    await prisma.ownershipSnapshot.deleteMany({
+      where: { rideId: { in: testRideRequestIds } },
+    });
+
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {

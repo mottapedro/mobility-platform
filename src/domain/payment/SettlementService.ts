@@ -50,7 +50,15 @@ export async function settleConfirmedPayment(
   }
 
   const ride = intent.rideRequest;
-  const rootDriverId = ride.passenger.rootDriverId ?? null;
+
+  // ADR-004: ler ownerId do OwnershipSnapshot (fonte canônica).
+  // Fallback para passenger.rootDriverId durante a transição para corridas históricas
+  // que não possuem snapshot (criadas antes da ADR-004).
+  const ownershipSnapshot = await prisma.ownershipSnapshot.findUnique({
+    where: { rideId: ride.id },
+  });
+  const rootDriverId =
+    ownershipSnapshot?.ownerId ?? ride.passenger.rootDriverId ?? null;
   const settleDate = new Date();
 
   // Resolve política vigente — MVP usa ROOT_DRIVER_STANDARD

@@ -181,9 +181,11 @@ model RideRequest {
   completedAt          DateTime?  // viagem encerrada
 
   // V2 — payment domain (PR-2)
-  paymentIntent PaymentIntent?
-  settlement    Settlement?
-  locationPings DriverLocationPing[]
+  paymentIntent     PaymentIntent?
+  settlement        Settlement?
+  locationPings     DriverLocationPing[]
+  // ADR-004 — Ownership Snapshot (criado no momento da solicitação da corrida)
+  ownershipSnapshot OwnershipSnapshot?
 
   @@index([scheduledAt])
 }
@@ -443,6 +445,53 @@ enum RevenuePolicyBaseType {
   /// Base = driverNetAmount (Receita Operacional).
   /// A Taxa Operacional Cyborg (platformFee) nunca integra esta base.
   OPERATIONAL_REVENUE
+}
+
+/// Tipo do proprietário econômico de uma corrida (ADR-004).
+/// Distinto de OwnershipType, que categoriza nós no grafo de rede.
+enum OwnerType {
+  /// Motorista raiz da cadeia de indicação do passageiro.
+  ROOT_DRIVER
+  /// Corrida corporativa — owner é uma empresa com convênio.
+  CORPORATE
+  /// Corrida de franquia — owner é um franqueado territorial.
+  FRANCHISE
+  /// Corrida orgânica — sem proprietário econômico.
+  NONE
+}
+
+/// Snapshot imutável da resolução de propriedade econômica (ADR-004).
+/// Criado no momento da corrida; nunca atualizado após criação.
+/// O Settlement lê ownerId daqui, nunca diretamente do Passenger.
+model OwnershipSnapshot {
+  id         String    @id @default(uuid())
+  rideId     String    @unique
+
+  /// Identificador do proprietário econômico resolvido.
+  /// null = corrida orgânica (ownerType = NONE).
+  ownerId    String?
+
+  /// Tipo do proprietário econômico.
+  ownerType  OwnerType @default(NONE)
+
+  /// Código da política de resolução usada (ex: "PASSENGER_ROOTDRIVER_DIRECT").
+  /// Armazena o resultado da resolução, não a FK para a política — desacoplado.
+  ownershipPolicyCode    String  @default("PASSENGER_ROOTDRIVER_DIRECT")
+
+  /// Versão do algoritmo de resolução. Permite auditar qual lógica foi usada
+  /// sem depender do estado atual do resolvedor.
+  ownershipResolutionVersion Int @default(1)
+
+  /// Rastreabilidade: descreve exatamente qual campo ou mecanismo foi consultado.
+  /// Exemplo: "passenger.rootDriverId", "referral_chain_depth_2", "corporate_agreement".
+  resolutionSource String
+
+  resolvedAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+
+  rideRequest RideRequest @relation(fields: [rideId], references: [id])
+
+  @@index([ownerId])
 }
 
 /// Canonical taxonomy of how a node participates in a driver's network.
