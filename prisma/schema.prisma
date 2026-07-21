@@ -419,7 +419,8 @@ enum DomainEventType {
 model RevenuePolicy {
   id             String    @id @default(uuid())
   /// Identificador único de negócio — imutável após criação.
-  code           String    @unique
+  /// Múltiplas versões do mesmo code são permitidas; a unicidade é por (code, version).
+  code           String
   name           String
   /// Incrementado a cada nova vigência do mesmo code (ROOT_DRIVER_STANDARD v1, v2…).
   version        Int       @default(1)

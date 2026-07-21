@@ -12,7 +12,7 @@ export async function seedRevenuePolicies(prisma: PrismaClient) {
   // Política padrão do MVP: Root Driver recebe 5% do driverNetAmount.
   // BPS = 500 (500 / 10_000 = 5%).
   await prisma.revenuePolicy.upsert({
-    where: { code: "ROOT_DRIVER_STANDARD" },
+    where: { code_version: { code: "ROOT_DRIVER_STANDARD", version: 1 } },
     update: {},
     create: {
       code: "ROOT_DRIVER_STANDARD",
