@@ -14,6 +14,7 @@ import { godnetworkRoutes } from "./presentation/routes/godnetwork.routes";
 import { ridesPaymentRouter, pixWebhookRouter } from "./presentation/routes/payment.routes";
 import { picpayWebhookRouter } from "./modules/settlement/presentation/routes/picpay-webhook.routes";
 import { rideLifecycleRouter } from "./presentation/routes/ride-lifecycle.routes";
+import { tripRouter } from "./api/controllers/TripController";
 import {
   onboardingRouter,
   passengersNetworkRouter,
@@ -24,6 +25,7 @@ import { genealogyRouter } from "./presentation/routes/genealogy.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
 import { lifecycle } from "./infra/AppLifecycleManager";
+import { httpLogger } from "./shared/logging/httpLog";
 import { matchingJobScheduler } from "./infra/async/MatchingJobScheduler";
 import { referralFallbackScheduler } from "./infra/async/ReferralFallbackScheduler";
 import { SyncProjectionJob } from "./domain/network/SyncProjectionJob";
@@ -59,11 +61,7 @@ app.use(cors({
 
 app.options("/{*corsPreflight}", cors());
 app.use(express.json());
-
-app.use((req, res, next) => {
-  console.log("➡️", req.method, req.url);
-  next();
-});
+app.use(httpLogger);
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -86,6 +84,7 @@ app.use("/drivers", genealogyRouter);
 app.use("/onboarding", onboardingRouter);
 app.use("/network", networkLegacyRouter);
 app.use("/godnetwork", godnetworkRoutes);
+app.use("/trips", tripRouter);
 
 if (process.env.NODE_ENV !== "production") {
   app.use("/test", testRoutes);
