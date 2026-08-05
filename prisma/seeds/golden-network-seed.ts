@@ -7,6 +7,8 @@ import { ActorType } from "../../src/shared/enums";
 import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";
 import { RootOwnershipProjectionService } from "../../src/domain/ownership/RootOwnershipProjectionService";
 import { resolveDriverRoot } from "../../src/domain/referral-network/DriverRootResolverService";
+import { seedRevenuePolicies } from "./revenue-policy.seed";
+import { seedOwnershipPolicies } from "./ownership-policy.seed";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -30,11 +32,12 @@ const REAL_NETWORK = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LEGACY DRIVER EMAILS — kept for backward compatibility with existing tests
+// LEGACY DRIVER EMAILS — kept for backward compatibility with existing tests.
+// Pedro and João are canonical identities (REAL_NETWORK: mottapedro01@gmail.com,
+// jln@gmail.com) created by the official seed only. The legacy seed resolves
+// them instead of creating duplicate Users/Drivers.
 // ─────────────────────────────────────────────────────────────────────────────
 const DRIVER_EMAIL = {
-  PEDRO: "pedro.paulo.motta@mobility.com",
-  JOAO: "joao.luiz.brito@mobility.com",
   ANA_RECURRENCE: "ana.claudia.silva@mobility.com",
   ROBERTO: "roberto.souza@mobility.com",
   EXECUTIVE_2: "peter.jackson@mobility.com",
@@ -47,6 +50,32 @@ const PASSENGER_EMAIL = {
   NO_DRIVER: "sem.motorista.passenger@mobility.com",
   MARIA_WITHOUT: "maria.fernanda.no.driver@mobility.com",
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skill catalogue — the baseline does not carry the migration-seeded Skill rows
+// (they live in 20260526000000_aliado_v2_referral_skills). The golden seed must
+// be self-contained on a baseline-only DB, so upsert the catalogue idempotently.
+// ─────────────────────────────────────────────────────────────────────────────
+const SKILL_CATALOG: Array<{ code: DriverSkillCode; displayName: string; description: string }> = [
+  { code: DriverSkillCode.COLECIONADOR, displayName: "Colecionador", description: "Motorista com perfil de recorrência e fidelização." },
+  { code: DriverSkillCode.EXECUTIVO, displayName: "Executivo", description: "Atende corridas executivas." },
+  { code: DriverSkillCode.TRANSPORTE_ASSISTIDO, displayName: "Transporte Assistido", description: "Habilitado para passageiros que necessitam de apoio." },
+  { code: DriverSkillCode.AEROPORTO, displayName: "Aeroporto", description: "Especialista em corridas para/de aeroporto." },
+  { code: DriverSkillCode.LONG_DISTANCE, displayName: "Longa Distância", description: "Corridas intermunicipais." },
+  { code: DriverSkillCode.PREMIUM, displayName: "Premium", description: "Veículo e atendimento premium." },
+  { code: DriverSkillCode.VIP, displayName: "VIP", description: "Atendimento VIP." },
+];
+
+async function seedSkillCatalog(prisma: any) {
+  for (const skill of SKILL_CATALOG) {
+    await prisma.skill.upsert({
+      where: { code: skill.code },
+      update: { displayName: skill.displayName, description: skill.description },
+      create: { code: skill.code, displayName: skill.displayName, description: skill.description },
+    });
+  }
+  console.log(`  ✅ Skill catalogue (${SKILL_CATALOG.length} entries) upserted`);
+}
 
 function asRegion(v: string): Region {
   return (Object.values(Region) as string[]).includes(v) ? (v as Region) : Region.ZN;
@@ -150,13 +179,41 @@ async function upsertDriverWithVehicleAndRegions(
     },
   });
 
-  // idempotent availability (no unique compound key in schema)
-  await prisma.driverAvailability.createMany({
-    data: [{ driverId: driver.id, dayOfWeek: 1, startTime: "08:00", endTime: "20:00" }],
-    skipDuplicates: true,
-  }).catch(() => Promise.resolve());
+  // Idempotent availability — no unique compound key in schema, so skipDuplicates
+  // would silently no-op and duplicate rows on a second run. Use a deterministic
+  // (driverId, dayOfWeek) lookup with update-or-create instead.
+  const existingAvailability = await prisma.driverAvailability.findFirst({
+    where: { driverId: driver.id, dayOfWeek: 1 },
+  });
+  if (existingAvailability) {
+    await prisma.driverAvailability.update({
+      where: { id: existingAvailability.id },
+      data: { startTime: "08:00", endTime: "20:00" },
+    });
+  } else {
+    await prisma.driverAvailability.create({
+      data: { driverId: driver.id, dayOfWeek: 1, startTime: "08:00", endTime: "20:00" },
+    });
+  }
 
   return driver;
+}
+
+// Resolve a driver by its canonical identity email. Used by the legacy seed to
+// re-attach its hierarchy edges to the official Pedro/João records instead of
+// creating duplicate Users/Drivers.
+async function findDriverByEmail(prisma: any, email: string) {
+  return prisma.user
+    .findUnique({
+      where: { email },
+      select: { id: true, driver: { select: { id: true } } },
+    })
+    .then((u: { id: string; driver: { id: string } | null } | null) => {
+      if (!u?.driver) {
+        throw new Error(`[GoldenSeed] canonical driver not found for ${email} — official seed must run first`);
+      }
+      return { id: u.driver.id, userId: u.id };
+    });
 }
 
 async function upsertPassenger(
@@ -211,11 +268,13 @@ async function upsertRide(
     context?: unknown;
   }
 ) {
-  // No stable unique key in schema; upsert by (passengerId, scheduledAt, origin, destination)
+  // No stable unique key in schema; match by the stable identity
+  // (passengerId, origin, destination). scheduledAt is deliberately excluded —
+  // it's derived from runtime `now`, so a second run would produce a different
+  // timestamp and never match the first run's row.
   const existing = await prisma.rideRequest.findFirst({
     where: {
       passengerId: params.passengerId,
-      scheduledAt: params.scheduledAt,
       origin: params.origin,
       destination: params.destination,
     },
@@ -553,29 +612,12 @@ export async function runGoldenNetworkSeed(prisma: any) {
   // Ensure base tables exist via upsert.
 
   // 1) Drivers (golden set)
-  const pedro = await upsertDriverWithVehicleAndRegions(prisma, {
-    email: DRIVER_EMAIL.PEDRO,
-    name: "Pedro Paulo Motta",
-    phone: "21981722517",
-    experienceLevel: ExperienceLevel.PROFISSIONAL,
-    isActive: true,
-    referralCode: "pedro-paulo-motta-zn-premium",
-    publicSlug: "pedro-paulo-motta",
-    regions: [Region.ZN],
-    vehicle: { plate: "PEDRO-1111", model: "Accord", brand: "Honda", category: VehicleCategory.EXECUTIVO },
-  });
-
-  const joao = await upsertDriverWithVehicleAndRegions(prisma, {
-    email: DRIVER_EMAIL.JOAO,
-    name: "João Luiz Correa de Brito",
-    phone: "21994693673",
-    experienceLevel: ExperienceLevel.INTERMEDIARIO,
-    isActive: true,
-    referralCode: "joao-luiz-transporte-assistido",
-    publicSlug: "joao-luiz-brito",
-    regions: [Region.ZS],
-    vehicle: { plate: "JOAO-2222", model: "Logan", brand: "Renault", category: VehicleCategory.CONFORTO },
-  });
+  // Pedro and João are canonical identities created by the official seed
+  // (REAL_NETWORK.PEDRO = mottapedro01@gmail.com, REAL_NETWORK.JOAO = jln@gmail.com).
+  // Resolve them here so the legacy hierarchy reuses the canonical records —
+  // never recreate duplicate Users/Drivers with legacy emails.
+  const pedro = await findDriverByEmail(prisma, REAL_NETWORK.PEDRO.email);
+  const joao = await findDriverByEmail(prisma, REAL_NETWORK.JOAO.email);
 
   const ana = await upsertDriverWithVehicleAndRegions(prisma, {
     email: DRIVER_EMAIL.ANA_RECURRENCE,
@@ -786,9 +828,17 @@ export async function runGoldenNetworkSeed(prisma: any) {
 export async function main() {
   const prisma = sharedPrisma;
   try {
-    await runGoldenNetworkSeed(prisma);
+    // Structural domain configuration first (single source of truth lives in
+    // the policy seed routines — never duplicated here).
+    await seedRevenuePolicies(prisma);
+    await seedOwnershipPolicies(prisma);
+    await seedSkillCatalog(prisma);
+    // Official network first: creates the canonical identities (mottapedro01@gmail.com,
+    // jln@gmail.com). The legacy seed resolves those same identities to attach its
+    // hierarchy edges — never duplicate records.
     await runOfficialGoldenNetworkSeed(prisma);
-    console.log("✅ Golden network seed (legacy + oficial) complete");
+    await runGoldenNetworkSeed(prisma);
+    console.log("✅ Golden network seed (structural policies + oficial + legacy) complete");
   } finally {
     await prisma.$disconnect();
   }
