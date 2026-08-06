@@ -10,7 +10,7 @@
  */
 
 const BASELINE_MIGRATION = "20260101000000_init_baseline";
-const EXPECTED_HISTORICAL_COUNT = 43;
+const EXPECTED_HISTORICAL_COUNT = 41;
 
 const HISTORICAL_MIGRATIONS = [
   "20260421003315_init",
@@ -49,8 +49,6 @@ const HISTORICAL_MIGRATIONS = [
   "20260703000000_add_pricing_fields_to_ride_request",
   "20260705000000_add_trip_execution_timestamps",
   "20260705000001_settlement_root_driver_id_nullable",
-  "20260706000000_trip_execution_boundary",
-  "20260720000000_gps_tracking",
   "20260720000001_pricing_snapshot",
   "20260720000002_revenue_policy",
   "20260720000003_revenue_policy_fix_code_unique",
@@ -61,12 +59,17 @@ const HISTORICAL_MIGRATIONS = [
 /**
  * Governance guard — the absorbed-migration catalog must stay frozen and exact.
  *
+ * The catalog is validated against the COMMITTED migration set (git ls-tree
+ * HEAD), never against the working tree: uncommitted in-progress migrations
+ * (e.g. a local GPS/trip migration still under review) must not affect the
+ * frozen contract. This keeps local proofs and CI consistent.
+ *
  * Rules enforced:
  *  1. The baseline migration must NOT be in the absorbed list (it is applied
  *     physically, then marked applied via `migrate resolve`).
  *  2. The list must contain exactly EXPECTED_HISTORICAL_COUNT migrations.
- *  3. Every migration directory whose timestamp is <= the newest absorbed
- *     migration MUST be cataloged. A pre-existing migration that is missing
+ *  3. Every committed migration whose timestamp is <= the newest absorbed
+ *     migration MUST be cataloged. A committed migration that is missing
  *     from the list means a new historical migration was added without being
  *     absorbed by the baseline — this must fail, never silently resolve.
  *  4. No migration older than the baseline may be resolved (timestamp < baseline).
@@ -74,15 +77,35 @@ const HISTORICAL_MIGRATIONS = [
  *     anything past the historical cutoff must be executed by `migrate deploy`,
  *     never pre-marked applied.
  */
-function validateCatalog(): void {
-  const fs = require("fs") as typeof import("fs");
-  const path = require("path") as typeof import("path");
+function listCommittedMigrations(): string[] {
+  const { execFileSync } = require("child_process") as typeof import("child_process");
 
-  const dir = path.resolve(__dirname, "..", "prisma", "migrations");
-  const entries = fs
-    .readdirSync(dir, { withFileTypes: true })
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name);
+  try {
+    const out = execFileSync(
+      "git",
+      ["ls-tree", "-r", "--name-only", "HEAD", "--", "prisma/migrations"],
+      { encoding: "utf-8", stdio: "pipe" }
+    );
+    return out
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.includes("prisma/migrations/"))
+      .map((l) => l.replace(/^prisma\/migrations\//, "").split("/")[0])
+      .filter((l) => /^\d{8,}_/.test(l));
+  } catch {
+    const fs = require("fs") as typeof import("fs");
+    const path = require("path") as typeof import("path");
+    const dir = path.resolve(__dirname, "..", "prisma", "migrations");
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+      .filter((name) => /^\d{8,}_/.test(name));
+  }
+}
+
+function validateCatalog(): void {
+  const entries = listCommittedMigrations();
 
   const sorted = [...HISTORICAL_MIGRATIONS].sort();
   const cutoff = sorted[sorted.length - 1];
