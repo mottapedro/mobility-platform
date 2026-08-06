@@ -9,6 +9,9 @@
  *   npx tsx scripts/baseline-resolve-historical.ts
  */
 
+const BASELINE_MIGRATION = "20260101000000_init_baseline";
+const EXPECTED_HISTORICAL_COUNT = 43;
+
 const HISTORICAL_MIGRATIONS = [
   "20260421003315_init",
   "20260422015353_add_ride_metrics",
@@ -55,17 +58,122 @@ const HISTORICAL_MIGRATIONS = [
   "20260720000005_ownership_policy",
 ];
 
+/**
+ * Governance guard — the absorbed-migration catalog must stay frozen and exact.
+ *
+ * Rules enforced:
+ *  1. The baseline migration must NOT be in the absorbed list (it is applied
+ *     physically, then marked applied via `migrate resolve`).
+ *  2. The list must contain exactly EXPECTED_HISTORICAL_COUNT migrations.
+ *  3. Every migration directory whose timestamp is <= the newest absorbed
+ *     migration MUST be cataloged. A pre-existing migration that is missing
+ *     from the list means a new historical migration was added without being
+ *     absorbed by the baseline — this must fail, never silently resolve.
+ *  4. No migration older than the baseline may be resolved (timestamp < baseline).
+ *  5. No migration newer than the newest absorbed migration may be resolved —
+ *     anything past the historical cutoff must be executed by `migrate deploy`,
+ *     never pre-marked applied.
+ */
+function validateCatalog(): void {
+  const fs = require("fs") as typeof import("fs");
+  const path = require("path") as typeof import("path");
+
+  const dir = path.resolve(__dirname, "..", "prisma", "migrations");
+  const entries = fs
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+
+  const sorted = [...HISTORICAL_MIGRATIONS].sort();
+  const cutoff = sorted[sorted.length - 1];
+
+  const errors: string[] = [];
+
+  if (HISTORICAL_MIGRATIONS.includes(BASELINE_MIGRATION)) {
+    errors.push(`catalog must NOT include the baseline migration (${BASELINE_MIGRATION})`);
+  }
+
+  if (HISTORICAL_MIGRATIONS.length !== EXPECTED_HISTORICAL_COUNT) {
+    errors.push(
+      `catalog has ${HISTORICAL_MIGRATIONS.length} entries; expected exactly ${EXPECTED_HISTORICAL_COUNT}`
+    );
+  }
+
+  for (const name of entries) {
+    if (name === BASELINE_MIGRATION) continue;
+
+    const isAbsorbed = HISTORICAL_MIGRATIONS.includes(name);
+
+    if (!isAbsorbed && name <= cutoff) {
+      errors.push(
+        `migration "${name}" exists at/below the historical cutoff (${cutoff}) but is NOT cataloged as absorbed — the baseline likely predates it`
+      );
+    }
+
+    if (isAbsorbed && name < BASELINE_MIGRATION) {
+      errors.push(`catalog resolves "${name}" which is older than the baseline — invalid`);
+    }
+
+    if (isAbsorbed && name > cutoff) {
+      errors.push(`catalog resolves "${name}" which is newer than the historical cutoff (${cutoff}) — must run via migrate deploy, not be pre-applied`);
+    }
+  }
+
+  for (const name of HISTORICAL_MIGRATIONS) {
+    if (!entries.includes(name)) {
+      errors.push(`catalog references "${name}" but the migrations directory is missing it`);
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error("\n❌ Baseline historical catalog validation FAILED:");
+    for (const err of errors) console.error(`   - ${err}`);
+    console.error(
+      "   The absorbed-migration catalog must match the frozen historical set.\n"
+    );
+    process.exit(1);
+  }
+
+  console.log(
+    `✅ Catalog OK: ${EXPECTED_HISTORICAL_COUNT} absorbed migrations, baseline excluded, cutoff="${cutoff}"`
+  );
+}
+
 async function main() {
-  const { execSync } = await import("child_process");
+  const { execFileSync } = await import("child_process");
+  const path = await import("path");
   const configPath = "scripts/prisma.bootstrap.ts";
-  
+
+  // Resolve the Prisma CLI entry so the script works on any OS without
+  // depending on `npx` being on PATH (paths with spaces break `npx` on
+  // Windows). `node node_modules/prisma/build/index.js` is the CLI entry.
+  const prismaCli = path.join(
+    __dirname,
+    "..",
+    "node_modules",
+    "prisma",
+    "build",
+    "index.js"
+  );
+
+  validateCatalog();
+
   let success = 0;
   let failed = 0;
-  
+
   for (const migration of HISTORICAL_MIGRATIONS) {
     try {
-      execSync(
-        `npx prisma migrate resolve --config ${configPath} --applied "${migration}"`,
+      execFileSync(
+        process.execPath,
+        [
+          prismaCli,
+          "migrate",
+          "resolve",
+          "--config",
+          configPath,
+          "--applied",
+          migration,
+        ],
         { stdio: "pipe", encoding: "utf-8" }
       );
       success++;

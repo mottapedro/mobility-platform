@@ -42,8 +42,43 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Apply migrations
+      - name: Guard — public schema must be empty
+        run: |
+          npx prisma db execute \
+            --config scripts/prisma.bootstrap.ts \
+            --stdin <<'SQL'
+          DO $$ BEGIN
+            IF EXISTS (
+              SELECT 1
+              FROM information_schema.tables
+              WHERE table_schema = 'public'
+                AND table_type = 'BASE TABLE'
+            ) THEN
+              RAISE EXCEPTION 'GOVERNANCE_GATE_ABORT: public schema already has tables';
+            END IF;
+          END $$;
+          SQL
+
+      - name: Apply baseline SQL
+        run: >
+          npx prisma db execute
+          --config scripts/prisma.bootstrap.ts
+          --file prisma/migrations/20260101000000_init_baseline/migration.sql
+
+      - name: Mark baseline as applied
+        run: >
+          npx prisma migrate resolve
+          --config scripts/prisma.bootstrap.ts
+          --applied 20260101000000_init_baseline
+
+      - name: Mark baseline-superseded historical migrations as applied
+        run: npx tsx scripts/baseline-resolve-historical.ts
+
+      - name: Apply post-baseline migrations
         run: npx prisma migrate deploy
+
+      - name: Verify migration status
+        run: npx prisma migrate status
 
       - name: Generate Prisma client
         run: npx prisma generate
