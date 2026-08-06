@@ -7,6 +7,7 @@ import {
 } from "../shared/events/EventBus";
 import { PixProvider } from "./providers/PixProvider";
 import { settleConfirmedPayment } from "./SettlementService";
+import { startTripExecution } from "../trip/TripLifecycleService";
 
 export interface CreatePaymentIntentInput {
   rideRequestId: string;
@@ -140,6 +141,7 @@ export async function handlePixWebhook(
       });
     }
     await settleConfirmedPayment(intent.id, bus);
+    await startTripExecution(intent.id, bus);
     return confirmed;
   }
 

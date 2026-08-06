@@ -36,6 +36,16 @@ describe("Smoke: PIX payment flow", () => {
     clearPendingReferralFallbacks();
 
     // Step 2 — Simulate ride completion (dispatch flow is out of scope for smoke)
+    // Set any pending offer to ACCEPTED so startTripExecution finds it after PIX webhook
+    const pendingOffer = await prisma.rideOffer.findFirst({
+      where: { rideRequestId: ride.id },
+    });
+    if (pendingOffer) {
+      await prisma.rideOffer.update({
+        where: { id: pendingOffer.id },
+        data:  { status: "ACCEPTED" },
+      });
+    }
     await setRideCompleted(ride.id);
 
     // Step 3 — Payment intent
@@ -62,6 +72,23 @@ describe("Smoke: PIX payment flow", () => {
     expect(Number(settlement.body.driverCents)).toBeGreaterThan(0);
     expect(Number(settlement.body.platformCents)).toBeGreaterThan(0);
     expect(Array.isArray(settlement.body.splits)).toBe(true);
+
+    // Trip Execution Boundary: navigationStartedAt stamped, offer → PAID
+    const rideAfter = await prisma.rideRequest.findUnique({ where: { id: ride.id } });
+    if (pendingOffer) {
+      expect(rideAfter?.navigationStartedAt).not.toBeNull();
+      const offerAfter = await prisma.rideOffer.findUnique({ where: { id: pendingOffer.id } });
+      expect(offerAfter?.status).toBe("PAID");
+    }
+
+    // TRIP_EXECUTION_STARTED domain event persisted
+    const tripEvent = await prisma.domainEvent.findFirst({
+      where: { aggregateId: ride.id, type: "TRIP_EXECUTION_STARTED" },
+    });
+    if (pendingOffer) {
+      expect(tripEvent).not.toBeNull();
+      expect((tripEvent?.payload as any).validador).toBe("SYS-GatewayPix");
+    }
 
     // Idempotency: second webhook must not error
     const webhook2 = await triggerPixWebhook(externalId);
