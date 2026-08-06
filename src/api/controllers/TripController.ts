@@ -1,7 +1,38 @@
 import { Router, Request, Response } from "express";
-import { recordPing, recordBulkPings } from "../../domain/trip/TripTrackingService";
+import { prisma } from "../../infra/prisma/client";
+import { recordPing, recordBulkPings, getLatestLocation } from "../../domain/trip/TripTrackingService";
 
 export const tripRouter = Router();
+
+tripRouter.get("/:rideId/location", async (req: Request, res: Response) => {
+  const rideId = req.params["rideId"] as string;
+  if (!rideId) {
+    return res.status(400).json({ error: "rideId required" });
+  }
+
+  const ride = await prisma.rideRequest.findUnique({
+    where: { id: rideId },
+    select: { id: true },
+  });
+  if (!ride) {
+    return res.status(404).json({ error: "RideRequest not found" });
+  }
+
+  const location = await getLatestLocation(rideId);
+  if (!location) {
+    return res.status(200).json({ hasLocation: false, rideId });
+  }
+  return res.status(200).json({
+    hasLocation: true,
+    rideId: location.rideRequestId,
+    driverId: location.driverId,
+    lat: location.lat,
+    lng: location.lng,
+    recordedAt: location.recordedAt?.toISOString(),
+    receivedAt: location.receivedAt?.toISOString(),
+    source: location.source,
+  });
+});
 
 tripRouter.post("/:rideId/gps-ping", async (req: Request, res: Response) => {
   const rideId = req.params["rideId"] as string;

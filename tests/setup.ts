@@ -150,6 +150,20 @@ export async function cleanTestData(): Promise<void> {
       where: { rideId: { in: testRideRequestIds } },
     });
 
+    // Trip/GPS: DriverLocationPing has FK ON DELETE RESTRICT to RideRequest and
+    // Driver — must delete before both. Also wipes pings recorded by test drivers.
+    const testPingDriverIds = testDriverIds.length > 0 ? testDriverIds : [];
+    if (testPingDriverIds.length > 0 || testRideRequestIds.length > 0) {
+      await prisma.driverLocationPing.deleteMany({
+        where: {
+          OR: [
+            ...(testPingDriverIds.length > 0 ? [{ driverId: { in: testPingDriverIds } }] : []),
+            ...(testRideRequestIds.length > 0 ? [{ rideRequestId: { in: testRideRequestIds } }] : []),
+          ],
+        },
+      });
+    }
+
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {

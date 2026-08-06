@@ -8,6 +8,41 @@ interface PingInput {
   recordedAt: Date;
 }
 
+export interface LatestLocation {
+  hasLocation: boolean;
+  rideRequestId: string;
+  driverId?: string;
+  lat?: number;
+  lng?: number;
+  recordedAt?: Date;
+  receivedAt?: Date;
+  source?: string;
+}
+
+/**
+ * Returns the most recent DriverLocationPing for a ride.
+ * Ordering: recordedAt desc, with receivedAt as tiebreak (recordedAt may be
+ * client-supplied and non-monotonic across offline/online flushes).
+ * Read-only — never infers, never fabricates.
+ */
+export async function getLatestLocation(rideRequestId: string): Promise<LatestLocation | null> {
+  const ping = await prisma.driverLocationPing.findFirst({
+    where:  { rideRequestId },
+    orderBy: [{ recordedAt: "desc" }, { receivedAt: "desc" }],
+  });
+  if (!ping) return null;
+  return {
+    hasLocation: true,
+    rideRequestId: ping.rideRequestId,
+    driverId: ping.driverId,
+    lat: ping.lat,
+    lng: ping.lng,
+    recordedAt: ping.recordedAt,
+    receivedAt: ping.receivedAt,
+    source: ping.source,
+  };
+}
+
 export async function recordPing(
   rideRequestId: string,
   driverId: string,
