@@ -80,6 +80,32 @@ Correções devem ser feitas via eventos compensatórios.
 
 Nunca executar `DELETE` ou `UPDATE` destrutivo em produção.
 
+### Migrations absorvidas pela baseline (Estratégia A)
+
+Efeitos de migrations locais que já estejam **integralmente** presentes na baseline
+(`20260101000000_init_baseline`) e nos bancos físicos (local, HML) **não devem ser
+versionados**. Trata-se da Estratégia A de governança de migrations:
+
+1. Confirmar nominalmente cada efeito no `prisma/schema.prisma` e no SQL da baseline
+   (enums, colunas, tabelas, índices, FKs e ações ON DELETE/ON UPDATE).
+2. Confirmar a presença física em todos os ambientes alvo (local, HML, CI, produção).
+3. **Não** adicionar essas migrations ao catálogo histórico
+   (`scripts/baseline-resolve-historical.ts`), **não** executar `migrate resolve`
+   em ambientes que já as possuem aplicadas e **não** versionar os diretórios antigos.
+4. Registrar a decisão aqui (documentação de governança) antes de qualquer commit de runtime.
+
+Exemplo vigente: `20260706000000_trip_execution_boundary` e `20260720000000_gps_tracking`
+(`RideOfferStatus.PAID`, `DomainEventType.TRIP_EXECUTION_STARTED`, `navigationStartedAt`,
+tabela `DriverLocationPing` com índice e FKs) já estão absorvidos pela baseline — os
+diretórios permanecem **fora do versionamento**.
+
+Evolução futura: qualquer mudança na funcionalidade Trip/GPS deve entrar como **nova
+migration pós-cutoff** (timestamp superior a `20260720000005_ownership_policy`),
+nunca reutilizando ou reintroduzindo os diretórios absorvidos.
+
+Cuidado: `git add -A` cego pode incluir pastas de migrations absorvidas; o guard do CI
+falhará de propósito se uma migration não catalogada aparecer em `git ls-tree HEAD`.
+
 ---
 
 ## 3. Rename Rule — Expand / Migrate / Contract
