@@ -7,6 +7,7 @@ import {
 } from "../../src/domain/godnetwork/GodNetworkService";
 import { buildGenealogyProjection } from "../../src/domain/genealogy/BuildGenealogyProjectionService";
 import { buildDescendantsTree } from "../../src/domain/genealogy/treeBuilder";
+import type { GenealogyNode } from "../../src/domain/genealogy/GenealogyTypes";
 import { buildNetworkContextForDriver } from "../../src/domain/network/NetworkContextProjectionService";
 import { SyncProjectionJob } from "../../src/domain/network/SyncProjectionJob";
 import type { FrontendGenealogyNode } from "../../src/domain/network/NetworkContextTypes";
@@ -93,7 +94,7 @@ function canonicalTree(nodes: FrontendGenealogyNode[]): unknown {
   }));
 }
 
-function arraysEqualAsSet(left: string[], right: string[]): boolean {
+function arraysEqualAsSet(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
   const a = new Set(left);
   const b = new Set(right);
@@ -102,6 +103,31 @@ function arraysEqualAsSet(left: string[], right: string[]): boolean {
     if (!b.has(x)) return false;
   }
   return true;
+}
+
+type StructuralTopologyNode = Pick<
+  GenealogyNode,
+  "actorId" | "actorType" | "flowType" | "parentId"
+>;
+
+export function evaluateDirectD2DDriverChildren(
+  nodes: readonly StructuralTopologyNode[],
+  parentId: string,
+  expectedDriverIds: readonly string[]
+): { actualDriverIds: string[]; pass: boolean } {
+  const actualDriverIds = nodes
+    .filter(
+      (node) =>
+        node.parentId === parentId &&
+        node.actorType === ActorType.DRIVER &&
+        node.flowType === ReferralFlowType.DRIVER_TO_DRIVER
+    )
+    .map((node) => node.actorId);
+
+  return {
+    actualDriverIds,
+    pass: arraysEqualAsSet(actualDriverIds, expectedDriverIds),
+  };
 }
 
 function safeJson(value: unknown): string {
@@ -309,15 +335,18 @@ async function main(): Promise<void> {
     const joaoChildrenExpected = GOD_NETWORK.level2UnderJoao
       .map((x) => idByEmail.get(x.email))
       .filter((x): x is string => !!x);
-    const joaoChildrenActual = projection.nodes
-      .filter((n) => n.parentId === joaoId)
-      .map((n) => n.actorId);
+    const joaoChildrenEvaluation = evaluateDirectD2DDriverChildren(
+      projection.nodes,
+      joaoId,
+      joaoChildrenExpected
+    );
+    const joaoChildrenActual = joaoChildrenEvaluation.actualDriverIds;
 
     record(
       "topology_integrity",
       "joao-l2-children-exact",
-      arraysEqualAsSet(joaoChildrenActual, joaoChildrenExpected),
-      arraysEqualAsSet(joaoChildrenActual, joaoChildrenExpected)
+      joaoChildrenEvaluation.pass,
+      joaoChildrenEvaluation.pass
         ? "Joao direct children match official L2 set exactly."
         : `Joao children mismatch. actual=${joaoChildrenActual.length} expected=${joaoChildrenExpected.length}`
     );
@@ -733,11 +762,13 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((error) => {
-    console.error("Audit execution failed:", error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  main()
+    .catch((error) => {
+      console.error("Audit execution failed:", error);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}
