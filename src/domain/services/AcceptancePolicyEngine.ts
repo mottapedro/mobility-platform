@@ -8,6 +8,10 @@
  *                             (30 min for scheduled rides; 2 min for immediate)
  *   3. referralWindow       — exclusivity window for the referred driver
  *                             (min(30 min, time until cutoff) for scheduled; 5 min for immediate)
+ *
+ * Short-notice scheduled rides (scheduled less than 24 h ahead) have their
+ * cutoff clamped to now + 15 min so the offer never expires before the driver
+ * has a reasonable window to open the app and accept (see computePolicy).
  */
 
 export const OPERATIONAL_CUTOFF_HOURS = 24;
@@ -15,6 +19,7 @@ export const SCHEDULED_OFFER_TIMEOUT_MS = 30 * 60 * 1000;   // 30 minutes per dr
 export const IMMEDIATE_OFFER_TIMEOUT_MS = 2 * 60 * 1000;    // 2 minutes per driver
 export const REFERRAL_WINDOW_IMMEDIATE_MS = 5 * 60 * 1000;  // 5 minutes (existing behaviour)
 export const NETWORK_OFFER_TIMEOUT_MS = 15 * 60 * 1000;     // 15 minutes — network-owned rides (D2P / P2P with rootDriverId)
+export const SHORT_NOTICE_OFFER_WINDOW_MS = 15 * 60 * 1000; // 15 minutes — short-notice scheduled rides (<24 h ahead) keep a 15-min offer window
 
 export interface RidePolicy {
   rideStartsAt: Date | null;
@@ -53,11 +58,13 @@ export class AcceptancePolicyEngine {
     const rawCutoff = new Date(
       scheduledAt.getTime() - OPERATIONAL_CUTOFF_HOURS * 60 * 60 * 1000
     );
-    // Clamp: never set cutoff in the past — short-notice rides get at least
-    // 5 minutes of dispatch window so the matching job can run.
-    const cutoff = rawCutoff.getTime() > Date.now() + 5 * 60 * 1000
+    // Clamp: never set cutoff in the past — short-notice rides (scheduled less
+    // than 24 h ahead) keep a 15-min offer window so the driver has time to
+    // open the app and accept. 5 min was too tight: the offer expired before
+    // a driver with the app closed could react.
+    const cutoff = rawCutoff.getTime() > Date.now() + SHORT_NOTICE_OFFER_WINDOW_MS
       ? rawCutoff
-      : new Date(Date.now() + 5 * 60 * 1000);
+      : new Date(Date.now() + SHORT_NOTICE_OFFER_WINDOW_MS);
 
     // Scheduled referral window: min(30 min, time until cutoff from now)
     const msUntilCutoff = cutoff.getTime() - Date.now();
@@ -93,8 +100,10 @@ export class AcceptancePolicyEngine {
   /**
    * Compute the expiry timestamp for a single offer.
    *
-   * For scheduled rides: min(now + 30 min, operationalCutoffAt)
-   * For immediate rides: now + 2 min
+   * For scheduled rides: min(now + 30 min, operationalCutoffAt). The cutoff is
+   * clamped to now + 15 min for short-notice rides, so such offers expire 15 min
+   * after dispatch (previously 5 min).
+   * For immediate rides: now + 2 min (15 min when network-owned).
    */
   static computeOfferExpiry(now: Date, policy: RidePolicy): Date {
     const base = new Date(now.getTime() + policy.offerResponseTimeoutMs);

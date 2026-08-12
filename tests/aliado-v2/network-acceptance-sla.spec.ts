@@ -116,6 +116,18 @@ describe("AcceptancePolicyEngine - network SLA (unit)", () => {
     expect(policy.offerResponseTimeoutMs).toBe(IMMEDIATE_OFFER_TIMEOUT_MS);
     expect(policy.isNetworkOwned).toBe(false);
   });
+
+  test("short-notice scheduled (<24h ahead): cutoff clamped to now+15 min, offer expires in ~15 min", () => {
+    const scheduledAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2h ahead → rawCutoff is in the past
+    const now = new Date();
+    const policy = AcceptancePolicyEngine.computePolicy(scheduledAt, true);
+    expect(policy.isScheduled).toBe(true);
+    expect(policy.operationalCutoffAt).not.toBeNull();
+    const expiry = AcceptancePolicyEngine.computeOfferExpiry(now, policy);
+    const windowMs = expiry.getTime() - now.getTime();
+    expect(windowMs).toBeGreaterThanOrEqual(15 * 60 * 1000 - 5_000);
+    expect(windowMs).toBeLessThanOrEqual(15 * 60 * 1000 + 5_000);
+  });
 });
 
 // --- Integration tests: MatchRideUseCase wires isNetworkOwned ---
