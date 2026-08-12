@@ -11,6 +11,7 @@
  *
  * Usage (from repo root, PowerShell):
  *   node scripts/verify-seed-idempotency.cjs
+ *   $env:SEED_IDEMPOTENCY_DATABASE_URL="postgresql://postgres:postgres@localhost:55432/postgres"
  *
  * The disposable database is created and dropped by this script.
  */
@@ -65,7 +66,7 @@ async function connect(conn) {
 }
 
 async function main() {
-  const localUrl = readLocalDbUrl();
+  const localUrl = process.env.SEED_IDEMPOTENCY_DATABASE_URL || readLocalDbUrl();
   const adminConn = parseConn(withDb(localUrl, "postgres"));
   const disposableConn = parseConn(withDb(localUrl, DISPOSABLE_DB));
 
@@ -164,6 +165,35 @@ async function main() {
     identityTable.push([e, `${i1.length} keys`, same ? "✅" : "❌"]);
   }
 
+  // Direct D2D graph identity must be stable across runs and exactly equal
+  // between the legacy closure table and the V2 relational read model.
+  const d2dIdentityKeys = ["DriverReferralD2D", "ReferralRelationshipD2D"];
+  for (const e of d2dIdentityKeys) {
+    const i1 = r1.identities[e];
+    const i2 = r2.identities[e];
+    const same = JSON.stringify(i1) === JSON.stringify(i2);
+    if (!same) {
+      identityPass = false;
+      allPass = false;
+    }
+    identityTable.push([e, `${i1.length} pairs`, same ? "✅" : "❌"]);
+  }
+
+  const expectedDirectD2DCount = 13;
+  const d2dParityR1 =
+    JSON.stringify(r1.identities.DriverReferralD2D) ===
+    JSON.stringify(r1.identities.ReferralRelationshipD2D);
+  const d2dParityR2 =
+    JSON.stringify(r2.identities.DriverReferralD2D) ===
+    JSON.stringify(r2.identities.ReferralRelationshipD2D);
+  const d2dCountOk =
+    r1.identities.DriverReferralD2D.length === expectedDirectD2DCount &&
+    r1.identities.ReferralRelationshipD2D.length === expectedDirectD2DCount &&
+    r2.identities.DriverReferralD2D.length === expectedDirectD2DCount &&
+    r2.identities.ReferralRelationshipD2D.length === expectedDirectD2DCount;
+  const d2dParityOk = d2dParityR1 && d2dParityR2 && d2dCountOk;
+  if (!d2dParityOk) allPass = false;
+
   // 5. DriverAvailability duplication check
   const availKeys1 = r1.identities.DriverAvailability.map((k) => k.join("|")).sort();
   const availUnique = new Set(availKeys1).size === availKeys1.length;
@@ -239,6 +269,13 @@ async function main() {
   for (const [label, v] of availTable) {
     console.log(`${label.padEnd(52)} ${v}`);
   }
+  console.log("\n=== Direct D2D parity ===");
+  console.log(`R1 DriverReferral pairs: ${r1.identities.DriverReferralD2D.length}`);
+  console.log(`R1 ReferralRelationship pairs: ${r1.identities.ReferralRelationshipD2D.length}`);
+  console.log(`R1 exact pair parity: ${d2dParityR1 ? "✅" : "❌"}`);
+  console.log(`R2 DriverReferral pairs: ${r2.identities.DriverReferralD2D.length}`);
+  console.log(`R2 ReferralRelationship pairs: ${r2.identities.ReferralRelationshipD2D.length}`);
+  console.log(`R2 exact pair parity: ${d2dParityR2 ? "✅" : "❌"}`);
   console.log("\n=== Policies ===");
   console.log(`ROOT_DRIVER_STANDARD v1 count: ${rpStandard.length}  bps=${rpStandard[0]?.rootDriverBps}  baseType=${rpStandard[0]?.baseType}  ${rpOk ? "✅" : "❌"}`);
   console.log(`OwnershipPolicy default count: ${opDefault.length}  strategy=${opDefault[0]?.resolutionStrategy}  ${opOk ? "✅" : "❌"}`);
@@ -260,7 +297,7 @@ async function main() {
   await admin2.end();
   console.log("\n  ✅ disposable DB dropped");
 
-  if (!allPass || !availUnique || !rpOk || !opOk || !canonicalOk || !fkOk) {
+  if (!allPass || !availUnique || !rpOk || !opOk || !canonicalOk || !fkOk || !d2dParityOk) {
     console.error("\n❌ IDEMPOTENCY PROOF FAILED");
     process.exit(1);
   }
@@ -303,6 +340,32 @@ async function snapshot(dbUrl) {
   identities.DriverAvailability = (
     await c.query(`SELECT "driverId", "dayOfWeek" FROM "DriverAvailability" ORDER BY "driverId", "dayOfWeek"`)
   ).rows.map((x) => [x.driverId, x.dayOfWeek]);
+  identities.DriverReferralD2D = (
+    await c.query(`
+      SELECT referrer_user.email AS "inviterEmail", referred_user.email AS "invitedEmail"
+      FROM "DriverReferral" referral
+      JOIN "Driver" referrer ON referrer.id = referral."referrerDriverId"
+      JOIN "User" referrer_user ON referrer_user.id = referrer."userId"
+      JOIN "Driver" referred ON referred.id = referral."referredDriverId"
+      JOIN "User" referred_user ON referred_user.id = referred."userId"
+      WHERE referral."isDirect" = true
+      ORDER BY referrer_user.email, referred_user.email
+    `)
+  ).rows.map((x) => [x.inviterEmail, x.invitedEmail]);
+  identities.ReferralRelationshipD2D = (
+    await c.query(`
+      SELECT inviter_user.email AS "inviterEmail", invited_user.email AS "invitedEmail"
+      FROM "ReferralRelationship" relationship
+      JOIN "Driver" inviter ON inviter.id = relationship."inviterId"
+      JOIN "User" inviter_user ON inviter_user.id = inviter."userId"
+      JOIN "Driver" invited ON invited.id = relationship."invitedId"
+      JOIN "User" invited_user ON invited_user.id = invited."userId"
+      WHERE relationship."inviterActorType" = 'DRIVER'
+        AND relationship."invitedActorType" = 'DRIVER'
+        AND relationship."flowType" = 'DRIVER_TO_DRIVER'
+      ORDER BY inviter_user.email, invited_user.email
+    `)
+  ).rows.map((x) => [x.inviterEmail, x.invitedEmail]);
   identities.RevenuePolicy = (
     await c.query(`SELECT code, version FROM "RevenuePolicy" ORDER BY code, version`)
   ).rows.map((x) => [x.code, x.version]);

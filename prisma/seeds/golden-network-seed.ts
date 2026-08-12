@@ -665,6 +665,25 @@ export async function runGoldenNetworkSeed(prisma: any) {
   // Pedro -> Roberto (level1)
   await createDriverReferralChain(roberto.id, pedro.id, prisma);
 
+  // Mirror the three legacy-only direct D2D edges into the V2 read model.
+  const legacyV2DirectEdges = [
+    { inviterId: pedro.id, invitedId: peter.id },
+    { inviterId: peter.id, invitedId: ana.id },
+    { inviterId: pedro.id, invitedId: roberto.id },
+  ];
+  for (const edge of legacyV2DirectEdges) {
+    await recordRelationship(
+      {
+        inviterActorType: ActorType.DRIVER,
+        inviterId: edge.inviterId,
+        invitedActorType: ActorType.DRIVER,
+        invitedId: edge.invitedId,
+      },
+      prisma
+    );
+  }
+  console.log("  ✅ V2: 3 legacy D2D referral edges recorded");
+
   // 3) Passengers (hierarchy)
   // Helper: project rootDriverId from the referring driver/passenger so the
   // V2 ownership model matches the legacy hierarchy. Without this the
