@@ -91,5 +91,16 @@ jobs:
       - name: Seed golden network
         run: npm run seed:golden
 
+      - name: Checkout official frontend for governance audit
+        uses: actions/checkout@v4
+        with:
+          repository: mottapedro/mobility-platform-frontend
+          ref: 78ef929e67441596b557314c94e4110511282e74
+          token: ${{ secrets.FRONTEND_REPO_READ_TOKEN }}
+          path: external/mobility-platform-frontend
+          persist-credentials: false
+
       - name: Run GodNetwork governance audit
+        env:
+          GODNETWORK_FRONTEND_REPO: ${{ github.workspace }}/external/mobility-platform-frontend
         run: npm run audit:godnetwork
