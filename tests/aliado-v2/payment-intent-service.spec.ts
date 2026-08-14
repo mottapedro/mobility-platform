@@ -4,13 +4,16 @@ import {
   PaymentStatus,
   RideStatus,
 } from "../../src/shared/enums";
-import { prisma } from "../setup";
+import { cleanTestData, prisma } from "../setup";
+import { useRevenuePolicyFixture } from "../fixtures/revenue-policy.fixture";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { InMemoryPixProvider } from "../../src/domain/payment/providers/InMemoryPixProvider";
 import {
   createPaymentIntent,
   handlePixWebhook,
 } from "../../src/domain/payment/PaymentIntentService";
+
+useRevenuePolicyFixture(prisma, cleanTestData);
 
 async function makeDriver(email: string) {
   const u = await prisma.user.create({

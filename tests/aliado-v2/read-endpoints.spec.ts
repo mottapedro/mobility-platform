@@ -64,9 +64,9 @@ describe("Read endpoints", () => {
   it("GET /godnetwork/status returns a conformance shape", async () => {
     const res = await request(app).get("/godnetwork/status");
     expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("rootDriverId");
     expect(res.body).toEqual(
       expect.objectContaining({
-        rootDriverId: expect.anything(),
         structure: expect.objectContaining({
           expectedLevel1Count: 4,
           expectedLevel2UnderJoaoCount: 6,

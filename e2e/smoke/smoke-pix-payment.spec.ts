@@ -1,4 +1,5 @@
-import { prisma } from "../../tests/setup";
+import { cleanTestData, prisma } from "../../tests/setup";
+import { useRevenuePolicyFixture } from "../../tests/fixtures/revenue-policy.fixture";
 import { clearPendingReferralFallbacks } from "../../src/application/use-cases/MatchRideUseCase";
 import { matchingJobScheduler } from "../../src/infra/async/MatchingJobScheduler";
 import {
@@ -10,6 +11,8 @@ import {
   triggerPixWebhook,
   getSettlement,
 } from "./support/api";
+
+useRevenuePolicyFixture(prisma, cleanTestData);
 
 describe("Smoke: PIX payment flow", () => {
   it("creates ride → payment intent → PIX webhook → settlement (happy path)", async () => {

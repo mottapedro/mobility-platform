@@ -21,7 +21,7 @@ beforeAll(async () => {
   });
 });
 
-afterAll(async () => {
+afterEach(async () => {
   await prisma.revenuePolicy.deleteMany({
     where: { code: { startsWith: "TEST_POLICY_" } },
   });

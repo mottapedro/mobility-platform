@@ -2,7 +2,10 @@ import bcrypt from "bcrypt";
 import request from "supertest";
 import { RideStatus } from "../../src/shared/enums";
 import { app } from "../../src/app";
-import { prisma } from "../setup";
+import { cleanTestData, prisma } from "../setup";
+import { useRevenuePolicyFixture } from "../fixtures/revenue-policy.fixture";
+
+useRevenuePolicyFixture(prisma, cleanTestData);
 
 async function makeDriver(email: string) {
   const u = await prisma.user.create({

@@ -1,4 +1,14 @@
-import { PrismaClient } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
+
+export interface RevenuePolicySeedClient {
+  revenuePolicy: {
+    upsert(args: {
+      where: { code_version: { code: string; version: number } };
+      update: Prisma.RevenuePolicyUpdateInput;
+      create: Prisma.RevenuePolicyCreateInput;
+    }): PromiseLike<unknown>;
+  };
+}
 
 /**
  * Seed das políticas de distribuição de receita operacional (ADR-002 v1.1).
@@ -6,7 +16,7 @@ import { PrismaClient } from "@prisma/client";
  * Idempotente: usa upsert por `code`. Pode ser executado múltiplas vezes
  * sem duplicar ou sobrescrever vigências históricas.
  */
-export async function seedRevenuePolicies(prisma: PrismaClient) {
+export async function seedRevenuePolicies(prisma: RevenuePolicySeedClient) {
   console.log("💰 Seeding RevenuePolicy...");
 
   // Política padrão do MVP: Root Driver recebe 5% do driverNetAmount.

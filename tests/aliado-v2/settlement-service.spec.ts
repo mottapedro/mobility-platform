@@ -2,7 +2,7 @@
  * SettlementService — integration tests (ADR-001 + ADR-002 v1.1)
  *
  * Requires DB (uses prisma from tests/setup).
- * RevenuePolicy ROOT_DRIVER_STANDARD is created in beforeAll and cleaned up in afterAll.
+ * RevenuePolicy ROOT_DRIVER_STANDARD is installed and cleaned per test.
  *
  * Expected values with ROOT_DRIVER_STANDARD (500 bps):
  *   platform = R$2,50 (250 cents) fixed
@@ -11,7 +11,8 @@
  */
 import bcrypt from "bcrypt";
 import { DomainEventType, RideStatus } from "../../src/shared/enums";
-import { prisma } from "../setup";
+import { cleanTestData, prisma } from "../setup";
+import { useRevenuePolicyFixture } from "../fixtures/revenue-policy.fixture";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { settleConfirmedPayment } from "../../src/domain/payment/SettlementService";
 import { PLATFORM_FEE_CENTS } from "../../src/domain/payment/RevenueSplitService";
@@ -96,23 +97,7 @@ function expectedSplits(totalCents: number, hasRoot: boolean) {
 // Setup: garante que ROOT_DRIVER_STANDARD existe no banco
 // ---------------------------------------------------------------------------
 
-let policyId: string;
-
-beforeAll(async () => {
-  const policy = await prisma.revenuePolicy.upsert({
-    where: { code_version: { code: "ROOT_DRIVER_STANDARD", version: 1 } },
-    update: {},
-    create: {
-      code: "ROOT_DRIVER_STANDARD",
-      name: "Padrão (test)",
-      version: 1,
-      baseType: "OPERATIONAL_REVENUE",
-      rootDriverBps: 500,
-      isActive: true,
-    },
-  });
-  policyId = policy.id;
-});
+const revenuePolicyFixture = useRevenuePolicyFixture(prisma, cleanTestData);
 
 // ---------------------------------------------------------------------------
 // Testes
@@ -135,7 +120,7 @@ describe("SettlementService (V2 — RevenuePolicy + ValidationGate)", () => {
     expect(result.rootDriverCents).toBe(exp.rootDriverCents);
     expect(result.rootDriverId).toBe(root.id);
     // Auditabilidade: política registrada no Settlement (ADR-002 §§5 + usuário)
-    expect(result.revenuePolicyId).toBe(policyId);
+    expect(result.revenuePolicyId).toBe(revenuePolicyFixture.policyId);
     expect(result.revenuePolicyVersion).toBe(1);
   });
 
