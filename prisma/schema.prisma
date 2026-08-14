@@ -17,6 +17,24 @@ model User {
   passwordHash String?
   driver       Driver?
   passenger    Passenger?
+  authSessions AuthSession[]
+}
+
+model AuthSession {
+  id               String    @id @default(uuid())
+  userId           String
+  refreshTokenHash String    @unique
+  familyId         String
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
+  lastUsedAt       DateTime  @default(now())
+  rotatedAt        DateTime?
+  revokedAt        DateTime?
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
 }
 
 model Driver {
