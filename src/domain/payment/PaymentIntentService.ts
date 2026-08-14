@@ -1,5 +1,9 @@
 import type { PaymentIntent } from "@prisma/client";
-import { DomainEventType, PaymentStatus } from "../../shared/enums";
+import {
+  DomainEventType,
+  PaymentStatus,
+  isValidPaymentTransition,
+} from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import {
   EventBus,
@@ -104,6 +108,8 @@ export interface HandlePixWebhookInput {
   status: WebhookStatus;
   failureReason?: string;
   bus: EventBus;
+  // Coordination seam used to prove read/update interleavings against real PostgreSQL.
+  afterIntentRead?: (intent: PaymentIntent) => Promise<void>;
 }
 
 /**
@@ -117,7 +123,7 @@ export interface HandlePixWebhookInput {
 export async function handlePixWebhook(
   input: HandlePixWebhookInput
 ): Promise<PaymentIntent> {
-  const { externalId, status, failureReason, bus } = input;
+  const { externalId, status, failureReason, bus, afterIntentRead } = input;
 
   const intent = await prisma.paymentIntent.findUnique({
     where: { externalId },
@@ -125,20 +131,39 @@ export async function handlePixWebhook(
   if (!intent) {
     throw new Error(`PaymentIntent with externalId=${externalId} not found`);
   }
+  await afterIntentRead?.(intent);
 
   if (status === "CONFIRMED") {
+    if (
+      intent.status !== PaymentStatus.CONFIRMED
+      && !isValidPaymentTransition(intent.status, PaymentStatus.CONFIRMED)
+    ) {
+      return intent;
+    }
+
     let confirmed = intent;
     if (intent.status !== PaymentStatus.CONFIRMED) {
-      confirmed = await prisma.paymentIntent.update({
-        where: { id: intent.id },
+      // CAS: exactly one caller owns the PENDING -> CONFIRMED transition/event.
+      const transition = await prisma.paymentIntent.updateMany({
+        where: { id: intent.id, status: PaymentStatus.PENDING },
         data: { status: PaymentStatus.CONFIRMED, confirmedAt: new Date() },
       });
-      await recordAndPublish(bus, {
-        type: DomainEventType.PAYMENT_CONFIRMED,
-        aggregateType: "PaymentIntent",
-        aggregateId: intent.id,
-        payload: { externalId, amountCents: intent.amountCents },
-      });
+      if (transition.count === 1) {
+        confirmed = await prisma.paymentIntent.findUniqueOrThrow({
+          where: { id: intent.id },
+        });
+        await recordAndPublish(bus, {
+          type: DomainEventType.PAYMENT_CONFIRMED,
+          aggregateType: "PaymentIntent",
+          aggregateId: intent.id,
+          payload: { externalId, amountCents: intent.amountCents },
+        });
+      } else {
+        confirmed = await prisma.paymentIntent.findUniqueOrThrow({
+          where: { id: intent.id },
+        });
+        if (confirmed.status !== PaymentStatus.CONFIRMED) return confirmed;
+      }
     }
     await settleConfirmedPayment(intent.id, bus);
     await startTripExecution(intent.id, bus);
@@ -146,14 +171,21 @@ export async function handlePixWebhook(
   }
 
   // FAILED
-  if (intent.status === PaymentStatus.FAILED) return intent;
-  const failed = await prisma.paymentIntent.update({
-    where: { id: intent.id },
+  if (!isValidPaymentTransition(intent.status, PaymentStatus.FAILED)) return intent;
+  // The same CAS prevents a late FAILED webhook from overwriting a concurrent winner.
+  const transition = await prisma.paymentIntent.updateMany({
+    where: { id: intent.id, status: PaymentStatus.PENDING },
     data: {
       status: PaymentStatus.FAILED,
       failedAt: new Date(),
       failureReason: failureReason ?? null,
     },
+  });
+  if (transition.count === 0) {
+    return prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+  }
+  const failed = await prisma.paymentIntent.findUniqueOrThrow({
+    where: { id: intent.id },
   });
   await recordAndPublish(bus, {
     type: DomainEventType.PAYMENT_FAILED,

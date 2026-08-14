@@ -196,8 +196,22 @@ describe("SettlementService (V2 — RevenuePolicy + ValidationGate)", () => {
     const intent = await makeIntent(ride.id, 3_000);
 
     const a = await settleConfirmedPayment(intent.id, createEventBus());
+    const snapshotBefore = await prisma.settlement.findUniqueOrThrow({
+      where: { id: a.id },
+      include: { splits: { orderBy: { beneficiaryType: "asc" } } },
+    });
+    await prisma.revenuePolicy.update({
+      where: { id: a.revenuePolicyId! },
+      data: { rootDriverBps: 1_000 },
+    });
     const b = await settleConfirmedPayment(intent.id, createEventBus());
     expect(a.id).toBe(b.id);
+
+    const snapshotAfter = await prisma.settlement.findUniqueOrThrow({
+      where: { id: b.id },
+      include: { splits: { orderBy: { beneficiaryType: "asc" } } },
+    });
+    expect(snapshotAfter).toEqual(snapshotBefore);
 
     const count = await prisma.settlement.count({ where: { paymentIntentId: intent.id } });
     expect(count).toBe(1);

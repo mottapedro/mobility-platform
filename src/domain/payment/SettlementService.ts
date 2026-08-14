@@ -1,4 +1,4 @@
-import type { Settlement } from "@prisma/client";
+import { Prisma, type Settlement } from "@prisma/client";
 import { DomainEventType, PaymentStatus, SplitBeneficiaryType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { EventBus, recordAndPublish } from "../shared/events/EventBus";
@@ -105,6 +105,7 @@ export async function settleConfirmedPayment(
 
   const driverId = ride.selectedDriverId ?? null;
 
+  let createdSettlement = true;
   const settlement = await prisma.$transaction(async (tx) => {
     const created = await tx.settlement.create({
       data: {
@@ -157,7 +158,19 @@ export async function settleConfirmedPayment(
     });
 
     return created;
+  }).catch(async (error: unknown) => {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+      throw error;
+    }
+    // The unique paymentIntentId selects the creator; only it publishes settlement events.
+    const concurrentWinner = await prisma.settlement.findUnique({
+      where: { paymentIntentId: intent.id },
+    });
+    if (!concurrentWinner) throw error;
+    createdSettlement = false;
+    return concurrentWinner;
   });
+  if (!createdSettlement) return settlement;
 
   await recordAndPublish(bus, {
     type: DomainEventType.RIDE_SETTLED,
