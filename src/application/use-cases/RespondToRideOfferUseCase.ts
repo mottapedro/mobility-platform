@@ -1,6 +1,6 @@
 import { prisma } from "../../infra/prisma/client";
 import { Prisma } from "@prisma/client";
-import { MatchRideUseCase } from "./MatchRideUseCase";
+import { MATCHABLE_RIDE_STATUSES, MatchRideUseCase } from "./MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
@@ -216,11 +216,14 @@ export class RespondToRideOfferUseCase {
       });
 
       if (!matched) {
-        // If no more candidates, move to OWNER_RECOVERY
-        await prisma.rideRequest.update({
+        // A concurrent accept/cancel or another redispatch may already have
+        // changed the ride. Absence of this optional recovery transition is
+        // idempotent and must not surface as Prisma P2025 / HTTP 500.
+        await prisma.rideRequest.updateMany({
           where: {
             id: offer.rideRequestId,
-            currentDispatchStage: "NETWORK_DISPATCH",
+            status: { in: [...MATCHABLE_RIDE_STATUSES] },
+            currentCandidateDriverId: null,
           },
           data: { currentDispatchStage: "OWNER_RECOVERY" },
         });

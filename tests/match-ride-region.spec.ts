@@ -1,4 +1,7 @@
-import { MatchRideUseCase } from "../src/application/use-cases/MatchRideUseCase";
+import {
+  isMatchableRideStatus,
+  MatchRideUseCase,
+} from "../src/application/use-cases/MatchRideUseCase";
 import { prisma } from "../src/infra/prisma/client";
 
 const getDriverNetworkMock = jest.fn();
@@ -12,15 +15,20 @@ jest.mock("../src/infra/prisma/client", () => ({
     rideRequest: {
       findUnique: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     rideOffer: {
       findMany: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
+      updateMany: jest.fn(),
     },
     driver: {
       findMany: jest.fn(),
       findFirst: jest.fn(),
+    },
+    driverOperationalZone: {
+      findMany: jest.fn(),
     },
     passenger: {
       findUnique: jest.fn(),
@@ -29,30 +37,95 @@ jest.mock("../src/infra/prisma/client", () => ({
 }));
 
 describe("MatchRideUseCase regional matching", () => {
+  type RideState = {
+    id: string;
+    passengerId: string;
+    origin: string;
+    destination: string;
+    status: string;
+    context: null;
+    currentDispatchStage: string | null;
+    currentCandidateDriverId: string | null;
+    rootDriverId: string | null;
+  };
+  type RideStateUpdate = {
+    data: {
+      currentDispatchStage?: string | null;
+      currentCandidateDriverId?: string | null;
+      status?: string;
+    };
+  };
+
   const rideRequestFindUniqueMock = jest.mocked(prisma.rideRequest.findUnique);
   const rideRequestUpdateMock = jest.mocked(prisma.rideRequest.update);
+  const rideRequestUpdateManyMock = jest.mocked(prisma.rideRequest.updateMany);
   const rideOfferFindManyMock = jest.mocked(prisma.rideOffer.findMany);
   const rideOfferCreateMock = jest.mocked(prisma.rideOffer.create);
   const rideOfferCountMock = jest.mocked(prisma.rideOffer.count);
+  const rideOfferUpdateManyMock = jest.mocked(prisma.rideOffer.updateMany);
   const driverFindManyMock = jest.mocked(prisma.driver.findMany);
+  const driverOperationalZoneFindManyMock = jest.mocked(prisma.driverOperationalZone.findMany);
   const passengerFindUniqueMock = jest.mocked(prisma.passenger.findUnique);
+  let rideState: RideState;
 
   beforeEach(() => {
     jest.clearAllMocks();
     getDriverNetworkMock.mockReset();
-    rideRequestFindUniqueMock.mockResolvedValue({
+    rideState = {
       id: "ride-1",
       passengerId: "passenger-1",
       origin: "Copacabana",
       destination: "Barra da Tijuca",
       status: "PENDING",
       context: null,
-    } as never);
+      currentDispatchStage: null,
+      currentCandidateDriverId: null,
+      rootDriverId: null,
+    };
+    rideRequestFindUniqueMock.mockImplementation(
+      (async () => ({ ...rideState })) as never
+    );
     passengerFindUniqueMock.mockResolvedValue({ referredByDriverId: null } as never);
     rideOfferFindManyMock.mockResolvedValue([] as never);
-    rideRequestUpdateMock.mockResolvedValue({} as never);
-    rideOfferCreateMock.mockResolvedValue({} as never);
+    rideRequestUpdateMock.mockImplementation(
+      (async ({ data }: RideStateUpdate) => {
+        if (typeof data.currentDispatchStage === "string" || data.currentDispatchStage === null) {
+          rideState.currentDispatchStage = data.currentDispatchStage;
+        }
+        if (typeof data.status === "string") {
+          rideState.status = data.status;
+        }
+        if (
+          typeof data.currentCandidateDriverId === "string" ||
+          data.currentCandidateDriverId === null
+        ) {
+          rideState.currentCandidateDriverId = data.currentCandidateDriverId;
+        }
+        return { ...rideState };
+      }) as never
+    );
+    rideRequestUpdateManyMock.mockImplementation(
+      (async ({ data }: RideStateUpdate) => {
+        if (typeof data.currentDispatchStage === "string" || data.currentDispatchStage === null) {
+          rideState.currentDispatchStage = data.currentDispatchStage;
+        }
+        if (typeof data.status === "string") {
+          rideState.status = data.status;
+        }
+        if (
+          typeof data.currentCandidateDriverId === "string" ||
+          data.currentCandidateDriverId === null
+        ) {
+          rideState.currentCandidateDriverId = data.currentCandidateDriverId;
+        }
+        return { count: 1 };
+      }) as never
+    );
+    rideOfferCreateMock.mockResolvedValue({ id: "offer-1" } as never);
     rideOfferCountMock.mockResolvedValue(0 as never);
+    rideOfferUpdateManyMock.mockResolvedValue({ count: 0 } as never);
+    driverFindManyMock.mockResolvedValue([] as never);
+    driverOperationalZoneFindManyMock.mockResolvedValue([] as never);
   });
 
   it("creates offers only for regional matches in matcher order", async () => {
@@ -88,6 +161,7 @@ describe("MatchRideUseCase regional matching", () => {
     });
     // Governed sequential dispatch: only the first priority candidate receives an offer.
     expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-2"]);
+    expect(rideState.status).toBe("WAITING_GENERAL");
     expect(result).toEqual({ matched: true, level: "GENERAL" });
   });
 
@@ -122,18 +196,22 @@ describe("MatchRideUseCase regional matching", () => {
       select: { id: true, experienceLevel: true, vehicles: { select: { category: true } } },
     });
     expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-general"]);
+    expect(rideState.status).toBe("WAITING_GENERAL");
     expect(result).toEqual({ matched: true, level: "GENERAL" });
   });
 
   it("falls back to region matches only after all referral-network candidates were already offered", async () => {
-    rideRequestFindUniqueMock.mockResolvedValue({
+    rideState = {
       id: "ride-1",
       passengerId: "passenger-1",
       origin: "Copacabana",
       destination: "Barra da Tijuca",
       status: "MATCHING",
       context: null,
-    } as never);
+      currentDispatchStage: null,
+      currentCandidateDriverId: null,
+      rootDriverId: null,
+    };
     passengerFindUniqueMock.mockResolvedValue({ referredByDriverId: "driver-direct" } as never);
     rideOfferFindManyMock.mockResolvedValue([
       { driverId: "driver-direct" },
@@ -166,6 +244,46 @@ describe("MatchRideUseCase regional matching", () => {
 
     // Sequential dispatch: only the first region candidate is offered initially.
     expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-region"]);
+    expect(rideState.status).toBe("WAITING_GENERAL");
     expect(result).toEqual({ matched: true, level: "GENERAL" });
   });
+
+  it.each([
+    "PENDING",
+    "MATCHING",
+    "WAITING_REFERRAL",
+    "WAITING_PARTNER",
+    "WAITING_GENERAL",
+  ])("treats %s as matchable", async (status) => {
+    expect(isMatchableRideStatus(status as never)).toBe(true);
+
+    rideState.status = status;
+    const regionResolver = { resolve: jest.fn().mockReturnValue("Zona Sul") };
+    const driverRegionMatcher = { execute: jest.fn().mockResolvedValue([]) };
+    await new MatchRideUseCase(regionResolver as never, driverRegionMatcher as never).execute({
+      rideId: "ride-1",
+      level: "GENERAL",
+    });
+
+    expect(driverRegionMatcher.execute).toHaveBeenCalled();
+  });
+
+  it.each(["ACCEPTED", "IN_PROGRESS", "COMPLETED", "CANCELLED"])(
+    "does not redispatch %s rides",
+    async (status) => {
+      expect(isMatchableRideStatus(status as never)).toBe(false);
+
+      rideState.status = status;
+      const regionResolver = { resolve: jest.fn().mockReturnValue("Zona Sul") };
+      const driverRegionMatcher = { execute: jest.fn().mockResolvedValue([]) };
+      const result = await new MatchRideUseCase(
+        regionResolver as never,
+        driverRegionMatcher as never,
+      ).execute({ rideId: "ride-1", level: "GENERAL" });
+
+      expect(result).toEqual({ matched: false, level: "GENERAL" });
+      expect(driverRegionMatcher.execute).not.toHaveBeenCalled();
+      expect(rideOfferCreateMock).not.toHaveBeenCalled();
+    },
+  );
 });
