@@ -71,7 +71,7 @@ async function seedRide(
 }
 
 describe("PixPaymentOrchestrator", () => {
-  // ADR-001 §3: platformFee = R$2,50 fixed; driver = total - 2,50; rootDriver = 0
+  // Fixed platform fee plus root revenue policy over operational revenue.
   it("generates QR, confirms settlement, distributes rewards (with rootDriver)", async () => {
     const totalCents = 10_000;
     const { rideId } = await seedRide("happy", { withRoot: true });
@@ -112,12 +112,14 @@ describe("PixPaymentOrchestrator", () => {
     // so RewardDistributionService is idempotent and returns distributed:false
     expect(result.distributed).toBe(false);
 
-    // ADR-001 §3: fixed-fee model — no percentage split
+    // ROOT_DRIVER_STANDARD v1 applies 500 bps over revenue after the platform fee.
     const platformExpected = PLATFORM_FEE_CENTS; // R$2,50
-    const driverExpected = totalCents - platformExpected;
+    const operationalRevenue = totalCents - platformExpected;
+    const rootDriverExpected = Math.floor(operationalRevenue * 500 / 10_000);
+    const driverExpected = operationalRevenue - rootDriverExpected;
     expect(result.platformCents).toBe(platformExpected);
     expect(result.driverCents).toBe(driverExpected);
-    expect(result.rootDriverCents).toBe(0); // Reserved for RevenueSplit V2
+    expect(result.rootDriverCents).toBe(rootDriverExpected);
     expect(result.rootDriverId).not.toBeNull();
 
     // Full event chain fired

@@ -111,7 +111,7 @@ export interface HandlePixWebhookInput {
  *
  *  - CONFIRMED → updates intent (if not already CONFIRMED), fires
  *    PAYMENT_CONFIRMED, then triggers SettlementService synchronously which
- *    emits RIDE_SETTLED + REWARD_DISTRIBUTED and transitions the ride to PAID.
+ *    emits RIDE_SETTLED + REWARD_DISTRIBUTED; the ride lifecycle stays unchanged.
  *  - FAILED    → updates intent, fires PAYMENT_FAILED. No settlement.
  */
 export async function handlePixWebhook(

@@ -127,11 +127,18 @@ describe("Payment HTTP endpoints", () => {
     const settleRes = await request(app).get(`/rides/${ride.id}/settlement`);
     expect(settleRes.status).toBe(200);
     expect(settleRes.body.totalCents).toBe(10_000);
-    expect(settleRes.body.driverCents).toBe(8_000);
-    expect(settleRes.body.platformCents).toBe(1_500);
-    expect(settleRes.body.rootDriverCents).toBe(500);
+    expect(settleRes.body.driverCents).toBe(9_263);
+    expect(settleRes.body.platformCents).toBe(250);
+    expect(settleRes.body.rootDriverCents).toBe(487);
+    expect(settleRes.body.revenuePolicyVersion).toBe(1);
+    expect(settleRes.body.rootDriverId).toBe(root.id);
     expect(Array.isArray(settleRes.body.splits)).toBe(true);
     expect(settleRes.body.splits).toHaveLength(3);
+    expect(settleRes.body.splits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ beneficiaryType: "DRIVER", amountCents: 9_263 }),
+      expect.objectContaining({ beneficiaryType: "PLATFORM", amountCents: 250 }),
+      expect.objectContaining({ beneficiaryType: "ROOT_DRIVER", amountCents: 487 }),
+    ]));
 
     // Model B: payment status lives in PaymentIntent, ride stays COMPLETED
     const ride2 = await prisma.rideRequest.findUnique({ where: { id: ride.id } });
