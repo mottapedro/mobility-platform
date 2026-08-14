@@ -90,9 +90,7 @@ export async function resolveOnboardingContext(
     if (invite.expiresAt && invite.expiresAt.getTime() <= Date.now()) {
       throw new OnboardingContextError(`Invite ${invite.slug} expired`);
     }
-    // TODO(Sprint 2): fetch owner name and build OnboardingContextInvite
-    // for Invite-record path. Currently unused in production — synthetic
-    // invite is built for driver/passenger referral-code paths instead.
+    const inviteSummary = await buildInviteSummary(invite, db);
     let expectedActor = invite.expectedActorType;
     let flowType = invite.expectedFlowType;
 
@@ -111,7 +109,7 @@ export async function resolveOnboardingContext(
       expectedActor,
       invite.ownerActorType,
       invite.ownerId,
-      null,
+      inviteSummary,
       db
     );
   }
@@ -149,6 +147,38 @@ export async function resolveOnboardingContext(
   }
 
   throw new OnboardingContextError(`Onboarding slug not found: ${slugOrCode}`);
+}
+
+async function buildInviteSummary(
+  invite: Invite,
+  db: Db
+): Promise<OnboardingContextInvite> {
+  const owner =
+    invite.ownerActorType === ActorType.DRIVER
+      ? await db.driver.findUnique({
+          where: { id: invite.ownerId },
+          select: { user: { select: { name: true } } },
+        })
+      : await db.passenger.findUnique({
+          where: { id: invite.ownerId },
+          select: { user: { select: { name: true } } },
+        });
+
+  if (!owner) {
+    throw new OnboardingContextError(
+      `Invite ${invite.slug} owner not found: ${invite.ownerActorType} ${invite.ownerId}`
+    );
+  }
+
+  return {
+    code: invite.slug,
+    displayLabel: `Convite de ${owner.user.name}`,
+    inviter: {
+      actorType: invite.ownerActorType,
+      id: invite.ownerId,
+      name: owner.user.name,
+    },
+  };
 }
 
 async function contextFromDriver(
