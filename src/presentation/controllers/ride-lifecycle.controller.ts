@@ -3,7 +3,6 @@ import { prisma } from "../../infra/prisma/client";
 import { createEventBus } from "../../domain/shared/events/EventBus";
 import { start, cancel } from "../../domain/ride-execution/RideExecutionService";
 import { execute as finalizeRide } from "../../application/services/FinalizeRideService";
-import { ProcessRideSettlementUseCase } from "../../application/use-cases/ProcessRideSettlementUseCase";
 import { RideLifecycleError } from "../../domain/ride-execution/RideLifecycleError";
 
 function paramId(req: Request, key: string): string {
@@ -37,13 +36,6 @@ export class RideLifecycleController {
     const bus = createEventBus();
     try {
       const result = await finalizeRide({ rideRequestId: id }, { bus });
-      // Create settlement if none exists yet (idempotent — skips if already settled).
-      // Runs even on already-COMPLETED rides so a missing settlement can be backfilled.
-      try {
-        await new ProcessRideSettlementUseCase().execute({ rideId: id });
-      } catch (settlErr) {
-        console.error(`[lifecycle/complete] settlement failed for ${id}:`, settlErr);
-      }
       return res.json({ rideId: id, status: result.ride.status, finalized: result.finalized });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

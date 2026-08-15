@@ -1,6 +1,5 @@
 import { prisma } from "../../infra/prisma/client";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
-import { ProcessRideSettlementUseCase } from "./ProcessRideSettlementUseCase";
 
 export interface CompleteRideInput {
   rideId: string;
@@ -37,15 +36,12 @@ export class CompleteRideUseCase {
       data: { status: "COMPLETED" },
     });
 
-    // 5. Processar liquidação financeira (Modelo 10%)
-    const settlementUseCase = new ProcessRideSettlementUseCase();
-    const { settlementId } = await settlementUseCase.execute({ rideId });
-
-    // 6. Telemetria
+    // 5. Telemetria operacional. Settlement belongs exclusively to the
+    // PaymentIntent CONFIRMED boundary and is not created by ride completion.
     logMatchingEvent({
       rideId,
       event: "RIDE_COMPLETED",
-      metadata: { driverId, settlementId },
+      metadata: { driverId },
     });
 
     return { success: true, rideId };

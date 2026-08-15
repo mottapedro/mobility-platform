@@ -18,6 +18,14 @@ export interface ReconciliationSummary {
   ridesUpdated: number;
   settlementsChecked: number;
   settlementsUpdated: number;
+  settlementDivergences: number;
+}
+
+export interface SettlementOwnershipAuditResult {
+  settlementId: string;
+  rootDriverId: string | null;
+  expectedRootDriverId: string | null;
+  divergent: boolean;
 }
 
 export class OwnershipProjectionError extends Error {
@@ -108,7 +116,7 @@ export const RootOwnershipProjectionService = {
   async projectSettlementOwnership(
     settlementId: string,
     db: Db = prisma
-  ): Promise<OwnershipProjectionResult> {
+  ): Promise<SettlementOwnershipAuditResult> {
     const settlement = await db.settlement.findUnique({
       where: { id: settlementId },
       select: { id: true, rideRequestId: true, rootDriverId: true },
@@ -132,12 +140,23 @@ export const RootOwnershipProjectionService = {
       const projected = await RootOwnershipProjectionService.projectRideOwnership(ride.id, db);
       rootDriverId = projected.rootDriverId;
     }
-    await db.settlement.update({
-      where: { id: settlementId },
-      data: { rootDriverId },
-    });
+    const divergent = settlement.rootDriverId !== rootDriverId;
+    if (divergent) {
+      console.warn("[Ownership] frozen Settlement ownership divergence detected", {
+        settlementId,
+        frozenRootDriverId: settlement.rootDriverId,
+        expectedRootDriverId: rootDriverId,
+      });
+    }
 
-    return { settlementId, rootDriverId };
+    // Settlement is an immutable economic snapshot. Reconciliation may report
+    // current ownership divergence, but must never rewrite the frozen owner.
+    return {
+      settlementId,
+      rootDriverId: settlement.rootDriverId,
+      expectedRootDriverId: rootDriverId,
+      divergent,
+    };
   },
 
   async reconcileOwnership(db: Db = prisma): Promise<ReconciliationSummary> {
@@ -148,6 +167,7 @@ export const RootOwnershipProjectionService = {
       ridesUpdated: 0,
       settlementsChecked: 0,
       settlementsUpdated: 0,
+      settlementDivergences: 0,
     };
 
     const passengers = await db.passenger.findMany({
@@ -193,9 +213,7 @@ export const RootOwnershipProjectionService = {
           settlement.id,
           db
         );
-        if (result.rootDriverId !== settlement.rootDriverId) {
-          summary.settlementsUpdated++;
-        }
+        if (result.divergent) summary.settlementDivergences++;
       } catch (err) {
         console.warn("[Ownership] reconcile settlement skipped", settlement.id, err);
       }
