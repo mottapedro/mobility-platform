@@ -12,6 +12,7 @@ import { RootOwnershipProjectionService } from "../../domain/ownership/RootOwner
 import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
 import { AuthSessionService } from "../../domain/auth/AuthSessionService";
 import { AuthTokenService } from "../../domain/auth/AuthTokenService";
+import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
 
 // Transaction client returned by prisma.$transaction is structurally compatible
 // with the extended prisma client but lacks the extension type branding. We use
@@ -202,7 +203,7 @@ export class AuthController {
               ? { referredByPassenger: { connect: { id: referrerPassengerId } } }
               : {}),
           },
-          include: { user: true },
+          include: { user: { select: PUBLIC_USER_SELECT } },
         });
 
         // V2 — set rootDriverId on Passenger + record relational graph

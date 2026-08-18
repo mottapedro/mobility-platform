@@ -5,6 +5,7 @@ import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
 import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
 import { listDriverSkills } from "../../domain/skills/DriverSkillService";
 import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwnershipService";
+import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
 import { ReferralFlowType } from "../../shared/enums";
 
 export class DriverController {
@@ -479,6 +480,130 @@ export class DriverController {
         error: "Erro interno ao listar corridas",
         details: error instanceof Error ? error.message : error,
       });
+    }
+  }
+
+  // GET /drivers/me/operational-base — base operacional do driver autenticado
+  // (origem M fixa do pricing M→A). 200 com operationalBase: null quando ainda
+  // não configurada — o frontend distingue NO_BASE de CONFIGURED sem depender
+  // de 404.
+  async getMyOperationalBase(req: AuthenticatedDriverRequest, res: Response) {
+    const driverId = req.authDriverId;
+    if (!driverId) {
+      return res.status(401).json({ error: "Driver authentication required" });
+    }
+
+    try {
+      const base = await prisma.driverOperationalBase.findUnique({
+        where: { driverId },
+        select: {
+          id: true,
+          driverId: true,
+          formattedAddress: true,
+          providerPlaceId: true,
+          latitude: true,
+          longitude: true,
+          updatedAt: true,
+        },
+      });
+
+      return res.status(200).json({ operationalBase: base });
+    } catch (error) {
+      console.error("Erro ao carregar base operacional do motorista:", error);
+      return res.status(500).json({ error: "Erro interno ao carregar base operacional" });
+    }
+  }
+
+  // PUT /drivers/me/operational-base — cria/atualiza a base operacional.
+  //
+  // Decision B: quando a chave Google está configurada, a base é validada
+  // server-side via Place Details a partir do providerPlaceId e as coordenadas
+  // autoritativas vêm do Google. Sem chave (dev/tests), coordenadas enviadas
+  // pelo cliente dentro dos limites físicos são aceitas como pass-through —
+  // NUNCA fora de faixa e NUNCA (0,0): o handler sanitiza e o serviço rejeita
+  // base sem geometria utilizável (422 BASE_NOT_RESOLVABLE em vez de persistir
+  // lat/lng = 0, que já produziu quotes com M→A de milhares de km).
+  async upsertMyOperationalBase(req: AuthenticatedDriverRequest, res: Response) {
+    const driverId = req.authDriverId;
+    if (!driverId) {
+      return res.status(401).json({ error: "Driver authentication required" });
+    }
+
+    const body = req.body as Record<string, unknown> | null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return res.status(400).json({ error: "Corpo deve ser um objeto", code: "INVALID_BODY" });
+    }
+
+    const providerPlaceId =
+      typeof body.providerPlaceId === "string" ? body.providerPlaceId : null;
+    const formattedAddress =
+      typeof body.formattedAddress === "string" ? body.formattedAddress : null;
+
+    // Seletor do autocomplete é obrigatório: texto digitado à mão sem
+    // providerPlaceId jamais vira base (não resolve coordenadas autoritativas).
+    if (!providerPlaceId || !providerPlaceId.trim()) {
+      return res.status(422).json({
+        error: "providerPlaceId é obrigatório — selecione uma sugestão do Google Places",
+        code: "BASE_NOT_RESOLVABLE",
+      });
+    }
+
+    try {
+      // Sanitização das coordenadas candidatas: apenas finitas e dentro dos
+      // limites físicos chegam ao serviço. Fora de faixa é tratado como ausente
+      // (o cliente nunca define a posição M livremente — só o Google ou um par
+      // válido em dev/tests).
+      const rawLat = body.latitude;
+      const rawLng = body.longitude;
+      const candidateLat =
+        typeof rawLat === "number" &&
+        Number.isFinite(rawLat) &&
+        Math.abs(rawLat) <= 90
+          ? rawLat
+          : null;
+      const candidateLng =
+        typeof rawLng === "number" &&
+        Number.isFinite(rawLng) &&
+        Math.abs(rawLng) <= 180
+          ? rawLng
+          : null;
+
+      const service = new DriverOperationalBaseService();
+      const result = await service.save(driverId, {
+        providerPlaceId: providerPlaceId.trim(),
+        address: formattedAddress,
+        ...(candidateLat !== null && candidateLng !== null
+          ? { lat: candidateLat, lng: candidateLng }
+          : {}),
+      });
+
+      if (!result.valid) {
+        return res.status(422).json({
+          error: result.reason,
+          code: result.code,
+        });
+      }
+
+      const base = await prisma.driverOperationalBase.findUniqueOrThrow({
+        where: { driverId },
+        select: {
+          id: true,
+          driverId: true,
+          formattedAddress: true,
+          providerPlaceId: true,
+          latitude: true,
+          longitude: true,
+          updatedAt: true,
+        },
+      });
+
+      return res.status(200).json({
+        operationalBase: base,
+        source: result.source,
+      });
+    } catch (error) {
+      console.error("Erro ao salvar base operacional do motorista:", error);
+      return res.status(500).json({ error: "Erro interno ao salvar base operacional" });
     }
   }
 }
