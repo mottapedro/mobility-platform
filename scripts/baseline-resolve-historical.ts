@@ -10,7 +10,7 @@
  */
 
 const BASELINE_MIGRATION = "20260101000000_init_baseline";
-const EXPECTED_HISTORICAL_COUNT = 41;
+const EXPECTED_HISTORICAL_COUNT = 44;
 
 const HISTORICAL_MIGRATIONS = [
   "20260421003315_init",
@@ -18,8 +18,11 @@ const HISTORICAL_MIGRATIONS = [
   "20260423140951_add_driver_network",
   "20260425105032_add_ride_context",
   "20260427135402_add_waiting_referral_status",
+  "20260429000000_add_driver_referral",
   "20260429020039_add_driver_referral",
+  "20260429020248_add_driver_referral",
   "20260429021936_add_referral_index",
+  "20260505134022_add_password_hash",
   "20260509000000_add_driver_referral_code",
   "20260512153000_add_driver_network_columns",
   "20260512170000_add_driver_identifier_uniques",
