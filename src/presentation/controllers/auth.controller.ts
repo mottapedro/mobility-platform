@@ -10,6 +10,8 @@ import { recordRelationship } from "../../domain/referral-network/ReferralRelati
 import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
 import { RootOwnershipProjectionService } from "../../domain/ownership/RootOwnershipProjectionService";
 import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
+import { AuthSessionService } from "../../domain/auth/AuthSessionService";
+import { AuthTokenService } from "../../domain/auth/AuthTokenService";
 
 // Transaction client returned by prisma.$transaction is structurally compatible
 // with the extended prisma client but lacks the extension type branding. We use
@@ -25,6 +27,9 @@ class HttpError extends Error {
 }
 
 export class AuthController {
+  private readonly sessionService = new AuthSessionService();
+  private readonly tokenService = new AuthTokenService();
+
   async register(req: Request, res: Response) {
     try {
       const { name, email, password, role, phone, referralCode, operationalBase } = req.body;
@@ -312,6 +317,12 @@ export class AuthController {
 
       const role = user.role === "DRIVER" ? "driver" : "passenger";
 
+      const issued = await this.sessionService.createSession(user.id);
+      const accessToken = await this.tokenService.issueAccessToken({
+        userId: user.id,
+        sessionId: issued.session.id,
+      });
+
       if (role === "driver") {
         const driver = await prisma.driver.findUnique({
           where: { userId: user.id },
@@ -336,6 +347,9 @@ export class AuthController {
           publicSlug: driver.publicSlug ?? null,
           networkLevel: driver.networkLevel ?? 0,
           referredByDriverId: driver.referredByDriverId ?? null,
+          accessToken,
+          refreshToken: issued.refreshToken,
+          session: issued.session,
         });
       }
 
@@ -355,6 +369,9 @@ export class AuthController {
         user: { id: user.id, name: user.name, email: user.email, role },
         passengerId: passenger.id,
         referredByDriverId: passenger.referredByDriverId ?? null,
+        accessToken,
+        refreshToken: issued.refreshToken,
+        session: issued.session,
       });
     } catch (error) {
       console.error("🔥 Erro no login:", error);

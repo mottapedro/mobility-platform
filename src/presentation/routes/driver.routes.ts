@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { DriverController } from "../controllers/driver.controller";
 import { requireDriverAuth } from "../middleware/requireDriverAuth";
+import { requireDriverBearerAuth } from "../middleware/requireDriverBearerAuth";
 
 const router = Router();
 const controller = new DriverController();
@@ -11,6 +12,11 @@ router.post("/", (req, res) => res.status(410).json({ error: "Cadastro com refer
 
 // GET /drivers
 router.get("/", (req, res) => controller.list(req, res));
+
+// Autenticação Bearer (Fase C): /drivers/me/* — sem x-driver-id
+router.get("/me", requireDriverBearerAuth, (req, res) => controller.getMe(req, res));
+router.get("/me/offers", requireDriverBearerAuth, (req, res) => controller.getMyOffers(req, res));
+router.get("/me/rides", requireDriverBearerAuth, (req, res) => controller.getMyRides(req, res));
 
 // GET /drivers/:driverId/network/hierarchy — driver + tree (must be registered before /:driverId/network)
 router.get("/:driverId/network/hierarchy", (req, res) => controller.getNetworkHierarchy(req, res));

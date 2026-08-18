@@ -277,6 +277,74 @@ export class DriverController {
   }
 
 
+  private async loadOffersForDriver(driverId: string) {
+    const offers = await prisma.rideOffer.findMany({
+      where: {
+        driverId,
+        status: "PENDING",
+        expiresAt: { gt: new Date() },
+      },
+      include: {
+        rideRequest: {
+          select: {
+            id: true,
+            origin: true,
+            destination: true,
+            scheduledAt: true,
+            status: true,
+            priceEstimated: true,
+            priceOffered: true,
+            distanceKm: true,
+            durationMin: true,
+            context: true,
+            originLat: true,
+            originLng: true,
+            destinationLat: true,
+            destinationLng: true,
+            passenger: {
+              select: {
+                id: true,
+                referredByDriverId: true,
+                user: { select: { name: true, phone: true } },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return offers.map((offer) => {
+      const rr = offer.rideRequest;
+      const ctx = rr.context as Record<string, unknown> | null;
+      return {
+        ...offer,
+        rideRequest: {
+          ...rr,
+          priceBrl: rr.priceOffered ?? rr.priceEstimated ?? null,
+          regionalContext: ctx?.regionalContext ?? null,
+        },
+      };
+    });
+  }
+
+  private async loadRidesForDriver(driverId: string) {
+    return prisma.rideRequest.findMany({
+      where: {
+        selectedDriverId: driverId,
+        status: "ACCEPTED",
+      },
+      include: {
+        passenger: {
+          include: {
+            user: { select: { name: true, phone: true } },
+          },
+        },
+      },
+      orderBy: { scheduledAt: "asc" },
+    });
+  }
+
   async getOffers(req: AuthenticatedDriverRequest, res: Response) {
     try {
       const { driverId } = req.params;
@@ -294,54 +362,7 @@ export class DriverController {
         return res.status(403).json({ error: "Driver cannot access another network" });
       }
 
-      const offers = await prisma.rideOffer.findMany({
-        where: {
-          driverId,
-          status: "PENDING",
-          expiresAt: { gt: new Date() },
-        },
-        include: {
-          rideRequest: {
-            select: {
-              id: true,
-              origin: true,
-              destination: true,
-              scheduledAt: true,
-              status: true,
-              priceEstimated: true,
-              priceOffered: true,
-              distanceKm: true,
-              durationMin: true,
-              context: true,
-              originLat: true,
-              originLng: true,
-              destinationLat: true,
-              destinationLng: true,
-              passenger: {
-                select: {
-                  id: true,
-                  referredByDriverId: true,
-                  user: { select: { name: true, phone: true } },
-                },
-              },
-            },
-          },
-        },
-        orderBy: { createdAt: "desc" },
-      });
-
-      const payload = offers.map((offer) => {
-        const rr = offer.rideRequest;
-        const ctx = rr.context as Record<string, unknown> | null;
-        return {
-          ...offer,
-          rideRequest: {
-            ...rr,
-            priceBrl: rr.priceOffered ?? rr.priceEstimated ?? null,
-            regionalContext: ctx?.regionalContext ?? null,
-          },
-        };
-      });
+      const payload = await this.loadOffersForDriver(driverId);
 
       return res.status(200).json(payload);
     } catch (error) {
@@ -366,21 +387,91 @@ export class DriverController {
         return res.status(400).json({ error: "driverId inválido na URL" });
       }
 
-      const rides = await prisma.rideRequest.findMany({
-        where: {
-          selectedDriverId: driverId,
-          status: "ACCEPTED",
+      const rides = await this.loadRidesForDriver(driverId);
+
+      return res.status(200).json(rides);
+    } catch (error) {
+      console.error("Erro ao listar corridas do driver:", error);
+      return res.status(500).json({
+        error: "Erro interno ao listar corridas",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  // GET /drivers/me — perfil do driver autenticado via Bearer
+  async getMe(req: AuthenticatedDriverRequest, res: Response) {
+    try {
+      const driverId = req.authDriverId;
+      if (!driverId) {
+        return res.status(401).json({ error: "Driver authentication required" });
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: {
+          id: true,
+          referralCode: true,
+          publicSlug: true,
+          networkLevel: true,
+          referredByDriverId: true,
+          experienceLevel: true,
+          regions: true,
+          isActive: true,
+          user: { select: { name: true, email: true, phone: true } },
         },
-        include: {
-          passenger: {
-            include: {
-              user: { select: { name: true, phone: true } },
-            },
-          },
-        },
-        orderBy: { scheduledAt: "asc" },
       });
 
+      if (!driver || !driver.isActive) {
+        return res.status(404).json({ error: "Driver não encontrado ou inativo" });
+      }
+
+      return res.status(200).json({
+        driverId: driver.id,
+        name: driver.user.name,
+        email: driver.user.email,
+        phone: driver.user.phone,
+        referralCode: driver.referralCode,
+        publicSlug: driver.publicSlug ?? null,
+        networkLevel: driver.networkLevel ?? 0,
+        referredByDriverId: driver.referredByDriverId ?? null,
+        experienceLevel: driver.experienceLevel,
+        regions: driver.regions,
+      });
+    } catch (error) {
+      console.error("Erro ao carregar perfil do motorista:", error);
+      return res.status(500).json({ error: "Erro interno ao carregar perfil do motorista" });
+    }
+  }
+
+  // GET /drivers/me/offers — ofertas do driver autenticado via Bearer
+  async getMyOffers(req: AuthenticatedDriverRequest, res: Response) {
+    const driverId = req.authDriverId;
+    if (!driverId) {
+      return res.status(401).json({ error: "Driver authentication required" });
+    }
+
+    try {
+      const payload = await this.loadOffersForDriver(driverId);
+      return res.status(200).json(payload);
+    } catch (error) {
+      console.error("Erro ao carregar ofertas do driver:", error);
+      return res.status(500).json({
+        error: "Erro ao carregar ofertas",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
+  // GET /drivers/me/rides — corridas do driver autenticado via Bearer
+  async getMyRides(req: AuthenticatedDriverRequest, res: Response) {
+    const driverId = req.authDriverId;
+    if (!driverId) {
+      return res.status(401).json({ error: "Driver authentication required" });
+    }
+
+    try {
+      const rides = await this.loadRidesForDriver(driverId);
       return res.status(200).json(rides);
     } catch (error) {
       console.error("Erro ao listar corridas do driver:", error);
