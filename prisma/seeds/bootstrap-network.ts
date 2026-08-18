@@ -1,8 +1,12 @@
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcryptjs";
-import { PrismaClient, ExperienceLevel, VehicleCategory } from "@prisma/client";
+import { ExperienceLevel, VehicleCategory } from "@prisma/client";
 import { createDriverReferralChain } from "../../src/domain/services/DriverReferralService";
+import type { ExtendedPrismaClient } from "../../src/infra/prisma/client";
+
+type BootstrapNetworkClient = Pick<ExtendedPrismaClient, "user" | "vehicle"> &
+  NonNullable<Parameters<typeof createDriverReferralChain>[2]>;
 
 type SeedDriver = {
   name: string;
@@ -48,7 +52,7 @@ function loadDriverNetwork(): SeedDriver[] {
 }
 
 export async function runBootstrapNetwork(
-  prisma: PrismaClient,
+  prisma: BootstrapNetworkClient,
   options: { dryRun?: boolean } = {}
 ): Promise<{ createdDrivers: number; updatedDrivers: number; createdEdges: number; createdVehicles: number }> {
   const { dryRun = false } = options;

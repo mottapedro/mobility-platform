@@ -1,4 +1,6 @@
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
+
+type DriverNetworkBackfillClient = Pick<PrismaClient, never>;
 
 // Backfill alinhado ao domínio referral/network novo.
 // A rede agora é consumida via snapshot multinível dinâmico (getDriverNetworkSnapshot)
@@ -7,7 +9,7 @@ import { PrismaClient } from "@prisma/client";
 // para não reintroduzir regressões estruturais.
 
 export async function backfillDriverNetworkFields(
-  _prisma: PrismaClient,
+  _prisma: DriverNetworkBackfillClient,
   _options: { dryRun: boolean }
 ) {
   return { updatedDrivers: 0 };

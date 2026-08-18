@@ -3,8 +3,16 @@ import request from "supertest";
 import { app } from "../src/app";
 import { prisma } from "./setup";
 import { createDriverReferralChain } from "../src/domain/services/DriverReferralService";
+import { DriverOperationalBaseService } from "../src/domain/driver/DriverOperationalBaseService";
 
 jest.setTimeout(15000);
+
+const baseService = new DriverOperationalBaseService();
+
+// Origens da corrida usadas nos cenários (Barra → Centro, RJ).
+const RIDE_ORIGIN = { originLat: -22.9068, originLng: -43.1729 };
+
+type OfferShape = Array<{ id: string; driverId: string; createdAt: Date }>;
 
 // ─── Aguarda até offers aparecerem no banco ────────────────────────────────
 async function waitForOffers(
@@ -12,7 +20,7 @@ async function waitForOffers(
   minCount = 1,
   maxWaitMs = 5000,
   intervalMs = 150
-): Promise<Array<{ id: string; driverId: string; createdAt: Date }>> {
+): Promise<OfferShape> {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
     const offers = await prisma.rideOffer.findMany({
@@ -26,10 +34,23 @@ async function waitForOffers(
   return [];
 }
 
+// Rejeita a oferta e dispara o re-match síncrono.
+function rejectOffer(offerId: string) {
+  return request(app).patch(`/offers/${offerId}/respond`).send({ accept: false });
+}
+
+function saveBase(driverId: string) {
+  return baseService.save(driverId, {
+    address: "Base Driver A",
+    lat: RIDE_ORIGIN.originLat,
+    lng: RIDE_ORIGIN.originLng,
+  });
+}
+
 // ─── Tier 1 — REFERRED ────────────────────────────────────────────────────
 describe("Matching — Tier 1 (REFERRED)", () => {
-  it("deve enviar a primeira offer para o driver que indicou o passageiro", async () => {
-    // Driver A — o indicador
+  it("deve emitir quote QUOTED, confirmar e enviar a primeira offer para o driver que indicou o passageiro", async () => {
+    // Driver A — o indicador, com base operacional (corridas SCHEDULED usam base).
     const driverAUser = await prisma.user.create({
       data: {
         name: "Driver A",
@@ -45,6 +66,7 @@ describe("Matching — Tier 1 (REFERRED)", () => {
       },
       include: { driver: true },
     });
+    await saveBase(driverAUser.driver!.id);
 
     // Driver Geral — não deve receber a primeira offer
     await prisma.user.create({
@@ -87,13 +109,22 @@ describe("Matching — Tier 1 (REFERRED)", () => {
         origin: "Barra da Tijuca",
         destination: "Centro",
         scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
+        originLat: RIDE_ORIGIN.originLat, originLng: RIDE_ORIGIN.originLng,
+        destinationLat: -22.8833, destinationLng: -43.1072,
       });
 
     expect(response.status).toBe(201);
 
-    // No Tier REFERRED apenas 1 offer é criada (para o driver indicado)
-    const offers = await waitForOffers(response.body.ride.id, 1);
+    // Bifase: POST emite QUOTED e NENHUMA oferta ainda.
+    expect(response.body.rideQuote).toBeTruthy();
+    expect(response.body.rideQuote.status).toBe("QUOTED");
+    expect(await waitForOffers(response.body.ride.id, 1, 300)).toHaveLength(0);
 
+    // Confirmação do passageiro → AGREED + primeira oferta (REFERRED).
+    const confirm = await request(app).post(`/rides/${response.body.ride.id}/confirm-quote`);
+    expect(confirm.status).toBe(200);
+
+    const offers = await waitForOffers(response.body.ride.id, 1);
     expect(offers.length).toBeGreaterThan(0);
     // A primeira (e única) offer deve ser para Driver A
     expect(offers[0].driverId).toBe(driverAUser.driver!.id);
@@ -103,7 +134,7 @@ describe("Matching — Tier 1 (REFERRED)", () => {
 // ─── Tier 2 — PARTNER ─────────────────────────────────────────────────────
 describe("Matching — Tier 2 (PARTNER)", () => {
   it("deve enviar offer para parceiro de Driver A após rejeição de Driver A", async () => {
-    // Driver A — o indicador
+    // Driver A — o indicador, com base operacional.
     const driverAUser = await prisma.user.create({
       data: {
         name: "Driver A",
@@ -119,6 +150,7 @@ describe("Matching — Tier 2 (PARTNER)", () => {
       },
       include: { driver: true },
     });
+    await saveBase(driverAUser.driver!.id);
 
     // Driver B — parceiro de A (level 1 na rede)
     const driverBUser = await prisma.user.create({
@@ -156,7 +188,7 @@ describe("Matching — Tier 2 (PARTNER)", () => {
       },
     });
 
-    // Criar corrida → matching → Driver A recebe offer (REFERRED)
+    // Criar corrida → quote QUOTED → confirmar → Driver A recebe offer (REFERRED)
     const rideResponse = await request(app)
       .post("/rides")
       .send({
@@ -164,9 +196,15 @@ describe("Matching — Tier 2 (PARTNER)", () => {
         origin: "Barra da Tijuca",
         destination: "Centro",
         scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
+        originLat: RIDE_ORIGIN.originLat, originLng: RIDE_ORIGIN.originLng,
+        destinationLat: -22.8833, destinationLng: -43.1072,
       });
 
     expect(rideResponse.status).toBe(201);
+    expect(rideResponse.body.rideQuote.status).toBe("QUOTED");
+
+    const confirm = await request(app).post(`/rides/${rideResponse.body.ride.id}/confirm-quote`);
+    expect(confirm.status).toBe(200);
 
     // Aguardar offer de Driver A
     const offersAfterCreate = await waitForOffers(rideResponse.body.ride.id, 1);
@@ -178,9 +216,7 @@ describe("Matching — Tier 2 (PARTNER)", () => {
     expect(driverAOffer).toBeTruthy();
 
     // Driver A rejeita → dispara re-match síncrono → Tier 2 (PARTNER)
-    const rejectResponse = await request(app)
-      .patch(`/offers/${driverAOffer!.id}/respond`)
-      .send({ accept: false });
+    const rejectResponse = await rejectOffer(driverAOffer!.id);
 
     expect(rejectResponse.status).toBe(200);
 
@@ -263,6 +299,8 @@ describe("Matching — Contexto VIP", () => {
         origin: "Barra da Tijuca",
         destination: "Centro",
         scheduledAt: new Date(Date.now() + 90_000_000).toISOString(),
+        originLat: RIDE_ORIGIN.originLat, originLng: RIDE_ORIGIN.originLng,
+        destinationLat: -22.8833, destinationLng: -43.1072,
         context: {
           vip: true,
           airport: false,
@@ -274,10 +312,12 @@ describe("Matching — Contexto VIP", () => {
 
     expect(response.status).toBe(201);
 
-    // Aguardar matching (2 drivers → 2 offers)
-    const offers = await waitForOffers(response.body.ride.id, 2);
+    // Governed sequential dispatch: only the highest-priority candidate
+    // (ELITE driver) receives the first offer. The common driver is queued
+    // and would only be dispatched if the elite offer expires/is rejected.
+    const offers = await waitForOffers(response.body.ride.id, 1);
 
-    expect(offers.length).toBeGreaterThan(0);
+    expect(offers.length).toBe(1);
 
     // Refetch eliteDriverUser to ensure driver relation is populated
     const eliteDriver = await prisma.user.findUnique({
@@ -285,14 +325,7 @@ describe("Matching — Contexto VIP", () => {
       include: { driver: true },
     });
 
-    // Driver ELITE deve ter recebido offer
-    const eliteOffer = offers.find(
-      (o) => o.driverId === eliteDriver!.driver!.id
-    );
-    expect(eliteOffer).toBeTruthy();
-
-    // Driver ELITE deve ser o PRIMEIRO a receber (prioridade VIP)
+    // The single dispatched offer must be for the ELITE driver (VIP priority).
     expect(offers[0].driverId).toBe(eliteDriver!.driver!.id);
   });
 });
-

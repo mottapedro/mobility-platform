@@ -16,10 +16,7 @@ import { prisma } from "../../infra/prisma/client";
 import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
 import { EventBus, recordAndPublish } from "../../domain/shared/events/EventBus";
 
-type Db = Pick<
-  typeof prisma,
-  "driver" | "driverReferral" | "passenger" | "referralRelationship" | "domainEvent"
->;
+type Db = typeof prisma;
 
 export interface ResolveRootDriverInput {
   actorType: ActorType;

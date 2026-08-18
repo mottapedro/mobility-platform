@@ -1,6 +1,12 @@
 node_modules
 # Keep environment variables out of version control
 .env
+.env.local
+.env.*.local
 
 /src/generated/prisma
 /dist
+
+# Local debug/diagnostic scripts (not for version control)
+dbcheck.cjs
+validate-out.txt

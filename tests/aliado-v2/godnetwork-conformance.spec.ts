@@ -2,8 +2,8 @@
  * LOCKED CONTRACT TEST
  *
  * The GodNetwork conformance is the canonical truth of the Aliado network.
- * This spec asserts the official structure exists in the database AFTER
- * `npm run seed:golden` (which is part of repo setup).
+ * This opt-in spec asserts the official structure exists in a disposable
+ * database AFTER `npm run seed:golden`.
  *
  * If this spec fails, EITHER:
  *   (a) data was corrupted — restore from backup and rerun the seed; or
@@ -17,7 +17,10 @@ import { prisma } from "../setup";
 import { assertConformance, GOD_NETWORK } from "../../src/domain/godnetwork/GodNetworkService";
 import { assignSkill } from "../../src/domain/skills/DriverSkillService";
 
-describe("GodNetwork conformance — LOCKED CONTRACT", () => {
+const describeGolden =
+  process.env.GOLDEN_SEED_DISPOSABLE === "1" ? describe : describe.skip;
+
+describeGolden("GodNetwork conformance — LOCKED CONTRACT", () => {
   beforeAll(async () => {
     // Run-once equivalent of `npm run backfill:skills` so this spec works
     // whether or not the operator has already invoked it.

@@ -4,11 +4,14 @@ import {
   PaymentStatus,
   RideStatus,
 } from "../../src/shared/enums";
-import { prisma } from "../setup";
+import { cleanTestData, prisma } from "../setup";
+import { useRevenuePolicyFixture } from "../fixtures/revenue-policy.fixture";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { InMemoryPixProvider } from "../../src/domain/payment/providers/InMemoryPixProvider";
 import { createPaymentIntent } from "../../src/domain/payment/PaymentIntentService";
 import { execute as confirmPixSettlement } from "../../src/application/services/ConfirmPixSettlementService";
+
+useRevenuePolicyFixture(prisma, cleanTestData);
 
 async function makeDriver(email: string) {
   const u = await prisma.user.create({
@@ -75,7 +78,7 @@ async function seedIntent(amountCents: number, withRoot: boolean) {
 }
 
 describe("ConfirmPixSettlementService (application)", () => {
-  it("confirms a PENDING intent, runs settlement, marks ride PAID and emits the full chain", async () => {
+  it("confirms a PENDING intent, runs settlement, keeps ride COMPLETED and emits the full chain", async () => {
     const { intent, ride } = await seedIntent(4500, true);
     expect(intent.externalId).not.toBeNull();
 
@@ -107,7 +110,7 @@ describe("ConfirmPixSettlementService (application)", () => {
     ]);
 
     const reloadedRide = await prisma.rideRequest.findUnique({ where: { id: ride.id } });
-    expect(reloadedRide?.status).toBe(RideStatus.PAID);
+    expect(reloadedRide?.status).toBe(RideStatus.COMPLETED);
   });
 
   it("is idempotent: second call returns settled=false and does not duplicate events", async () => {

@@ -1,19 +1,19 @@
 /**
  * Application Service: FinalizeRideService
  *
- * Stage 2.B service. Transitions a ride from IN_PROGRESS -> COMPLETED,
+ * Stage 2.B service. Transitions a ride from STARTED -> COMPLETED,
  * gating the change through the canonical RIDE_LIFECYCLE_TRANSITIONS matrix
  * and emitting the RIDE_FINALIZED domain event exactly once.
  *
  * This is the operational handoff between the driver's "I finished the trip"
- * action and the payment/settlement pipeline (which later transitions
- * COMPLETED -> PAID via SettlementService).
+ * action and the payment/settlement pipeline. In Model B, payment is tracked
+ * separately via PaymentIntent/Settlement and does not affect ride status.
  *
  * Behavior:
- *   - IN_PROGRESS -> updates status to COMPLETED, optionally captures
+ *   - STARTED -> updates status to COMPLETED, optionally captures
  *     distanceKm / durationMin / priceOffered (final metrics), emits
  *     RIDE_FINALIZED. Returns { ride, finalized: true }.
- *   - Already COMPLETED (or PAID) -> idempotent no-op, returns the existing
+ *   - Already COMPLETED -> idempotent no-op, returns the existing
  *     row with { finalized: false } and emits nothing.
  *   - Any other source status -> throws (matches isValidRideTransition).
  *
@@ -64,9 +64,9 @@ export async function execute(
     throw new Error(`RideLifecycle: ride ${input.rideRequestId} not found`);
   }
 
-  // Idempotent terminal states: COMPLETED is the target; PAID is a downstream
-  // terminal state reached via SettlementService. Both mean "already finalized".
-  if (ride.status === RideStatus.COMPLETED || ride.status === RideStatus.PAID) {
+  // Idempotent terminal state: COMPLETED means the ride is finalized.
+  // In Model B, payment is tracked separately and does not affect ride status.
+  if (ride.status === RideStatus.COMPLETED) {
     return { ride, finalized: false };
   }
 

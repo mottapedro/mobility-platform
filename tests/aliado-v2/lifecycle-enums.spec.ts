@@ -46,15 +46,12 @@ describe("Aliado V2 — Stage 2.A — enum centralization", () => {
   });
 
   describe("RideLifecycle transitions", () => {
-    it("allows PENDING → MATCHING → WAITING_DRIVER → ACCEPTED → IN_PROGRESS → COMPLETED → PAID", () => {
+    it("allows the pure ride lifecycle PENDING → ACCEPTED → IN_PROGRESS → COMPLETED", () => {
       const happyPath: RideLifecycle[] = [
         RideLifecycle.PENDING,
-        RideLifecycle.MATCHING,
-        RideLifecycle.WAITING_DRIVER,
         RideLifecycle.ACCEPTED,
         RideLifecycle.IN_PROGRESS,
         RideLifecycle.COMPLETED,
-        RideLifecycle.PAID,
       ];
       for (let i = 0; i < happyPath.length - 1; i++) {
         expect(isValidRideTransition(happyPath[i], happyPath[i + 1])).toBe(
@@ -69,11 +66,20 @@ describe("Aliado V2 — Stage 2.A — enum centralization", () => {
       ).toBe(false);
     });
 
-    it("treats PAID, CANCELLED and EXPIRED as terminal", () => {
+    it("allows cancellation from active lifecycle states", () => {
+      for (const active of [
+        RideLifecycle.PENDING,
+        RideLifecycle.ACCEPTED,
+        RideLifecycle.IN_PROGRESS,
+      ]) {
+        expect(isValidRideTransition(active, RideLifecycle.CANCELLED)).toBe(true);
+      }
+    });
+
+    it("treats COMPLETED and CANCELLED as terminal", () => {
       for (const terminal of [
-        RideLifecycle.PAID,
+        RideLifecycle.COMPLETED,
         RideLifecycle.CANCELLED,
-        RideLifecycle.EXPIRED,
       ]) {
         expect(RIDE_LIFECYCLE_TRANSITIONS[terminal]).toEqual([]);
       }

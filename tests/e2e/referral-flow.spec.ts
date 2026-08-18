@@ -69,7 +69,9 @@ async function getDriverOffers(
   ctx: APIRequestContext,
   driverId: string
 ): Promise<Array<{ id: string; rideRequestId: string; status: string }>> {
-  const res = await ctx.get(`${BASE}/drivers/${driverId}/offers`);
+  const res = await ctx.get(`${BASE}/drivers/${driverId}/offers`, {
+    headers: { "x-driver-id": driverId },
+  });
 
   if (!res.ok()) {
     const body = await res.text();

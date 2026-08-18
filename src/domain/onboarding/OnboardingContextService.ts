@@ -12,10 +12,7 @@ import {
   OwnershipMetrics,
 } from "../referral-network/NetworkOwnershipService";
 
-type Db = Pick<
-  typeof prisma,
-  "invite" | "driver" | "driverReferral" | "passenger" | "referralRelationship" | "rideRequest" | "revenueSplit"
->;
+type Db = typeof prisma;
 
 export type OnboardingSource =
   | "invite"
@@ -34,6 +31,23 @@ export interface OnboardingRootDriverSnapshot {
   name: string;
 }
 
+/**
+ * Portable invite summary returned to the frontend for every 200 response.
+ * Built synthetically for referral-code / public-slug paths (no Invite row
+ * needed) and from the Invite record when one exists.
+ */
+export interface OnboardingContextInvite {
+  /** Referral code or invite slug the backend accepts on POST /auth/register. */
+  code: string;
+  /** Display label fully formatted by the backend — no client-side formatting. */
+  displayLabel: string;
+  inviter: {
+    actorType: ActorType;
+    id: string;
+    name: string;
+  };
+}
+
 export interface OnboardingContext {
   source: OnboardingSource;
   slug: string;
@@ -41,7 +55,7 @@ export interface OnboardingContext {
   expectedActor: ActorType;
   inviter: OnboardingInviterSnapshot;
   rootDriver: OnboardingRootDriverSnapshot | null;
-  invite: Invite | null;
+  invite: OnboardingContextInvite | null;
   lineage: PassengerLineage | null;
   ownership: OwnershipMetrics | null;
 }
@@ -60,6 +74,7 @@ export class OnboardingContextError extends Error {}
  */
 export async function resolveOnboardingContext(
   slugOrCode: string,
+  flow?: string,
   db: Db = prisma
 ): Promise<OnboardingContext> {
   const invite =
@@ -75,57 +90,118 @@ export async function resolveOnboardingContext(
     if (invite.expiresAt && invite.expiresAt.getTime() <= Date.now()) {
       throw new OnboardingContextError(`Invite ${invite.slug} expired`);
     }
+    const inviteSummary = await buildInviteSummary(invite, db);
+    let expectedActor = invite.expectedActorType;
+    let flowType = invite.expectedFlowType;
+
+    if (flow === 'd2d') {
+      expectedActor = ActorType.DRIVER;
+      flowType = ReferralFlowType.DRIVER_TO_DRIVER;
+    } else if (flow === 'd2p') {
+      expectedActor = ActorType.PASSENGER;
+      flowType = ReferralFlowType.DRIVER_TO_PASSENGER;
+    }
+
     return buildContext(
       "invite",
       invite.slug,
-      invite.expectedFlowType,
-      invite.expectedActorType,
+      flowType,
+      expectedActor,
       invite.ownerActorType,
       invite.ownerId,
-      invite,
+      inviteSummary,
       db
     );
   }
 
   const driverByCode = await db.driver.findUnique({
     where: { referralCode: slugOrCode },
+    include: { user: { select: { name: true } } },
   });
   if (driverByCode) {
-    return contextFromDriver("driver_referral_code", slugOrCode, driverByCode, db);
+    return contextFromDriver("driver_referral_code", slugOrCode, driverByCode, flow, db);
   }
 
   const driverBySlug = await db.driver.findUnique({
     where: { publicSlug: slugOrCode },
+    include: { user: { select: { name: true } } },
   });
   if (driverBySlug) {
-    return contextFromDriver("driver_public_slug", slugOrCode, driverBySlug, db);
+    return contextFromDriver("driver_public_slug", slugOrCode, driverBySlug, flow, db);
   }
 
   const passengerByCode = await db.passenger.findUnique({
     where: { referralCode: slugOrCode },
+    include: { user: { select: { name: true } } },
   });
   if (passengerByCode) {
-    return contextFromPassenger("passenger_referral_code", slugOrCode, passengerByCode, db);
+    return contextFromPassenger("passenger_referral_code", slugOrCode, passengerByCode, flow, db);
   }
 
   const passengerBySlug = await db.passenger.findUnique({
     where: { publicSlug: slugOrCode },
+    include: { user: { select: { name: true } } },
   });
   if (passengerBySlug) {
-    return contextFromPassenger("passenger_public_slug", slugOrCode, passengerBySlug, db);
+    return contextFromPassenger("passenger_public_slug", slugOrCode, passengerBySlug, flow, db);
   }
 
   throw new OnboardingContextError(`Onboarding slug not found: ${slugOrCode}`);
 }
 
+async function buildInviteSummary(
+  invite: Invite,
+  db: Db
+): Promise<OnboardingContextInvite> {
+  const owner =
+    invite.ownerActorType === ActorType.DRIVER
+      ? await db.driver.findUnique({
+          where: { id: invite.ownerId },
+          select: { user: { select: { name: true } } },
+        })
+      : await db.passenger.findUnique({
+          where: { id: invite.ownerId },
+          select: { user: { select: { name: true } } },
+        });
+
+  if (!owner) {
+    throw new OnboardingContextError(
+      `Invite ${invite.slug} owner not found: ${invite.ownerActorType} ${invite.ownerId}`
+    );
+  }
+
+  return {
+    code: invite.slug,
+    displayLabel: `Convite de ${owner.user.name}`,
+    inviter: {
+      actorType: invite.ownerActorType,
+      id: invite.ownerId,
+      name: owner.user.name,
+    },
+  };
+}
+
 async function contextFromDriver(
   source: OnboardingSource,
   slug: string,
-  driver: Driver,
+  driver: Driver & { user: { name: string } },
+  flow: string | undefined,
   db: Db
 ): Promise<OnboardingContext> {
-  const expectedActor = ActorType.PASSENGER;
+  let expectedActor: ActorType = ActorType.PASSENGER;
+  if (flow === 'd2d') {
+    expectedActor = ActorType.DRIVER;
+  } else if (flow === 'd2p') {
+    expectedActor = ActorType.PASSENGER;
+  }
+
   const flowType = resolveReferralFlowType(ActorType.DRIVER, expectedActor);
+
+  const syntheticInvite: OnboardingContextInvite = {
+    code: driver.referralCode,
+    displayLabel: `Convite de ${driver.user.name}`,
+    inviter: { actorType: ActorType.DRIVER, id: driver.id, name: driver.user.name },
+  };
   return buildContext(
     source,
     slug,
@@ -133,7 +209,7 @@ async function contextFromDriver(
     expectedActor,
     ActorType.DRIVER,
     driver.id,
-    null,
+    syntheticInvite,
     db
   );
 }
@@ -141,11 +217,30 @@ async function contextFromDriver(
 async function contextFromPassenger(
   source: OnboardingSource,
   slug: string,
-  passenger: Passenger,
+  passenger: Passenger & { user: { name: string } },
+  flow: string | undefined,
   db: Db
 ): Promise<OnboardingContext> {
-  const expectedActor = ActorType.PASSENGER;
-  const flowType = resolveReferralFlowType(ActorType.PASSENGER, expectedActor);
+  let expectedActor: ActorType = ActorType.PASSENGER;
+  if (flow === 'd2d') {
+    expectedActor = ActorType.DRIVER;
+  } else if (flow === 'd2p' || flow === 'p2p') {
+    expectedActor = ActorType.PASSENGER;
+  }
+
+  let flowType: ReferralFlowType;
+  try {
+    flowType = resolveReferralFlowType(ActorType.PASSENGER, expectedActor);
+  } catch {
+    throw new OnboardingContextError(`Invalid flow for passenger inviter: ${flow}`);
+  }
+
+  const code = passenger.referralCode ?? passenger.publicSlug ?? slug;
+  const syntheticInvite: OnboardingContextInvite = {
+    code,
+    displayLabel: `Convite de ${passenger.user.name}`,
+    inviter: { actorType: ActorType.PASSENGER, id: passenger.id, name: passenger.user.name },
+  };
   return buildContext(
     source,
     slug,
@@ -153,7 +248,7 @@ async function contextFromPassenger(
     expectedActor,
     ActorType.PASSENGER,
     passenger.id,
-    null,
+    syntheticInvite,
     db
   );
 }
@@ -165,7 +260,7 @@ async function buildContext(
   expectedActor: ActorType,
   inviterActorType: ActorType,
   inviterId: string,
-  invite: Invite | null,
+  invite: OnboardingContextInvite | null,
   db: Db
 ): Promise<OnboardingContext> {
   const rootDriverId = await resolveDriverRoot(inviterActorType, inviterId, db);

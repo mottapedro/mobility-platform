@@ -13,7 +13,13 @@ async function createDriver(email: string) {
       email,
       phone: "11999990000",
       role: "DRIVER",
-      driver: { create: { experienceLevel: "PROFISSIONAL", isActive: true } },
+      driver: {
+        create: {
+          experienceLevel: "PROFISSIONAL",
+          isActive: true,
+          regions: ["SP"],
+        },
+      },
     },
     include: { driver: true },
   });

@@ -1,15 +1,20 @@
 import bcrypt from "bcryptjs";
-import { PrismaClient, ExperienceLevel, VehicleCategory, Region, RideStatus, RideOfferStatus, DriverSkillCode } from "@prisma/client";
+import { ExperienceLevel, VehicleCategory, Region, RideStatus, RideOfferStatus, DriverSkillCode } from "@prisma/client";
 import { createDriverReferralChain } from "../../src/domain/services/DriverReferralService";
 import { assignSkill } from "../../src/domain/skills/DriverSkillService";
 import { prisma as sharedPrisma } from "../../src/infra/prisma/client";
+import { ActorType } from "../../src/shared/enums";
+import { recordRelationship } from "../../src/domain/referral-network/ReferralRelationshipService";
+import { RootOwnershipProjectionService } from "../../src/domain/ownership/RootOwnershipProjectionService";
+import { resolveDriverRoot } from "../../src/domain/referral-network/DriverRootResolverService";
+import { seedRevenuePolicies } from "./revenue-policy.seed";
+import { seedOwnershipPolicies } from "./ownership-policy.seed";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
 // GOLDEN NETWORK OFICIAL — Pedro Paulo Motta como raiz
 // Real credentials provided by the operator.
 // ─────────────────────────────────────────────────────────────────────────────
-
 const REAL_NETWORK = {
   PEDRO:   { email: "mottapedro01@gmail.com",         phone: "21981722517" },
   JOAO:    { email: "jln@gmail.com",                   phone: "21994693673" },
@@ -27,11 +32,12 @@ const REAL_NETWORK = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LEGACY DRIVER EMAILS — kept for backward compatibility with existing tests
+// LEGACY DRIVER EMAILS — kept for backward compatibility with existing tests.
+// Pedro and João are canonical identities (REAL_NETWORK: mottapedro01@gmail.com,
+// jln@gmail.com) created by the official seed only. The legacy seed resolves
+// them instead of creating duplicate Users/Drivers.
 // ─────────────────────────────────────────────────────────────────────────────
 const DRIVER_EMAIL = {
-  PEDRO: "pedro.paulo.motta@mobility.com",
-  JOAO: "joao.luiz.brito@mobility.com",
   ANA_RECURRENCE: "ana.claudia.silva@mobility.com",
   ROBERTO: "roberto.souza@mobility.com",
   EXECUTIVE_2: "peter.jackson@mobility.com",
@@ -44,6 +50,32 @@ const PASSENGER_EMAIL = {
   NO_DRIVER: "sem.motorista.passenger@mobility.com",
   MARIA_WITHOUT: "maria.fernanda.no.driver@mobility.com",
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Skill catalogue — the baseline does not carry the migration-seeded Skill rows
+// (they live in 20260526000000_aliado_v2_referral_skills). The golden seed must
+// be self-contained on a baseline-only DB, so upsert the catalogue idempotently.
+// ─────────────────────────────────────────────────────────────────────────────
+const SKILL_CATALOG: Array<{ code: DriverSkillCode; displayName: string; description: string }> = [
+  { code: DriverSkillCode.COLECIONADOR, displayName: "Colecionador", description: "Motorista com perfil de recorrência e fidelização." },
+  { code: DriverSkillCode.EXECUTIVO, displayName: "Executivo", description: "Atende corridas executivas." },
+  { code: DriverSkillCode.TRANSPORTE_ASSISTIDO, displayName: "Transporte Assistido", description: "Habilitado para passageiros que necessitam de apoio." },
+  { code: DriverSkillCode.AEROPORTO, displayName: "Aeroporto", description: "Especialista em corridas para/de aeroporto." },
+  { code: DriverSkillCode.LONG_DISTANCE, displayName: "Longa Distância", description: "Corridas intermunicipais." },
+  { code: DriverSkillCode.PREMIUM, displayName: "Premium", description: "Veículo e atendimento premium." },
+  { code: DriverSkillCode.VIP, displayName: "VIP", description: "Atendimento VIP." },
+];
+
+async function seedSkillCatalog(prisma: any) {
+  for (const skill of SKILL_CATALOG) {
+    await prisma.skill.upsert({
+      where: { code: skill.code },
+      update: { displayName: skill.displayName, description: skill.description },
+      create: { code: skill.code, displayName: skill.displayName, description: skill.description },
+    });
+  }
+  console.log(`  ✅ Skill catalogue (${SKILL_CATALOG.length} entries) upserted`);
+}
 
 function asRegion(v: string): Region {
   return (Object.values(Region) as string[]).includes(v) ? (v as Region) : Region.ZN;
@@ -58,7 +90,7 @@ function asVehicleCategory(v: string): VehicleCategory {
 }
 
 async function upsertUser(
-  prisma: PrismaClient,
+  prisma: any,
   params: { email: string; name: string; phone: string; role: "DRIVER" | "PASSENGER"; password?: string }
 ) {
   const { email, name, phone, role } = params;
@@ -84,7 +116,7 @@ async function upsertUser(
 }
 
 async function upsertDriverWithVehicleAndRegions(
-  prisma: PrismaClient,
+  prisma: any,
   params: {
     email: string;
     name: string;
@@ -108,15 +140,15 @@ async function upsertDriverWithVehicleAndRegions(
       referralCode: params.referralCode,
       publicSlug: params.publicSlug,
       ...(params.metadata !== undefined ? { metadata: params.metadata as any } : {}),
-      // keep existing regions, add missing
-      regions: Array.from(
-        new Set([
-          ...(await prisma.driver.findUnique({ where: { userId: user.id } })
-            ?.then((d) => d?.regions)
-            .then((r) => r ?? []) ?? []),
-          ...params.regions,
-        ])
-      ),
+          // keep existing regions, add missing
+          regions: Array.from(
+            new Set([
+              ...(await prisma.driver.findUnique({ where: { userId: user.id } })
+                ?.then((d: { regions: Region[] }) => d?.regions)
+                .then((r: Region[]) => r ?? []) ?? []),
+              ...params.regions,
+            ])
+          ),
     },
     create: {
       userId: user.id,
@@ -147,17 +179,45 @@ async function upsertDriverWithVehicleAndRegions(
     },
   });
 
-  // idempotent availability (no unique compound key in schema)
-  await prisma.driverAvailability.createMany({
-    data: [{ driverId: driver.id, dayOfWeek: 1, startTime: "08:00", endTime: "20:00" }],
-    skipDuplicates: true,
-  }).catch(() => Promise.resolve());
+  // Idempotent availability — no unique compound key in schema, so skipDuplicates
+  // would silently no-op and duplicate rows on a second run. Use a deterministic
+  // (driverId, dayOfWeek) lookup with update-or-create instead.
+  const existingAvailability = await prisma.driverAvailability.findFirst({
+    where: { driverId: driver.id, dayOfWeek: 1 },
+  });
+  if (existingAvailability) {
+    await prisma.driverAvailability.update({
+      where: { id: existingAvailability.id },
+      data: { startTime: "08:00", endTime: "20:00" },
+    });
+  } else {
+    await prisma.driverAvailability.create({
+      data: { driverId: driver.id, dayOfWeek: 1, startTime: "08:00", endTime: "20:00" },
+    });
+  }
 
   return driver;
 }
 
+// Resolve a driver by its canonical identity email. Used by the legacy seed to
+// re-attach its hierarchy edges to the official Pedro/João records instead of
+// creating duplicate Users/Drivers.
+async function findDriverByEmail(prisma: any, email: string) {
+  return prisma.user
+    .findUnique({
+      where: { email },
+      select: { id: true, driver: { select: { id: true } } },
+    })
+    .then((u: { id: string; driver: { id: string } | null } | null) => {
+      if (!u?.driver) {
+        throw new Error(`[GoldenSeed] canonical driver not found for ${email} — official seed must run first`);
+      }
+      return { id: u.driver.id, userId: u.id };
+    });
+}
+
 async function upsertPassenger(
-  prisma: PrismaClient,
+  prisma: any,
   params: {
     email: string;
     name: string;
@@ -197,7 +257,7 @@ async function upsertPassenger(
 }
 
 async function upsertRide(
-  prisma: PrismaClient,
+  prisma: any,
   params: {
     passengerId: string;
     status: RideStatus;
@@ -208,11 +268,13 @@ async function upsertRide(
     context?: unknown;
   }
 ) {
-  // No stable unique key in schema; upsert by (passengerId, scheduledAt, origin, destination)
+  // No stable unique key in schema; match by the stable identity
+  // (passengerId, origin, destination). scheduledAt is deliberately excluded —
+  // it's derived from runtime `now`, so a second run would produce a different
+  // timestamp and never match the first run's row.
   const existing = await prisma.rideRequest.findFirst({
     where: {
       passengerId: params.passengerId,
-      scheduledAt: params.scheduledAt,
       origin: params.origin,
       destination: params.destination,
     },
@@ -271,7 +333,7 @@ async function upsertRide(
 //     ├─ Fernando Barreira              [level-1]
 //     └─ Carlos Henrique               [level-1]
 // ─────────────────────────────────────────────────────────────────────────────
-export async function runOfficialGoldenNetworkSeed(prisma: PrismaClient) {
+export async function runOfficialGoldenNetworkSeed(prisma: any) {
   console.log("🌟 Seeding Golden Network Oficial — Pedro Paulo Motta como raiz...");
 
   // ── Root: Pedro Paulo Motta ──────────────────────────────────────────────
@@ -447,6 +509,86 @@ export async function runOfficialGoldenNetworkSeed(prisma: PrismaClient) {
   await createDriverReferralChain(andre.id, joao.id, prisma);
   console.log("  ✅ João: 6 indicações diretas criadas (level 1 João / level 2 Pedro herdado)");
 
+  // ── V2 relational projection ────────────────────────────────────────────
+  // Ensure every direct D2D edge is also recorded in ReferralRelationship so
+  // the V2 network read model matches the legacy closure table on fresh seeds.
+  const v2DirectEdges = [
+    { inviterId: pedro.id, invitedId: joao.id },
+    { inviterId: pedro.id, invitedId: anselmo.id },
+    { inviterId: pedro.id, invitedId: fernando.id },
+    { inviterId: pedro.id, invitedId: carlosH.id },
+    { inviterId: joao.id, invitedId: carlinhos.id },
+    { inviterId: joao.id, invitedId: jenner.id },
+    { inviterId: joao.id, invitedId: bira.id },
+    { inviterId: joao.id, invitedId: gisele.id },
+    { inviterId: joao.id, invitedId: fabio.id },
+    { inviterId: joao.id, invitedId: andre.id },
+  ];
+  for (const edge of v2DirectEdges) {
+    await recordRelationship(
+      {
+        inviterActorType: ActorType.DRIVER,
+        inviterId: edge.inviterId,
+        invitedActorType: ActorType.DRIVER,
+        invitedId: edge.invitedId,
+      },
+      prisma
+    ).catch((err) => {
+      console.warn(
+        `[GoldenSeed] V2 relationship record failed for ${edge.invitedId}:`,
+        err?.message
+      );
+    });
+  }
+  console.log("  ✅ V2: 10 relational referral edges recorded");
+
+  // ── V2 relational passengers for the official network ─────────────────────
+  // The frontend "Clientes / Rede" tab shows passengers from the genealogy,
+  // which reads ReferralRelationship. Without D2P edges the official root
+  // driver appears with 0 passengers.
+  const officialPassenger1 = await upsertPassenger(prisma, {
+    email: "passageiro.oficial.1@aliado.mobility",
+    name: "Passageiro Oficial 1",
+    phone: "21990001001",
+    referralCode: "passageiro-oficial-1",
+    publicSlug: "passageiro-oficial-1",
+    referredByDriverId: pedro.id,
+    rootPassengerId: null,
+    networkLevel: 0,
+    lineagePath: [],
+  });
+  const officialPassenger2 = await upsertPassenger(prisma, {
+    email: "passageiro.oficial.2@aliado.mobility",
+    name: "Passageiro Oficial 2",
+    phone: "21990001002",
+    referralCode: "passageiro-oficial-2",
+    publicSlug: "passageiro-oficial-2",
+    referredByDriverId: joao.id,
+    rootPassengerId: null,
+    networkLevel: 0,
+    lineagePath: [],
+  });
+
+  // Project ownership so Passenger.rootDriverId is set correctly.
+  await prisma.passenger.updateMany({
+    where: { id: { in: [officialPassenger1.id, officialPassenger2.id] } },
+    data: { rootDriverId: pedro.id },
+  });
+  await RootOwnershipProjectionService.projectPassengerOwnership(officialPassenger1.id, prisma).catch(() => null);
+  await RootOwnershipProjectionService.projectPassengerOwnership(officialPassenger2.id, prisma).catch(() => null);
+
+  // Record D2P edges so the genealogy tree includes these passengers.
+  const officialPassengerEdges = [
+    { inviterActorType: ActorType.DRIVER, inviterId: pedro.id, invitedActorType: ActorType.PASSENGER, invitedId: officialPassenger1.id },
+    { inviterActorType: ActorType.DRIVER, inviterId: joao.id, invitedActorType: ActorType.PASSENGER, invitedId: officialPassenger2.id },
+  ];
+  for (const edge of officialPassengerEdges) {
+    await recordRelationship(edge, prisma).catch((err) => {
+      console.warn(`[GoldenSeed] official passenger relationship failed:`, err?.message);
+    });
+  }
+  console.log("  ✅ V2: 2 official network passengers registered");
+
   // V2 — assign relational skill catalogue entry to Gisele
   await assignSkill(
     { driverId: gisele.id, code: DriverSkillCode.COLECIONADOR },
@@ -466,33 +608,16 @@ export async function runOfficialGoldenNetworkSeed(prisma: PrismaClient) {
 // ─────────────────────────────────────────────────────────────────────────────
 // LEGACY SEED — kept for backward compatibility with existing tests/fixtures
 // ─────────────────────────────────────────────────────────────────────────────
-export async function runGoldenNetworkSeed(prisma: PrismaClient) {
+export async function runGoldenNetworkSeed(prisma: any) {
   // Ensure base tables exist via upsert.
 
   // 1) Drivers (golden set)
-  const pedro = await upsertDriverWithVehicleAndRegions(prisma, {
-    email: DRIVER_EMAIL.PEDRO,
-    name: "Pedro Paulo Motta",
-    phone: "21981722517",
-    experienceLevel: ExperienceLevel.PROFISSIONAL,
-    isActive: true,
-    referralCode: "pedro-paulo-motta-zn-premium",
-    publicSlug: "pedro-paulo-motta",
-    regions: [Region.ZN],
-    vehicle: { plate: "PEDRO-1111", model: "Accord", brand: "Honda", category: VehicleCategory.EXECUTIVO },
-  });
-
-  const joao = await upsertDriverWithVehicleAndRegions(prisma, {
-    email: DRIVER_EMAIL.JOAO,
-    name: "João Luiz Correa de Brito",
-    phone: "21994693673",
-    experienceLevel: ExperienceLevel.INTERMEDIARIO,
-    isActive: true,
-    referralCode: "joao-luiz-transporte-assistido",
-    publicSlug: "joao-luiz-brito",
-    regions: [Region.ZS],
-    vehicle: { plate: "JOAO-2222", model: "Logan", brand: "Renault", category: VehicleCategory.CONFORTO },
-  });
+  // Pedro and João are canonical identities created by the official seed
+  // (REAL_NETWORK.PEDRO = mottapedro01@gmail.com, REAL_NETWORK.JOAO = jln@gmail.com).
+  // Resolve them here so the legacy hierarchy reuses the canonical records —
+  // never recreate duplicate Users/Drivers with legacy emails.
+  const pedro = await findDriverByEmail(prisma, REAL_NETWORK.PEDRO.email);
+  const joao = await findDriverByEmail(prisma, REAL_NETWORK.JOAO.email);
 
   const ana = await upsertDriverWithVehicleAndRegions(prisma, {
     email: DRIVER_EMAIL.ANA_RECURRENCE,
@@ -540,8 +665,67 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
   // Pedro -> Roberto (level1)
   await createDriverReferralChain(roberto.id, pedro.id, prisma);
 
+  // Mirror the three legacy-only direct D2D edges into the V2 read model.
+  const legacyV2DirectEdges = [
+    { inviterId: pedro.id, invitedId: peter.id },
+    { inviterId: peter.id, invitedId: ana.id },
+    { inviterId: pedro.id, invitedId: roberto.id },
+  ];
+  for (const edge of legacyV2DirectEdges) {
+    await recordRelationship(
+      {
+        inviterActorType: ActorType.DRIVER,
+        inviterId: edge.inviterId,
+        invitedActorType: ActorType.DRIVER,
+        invitedId: edge.invitedId,
+      },
+      prisma
+    );
+  }
+  console.log("  ✅ V2: 3 legacy D2D referral edges recorded");
+
   // 3) Passengers (hierarchy)
-  const passengerPeterRoot = await upsertPassenger(prisma, {
+  // Helper: project rootDriverId from the referring driver/passenger so the
+  // V2 ownership model matches the legacy hierarchy. Without this the
+  // frontend "Clientes" tab (which filters by Passenger.rootDriverId) stays empty.
+  async function upsertPassengerWithOwnership(
+    prisma: any,
+    params: {
+      email: string;
+      name: string;
+      phone: string;
+      referralCode: string;
+      publicSlug: string | null;
+      referredByDriverId: string | null;
+      rootPassengerId: string | null;
+      networkLevel: number;
+      lineagePath: string[];
+    }
+  ) {
+    const passenger = await upsertPassenger(prisma, params);
+
+    let rootDriverId: string | null = null;
+    if (params.referredByDriverId) {
+      rootDriverId = await resolveDriverRoot(ActorType.DRIVER, params.referredByDriverId, prisma).catch(() => null);
+    } else if (params.rootPassengerId) {
+      rootDriverId = await prisma.passenger
+        .findUnique({ where: { id: params.rootPassengerId }, select: { rootDriverId: true } })
+        .then((p: { rootDriverId: string | null } | null) => p?.rootDriverId ?? null)
+        .catch(() => null);
+    }
+
+    if (rootDriverId) {
+      await prisma.passenger.update({
+        where: { id: passenger.id },
+        data: { rootDriverId },
+      });
+      await RootOwnershipProjectionService.projectPassengerOwnership(passenger.id, prisma).catch(() => null);
+    }
+
+    return passenger;
+  }
+
+  const passengerPeterRoot = await upsertPassengerWithOwnership(prisma, {
     email: PASSENGER_EMAIL.ROOT_PETER,
     name: "Peter Jackson (Passenger)",
     phone: "21999990001",
@@ -553,7 +737,7 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
     lineagePath: [],
   });
 
-  const passengerMaria = await upsertPassenger(prisma, {
+  const passengerMaria = await upsertPassengerWithOwnership(prisma, {
     email: PASSENGER_EMAIL.MARIA_FERNANDA,
     name: "Maria Fernanda",
     phone: "21999990002",
@@ -565,7 +749,7 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
     lineagePath: [passengerPeterRoot.id],
   });
 
-  const passengerAna = await upsertPassenger(prisma, {
+  const passengerAna = await upsertPassengerWithOwnership(prisma, {
     email: PASSENGER_EMAIL.ANA_CLAUDIA,
     name: "Ana Claudia (Passenger)",
     phone: "21999990003",
@@ -577,7 +761,7 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
     lineagePath: [passengerPeterRoot.id, passengerMaria.id],
   });
 
-  const passengerNoDriver = await upsertPassenger(prisma, {
+  const passengerNoDriver = await upsertPassengerWithOwnership(prisma, {
     email: PASSENGER_EMAIL.NO_DRIVER,
     name: "Passageiro sem motorista aliado",
     phone: "21999990004",
@@ -588,6 +772,23 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
     networkLevel: 0,
     lineagePath: [],
   });
+
+  // V2 relational projection for passenger hierarchy (D2P + P2P edges)
+  // The frontend genealogy tree reads ReferralRelationship, so these edges are required
+  // for passengers to appear under the root driver's network view.
+  const v2PassengerEdges = [
+    { inviterActorType: ActorType.DRIVER, inviterId: pedro.id, invitedActorType: ActorType.PASSENGER, invitedId: passengerPeterRoot.id },
+    { inviterActorType: ActorType.DRIVER, inviterId: pedro.id, invitedActorType: ActorType.PASSENGER, invitedId: passengerMaria.id },
+    { inviterActorType: ActorType.DRIVER, inviterId: ana.id, invitedActorType: ActorType.PASSENGER, invitedId: passengerAna.id },
+    { inviterActorType: ActorType.PASSENGER, inviterId: passengerPeterRoot.id, invitedActorType: ActorType.PASSENGER, invitedId: passengerMaria.id },
+    { inviterActorType: ActorType.PASSENGER, inviterId: passengerMaria.id, invitedActorType: ActorType.PASSENGER, invitedId: passengerAna.id },
+  ];
+  for (const edge of v2PassengerEdges) {
+    await recordRelationship(edge, prisma).catch((err) => {
+      console.warn(`[GoldenSeed] V2 passenger relationship failed:`, err?.message);
+    });
+  }
+  console.log("  ✅ V2: passenger hierarchy edges recorded");
 
   // 4) Ride requests with multiple states
   const now = new Date();
@@ -644,11 +845,19 @@ export async function runGoldenNetworkSeed(prisma: PrismaClient) {
 }
 
 export async function main() {
-  const prisma: PrismaClient = sharedPrisma;
+  const prisma = sharedPrisma;
   try {
-    await runGoldenNetworkSeed(prisma);
+    // Structural domain configuration first (single source of truth lives in
+    // the policy seed routines — never duplicated here).
+    await seedRevenuePolicies(prisma);
+    await seedOwnershipPolicies(prisma);
+    await seedSkillCatalog(prisma);
+    // Official network first: creates the canonical identities (mottapedro01@gmail.com,
+    // jln@gmail.com). The legacy seed resolves those same identities to attach its
+    // hierarchy edges — never duplicate records.
     await runOfficialGoldenNetworkSeed(prisma);
-    console.log("✅ Golden network seed (legacy + oficial) complete");
+    await runGoldenNetworkSeed(prisma);
+    console.log("✅ Golden network seed (structural policies + oficial + legacy) complete");
   } finally {
     await prisma.$disconnect();
   }

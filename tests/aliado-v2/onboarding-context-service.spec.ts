@@ -43,7 +43,7 @@ async function makePassenger(email: string, rootDriverId: string) {
 describe("OnboardingContextService.resolveOnboardingContext", () => {
   it("resolves a DRIVER invite slug → D2D context with inviter driver and root=self", async () => {
     const owner = await makeDriver("onb.invite.d2d@test.com");
-    const invite = await prisma.invite.create({
+    await prisma.invite.create({
       data: {
         slug: "join-d2d-001",
         ownerActorType: ActorType.DRIVER,
@@ -61,7 +61,15 @@ describe("OnboardingContextService.resolveOnboardingContext", () => {
     expect(ctx.expectedActor).toBe(ActorType.DRIVER);
     expect(ctx.inviter).toMatchObject({ actorType: ActorType.DRIVER, id: owner.id });
     expect(ctx.rootDriver).toMatchObject({ id: owner.id });
-    expect(ctx.invite).toMatchObject({ id: invite.id, slug: "join-d2d-001" });
+    expect(ctx.invite).toEqual({
+      code: "join-d2d-001",
+      displayLabel: "Convite de onb.invite.d2d@test.com",
+      inviter: {
+        actorType: ActorType.DRIVER,
+        id: owner.id,
+        name: "onb.invite.d2d@test.com",
+      },
+    });
     expect(ctx.lineage).toBeNull();
     expect(ctx.ownership).toMatchObject({ driverId: owner.id });
   });
@@ -89,6 +97,15 @@ describe("OnboardingContextService.resolveOnboardingContext", () => {
     expect(ctx.expectedActor).toBe(ActorType.PASSENGER);
     expect(ctx.inviter).toMatchObject({ actorType: ActorType.PASSENGER, id: inviter.id });
     expect(ctx.rootDriver?.id).toBe(root.id);
+    expect(ctx.invite).toEqual({
+      code: "join-p2p-002",
+      displayLabel: "Convite de onb.invite.p2p.inviter@test.com",
+      inviter: {
+        actorType: ActorType.PASSENGER,
+        id: inviter.id,
+        name: "onb.invite.p2p.inviter@test.com",
+      },
+    });
     expect(ctx.lineage?.passengerId).toBe(inviter.id);
     expect(ctx.lineage?.rootDriverId).toBe(root.id);
   });
@@ -102,7 +119,15 @@ describe("OnboardingContextService.resolveOnboardingContext", () => {
     expect(ctx.flowType).toBe(ReferralFlowType.DRIVER_TO_PASSENGER);
     expect(ctx.expectedActor).toBe(ActorType.PASSENGER);
     expect(ctx.rootDriver?.id).toBe(d.id);
-    expect(ctx.invite).toBeNull();
+    expect(ctx.invite).toEqual({
+      code: driver!.referralCode,
+      displayLabel: "Convite de onb.code.driver@test.com",
+      inviter: {
+        actorType: ActorType.DRIVER,
+        id: d.id,
+        name: "onb.code.driver@test.com",
+      },
+    });
   });
 
   it("falls back to Driver.publicSlug", async () => {

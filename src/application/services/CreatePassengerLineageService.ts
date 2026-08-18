@@ -23,14 +23,7 @@ import {
 } from "../../domain/referral-network/PassengerLineageService";
 import { EventBus, recordAndPublish } from "../../domain/shared/events/EventBus";
 
-type Db = Pick<
-  typeof prisma,
-  | "driver"
-  | "driverReferral"
-  | "passenger"
-  | "referralRelationship"
-  | "domainEvent"
->;
+type Db = typeof prisma;
 
 export interface CreatePassengerLineageInput {
   inviterActorType: ActorType;

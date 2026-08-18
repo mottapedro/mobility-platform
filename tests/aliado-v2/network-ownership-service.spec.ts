@@ -37,7 +37,13 @@ async function makePassenger(email: string, rootDriverId: string) {
   });
 }
 
-async function makeRide(passengerId: string, rootDriverId: string, status: RideStatus, ageMs = 0) {
+async function makeRide(
+  passengerId: string,
+  rootDriverId: string,
+  status: RideStatus,
+  ageMs = 0,
+  selectedDriverId: string | null = null
+) {
   return prisma.rideRequest.create({
     data: {
       passengerId,
@@ -45,6 +51,35 @@ async function makeRide(passengerId: string, rootDriverId: string, status: RideS
       scheduledAt: new Date(Date.now() - ageMs),
       status,
       rootDriverId,
+      selectedDriverId,
+    },
+  });
+}
+
+async function settleRide(
+  rideRequestId: string,
+  rootDriverId: string,
+  settledAt = new Date()
+) {
+  const intent = await prisma.paymentIntent.create({
+    data: {
+      rideRequestId,
+      amountCents: 10000,
+      method: "PIX",
+      status: "CONFIRMED",
+      externalId: `ext-${rideRequestId}`,
+    },
+  });
+  return prisma.settlement.create({
+    data: {
+      paymentIntentId: intent.id,
+      rideRequestId,
+      totalCents: 10000,
+      driverCents: 8000,
+      platformCents: 1500,
+      rootDriverCents: 500,
+      rootDriverId,
+      settledAt,
     },
   });
 }
@@ -109,60 +144,33 @@ describe("NetworkOwnershipService.getOwnershipMetrics", () => {
     expect(m.totalPassengersInTree).toBe(2);
   });
 
-  it("counts completed rides in the 30d window via RideRequest.rootDriverId", async () => {
+  it("counts settlements attributed to the tree in the 30d window", async () => {
     const root = await makeDriver("own.rides.root@test.com");
     const p = await makePassenger("own.rides.p@test.com", root.id);
-    await makeRide(p.id, root.id, RideStatus.COMPLETED);
-    await makeRide(p.id, root.id, RideStatus.PAID);
+    const completed = await makeRide(p.id, root.id, RideStatus.COMPLETED, 0, root.id);
+    const paid = await makeRide(p.id, root.id, RideStatus.PAID, 0, root.id);
     await makeRide(p.id, root.id, RideStatus.PENDING); // ignored
-    await makeRide(p.id, root.id, RideStatus.COMPLETED, 1000 * 60 * 60 * 24 * 40); // outside window
+    const old = await makeRide(
+      p.id,
+      root.id,
+      RideStatus.COMPLETED,
+      1000 * 60 * 60 * 24 * 40,
+      root.id
+    );
+    await settleRide(completed.id, root.id);
+    await settleRide(paid.id, root.id);
+    await settleRide(old.id, root.id, new Date(Date.now() - 1000 * 60 * 60 * 24 * 40));
 
     const m = await getOwnershipMetrics(root.id);
     expect(m.completedRidesAttributedToTree).toBe(2);
   });
 
-  it("sums settledRevenueShareCents from RevenueSplit where beneficiaryDriverId=driverId in window", async () => {
+  it("sums rootDriverCents from settlements attributed to the driver's tree", async () => {
     const root = await makeDriver("own.rev.root@test.com");
+    const selectedDriver = await makeDriver("own.rev.selected@test.com");
     const p = await makePassenger("own.rev.p@test.com", root.id);
-    const ride = await makeRide(p.id, root.id, RideStatus.PAID);
-    const intent = await prisma.paymentIntent.create({
-      data: {
-        rideRequestId: ride.id,
-        amountCents: 10000,
-        method: "PIX",
-        status: "CONFIRMED",
-        externalId: `ext-${ride.id}`,
-      },
-    });
-    const settlement = await prisma.settlement.create({
-      data: {
-        paymentIntentId: intent.id,
-        rideRequestId: ride.id,
-        totalCents: 10000,
-        driverCents: 8000,
-        platformCents: 1500,
-        rootDriverCents: 500,
-        rootDriverId: root.id,
-      },
-    });
-    await prisma.revenueSplit.create({
-      data: {
-        settlementId: settlement.id,
-        beneficiaryType: "ROOT_DRIVER",
-        beneficiaryDriverId: root.id,
-        amountCents: 500,
-        percentBps: 500,
-      },
-    });
-    await prisma.revenueSplit.create({
-      data: {
-        settlementId: settlement.id,
-        beneficiaryType: "PLATFORM",
-        beneficiaryDriverId: null,
-        amountCents: 1500,
-        percentBps: 1500,
-      },
-    });
+    const ride = await makeRide(p.id, root.id, RideStatus.PAID, 0, selectedDriver.id);
+    await settleRide(ride.id, root.id);
 
     const m = await getOwnershipMetrics(root.id);
     expect(m.settledRevenueShareCents).toBe(500);
@@ -172,9 +180,12 @@ describe("NetworkOwnershipService.getOwnershipMetrics", () => {
     const root = await makeDriver("own.ret.root@test.com");
     const p1 = await makePassenger("own.ret.p1@test.com", root.id);
     const p2 = await makePassenger("own.ret.p2@test.com", root.id);
-    await makeRide(p1.id, root.id, RideStatus.COMPLETED);
-    await makeRide(p1.id, root.id, RideStatus.COMPLETED);
-    await makeRide(p2.id, root.id, RideStatus.COMPLETED);
+    const p1Ride1 = await makeRide(p1.id, root.id, RideStatus.COMPLETED, 0, root.id);
+    const p1Ride2 = await makeRide(p1.id, root.id, RideStatus.COMPLETED, 0, root.id);
+    const p2Ride = await makeRide(p2.id, root.id, RideStatus.COMPLETED, 0, root.id);
+    await settleRide(p1Ride1.id, root.id);
+    await settleRide(p1Ride2.id, root.id);
+    await settleRide(p2Ride.id, root.id);
 
     const m = await getOwnershipMetrics(root.id);
     expect(m.retentionRate).toBeCloseTo(0.5, 5);

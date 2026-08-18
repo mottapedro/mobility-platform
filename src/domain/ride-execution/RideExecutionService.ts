@@ -2,7 +2,7 @@
  * Domain Service: RideExecutionService
  *
  * Stage 2.C — Handles the in-flight ride lifecycle transitions that are not
- * already covered by FinalizeRideService (IN_PROGRESS → COMPLETED).
+ * already covered by FinalizeRideService (STARTED → COMPLETED).
  *
  * Responsibilities:
  *   - `start`  : ACCEPTED → IN_PROGRESS  (driver picks up passenger)

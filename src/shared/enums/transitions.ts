@@ -1,52 +1,41 @@
 /**
- * TS-only lifecycle mirrors for Ride and Payment.
+ * Ride lifecycle states (pure lifecycle, no dispatch concerns).
  *
- * These do NOT live in Prisma because the Prisma enums (`RideStatus`,
- * `PaymentStatus`) are persistence-level value sets. The lifecycles here are
- * domain-level state machines used by the RideExecutionDomain and the
- * Payment orchestrator to gate transitions.
- *
- * The lifecycle values are a strict subset of the Prisma enums, modeled as
- * `const` objects (so both runtime values and types are available) and a
- * transition matrix used by domain services to validate state changes.
+ * Dispatch progression (OWNER_DISPATCH → NETWORK_DISPATCH → OWNER_RECOVERY)
+ * lives in DispatchCycleStage and RideRequest.dispatchStage — completely
+ * separate from lifecycle status. A ride stays REQUESTED throughout the entire
+ * dispatch cycle; only when a driver accepts does it transition to ACCEPTED.
  */
 
 import type { PaymentStatus, RideStatus } from "@prisma/client";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ride lifecycle
+// Ride lifecycle (pure — no dispatch stages mixed in)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const RideLifecycle = {
-  PENDING: "PENDING",
-  MATCHING: "MATCHING",
-  WAITING_DRIVER: "WAITING_DRIVER",
-  ACCEPTED: "ACCEPTED",
+  PENDING:    "PENDING",
+  ACCEPTED:   "ACCEPTED",
   IN_PROGRESS: "IN_PROGRESS",
-  COMPLETED: "COMPLETED",
-  CANCELLED: "CANCELLED",
-  EXPIRED: "EXPIRED",
-  PAID: "PAID",
+  COMPLETED:  "COMPLETED",
+  CANCELLED:  "CANCELLED",
 } as const satisfies Record<string, RideStatus>;
 
 export type RideLifecycle = (typeof RideLifecycle)[keyof typeof RideLifecycle];
 
 /**
- * Authoritative transition matrix for the ride lifecycle. Each key maps to
- * the set of statuses it is allowed to transition INTO.
+ * Lifecycle transition matrix. Dispatch stages (OWNER_DISPATCH, etc.) are
+ * orthogonal — they live on RideRequest.dispatchStage and change while the
+ * ride remains REQUESTED.
  */
 export const RIDE_LIFECYCLE_TRANSITIONS: Readonly<
   Record<RideLifecycle, readonly RideLifecycle[]>
 > = Object.freeze({
-  PENDING: ["MATCHING", "CANCELLED", "EXPIRED"],
-  MATCHING: ["WAITING_DRIVER", "EXPIRED", "CANCELLED"],
-  WAITING_DRIVER: ["ACCEPTED", "EXPIRED", "CANCELLED"],
-  ACCEPTED: ["IN_PROGRESS", "CANCELLED"],
-  IN_PROGRESS: ["COMPLETED", "CANCELLED"],
-  COMPLETED: ["PAID"],
-  PAID: [],
-  CANCELLED: [],
-  EXPIRED: [],
+  PENDING:    ["ACCEPTED", "CANCELLED"],
+  ACCEPTED:   ["IN_PROGRESS", "CANCELLED"],
+  "IN_PROGRESS": ["COMPLETED", "CANCELLED"],
+  COMPLETED:  [],
+  CANCELLED:  [],
 });
 
 export function isValidRideTransition(
@@ -61,9 +50,9 @@ export function isValidRideTransition(
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const PaymentLifecycle = {
-  PENDING: "PENDING",
+  PENDING:   "PENDING",
   CONFIRMED: "CONFIRMED",
-  FAILED: "FAILED",
+  FAILED:    "FAILED",
   CANCELLED: "CANCELLED",
 } as const satisfies Record<string, PaymentStatus>;
 
@@ -73,9 +62,9 @@ export type PaymentLifecycle =
 export const PAYMENT_LIFECYCLE_TRANSITIONS: Readonly<
   Record<PaymentLifecycle, readonly PaymentLifecycle[]>
 > = Object.freeze({
-  PENDING: ["CONFIRMED", "FAILED", "CANCELLED"],
+  PENDING:   ["CONFIRMED", "FAILED", "CANCELLED"],
   CONFIRMED: [],
-  FAILED: ["PENDING"],
+  FAILED:    ["PENDING"],
   CANCELLED: [],
 });
 

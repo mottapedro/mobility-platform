@@ -21,7 +21,7 @@
  *   - PAYMENT_CONFIRMED  (first time only)
  *   - RIDE_SETTLED       (first time only)
  *   - REWARD_DISTRIBUTED (first time only)
- *   - RideRequest.status -> PAID  (first time only)
+ *   - RideRequest.status remains unchanged (Model B)
  */
 
 import type { PaymentIntent, Settlement } from "@prisma/client";

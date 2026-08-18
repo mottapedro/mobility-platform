@@ -1,32 +1,33 @@
-import type { Settlement } from "@prisma/client";
-import { DomainEventType, PaymentStatus, RideStatus, SplitBeneficiaryType } from "../../shared/enums";
+import { Prisma, type Settlement } from "@prisma/client";
+import { DomainEventType, PaymentStatus, SplitBeneficiaryType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
+import { EventBus, recordAndPublish } from "../shared/events/EventBus";
+import { computeRevenueSplitV2, PLATFORM_FEE_CENTS } from "./RevenueSplitService";
+import { RevenuePolicyRepository } from "./RevenuePolicyRepository";
 import {
-  EventBus,
-  recordAndPublish,
-} from "../shared/events/EventBus";
-import { computeRevenueSplit, SPLIT_BPS } from "./RevenueSplitService";
+  assertSettlementContext,
+  type PricingSnapshotContext,
+} from "./ValidationGate";
 
 /**
- * SettlementService — synchronous, idempotent settlement of a confirmed
- * PaymentIntent.
+ * SettlementService — ADR-001 + ADR-002 v1.1
  *
  * Pipeline (single transaction):
- *   1. Re-load PaymentIntent (must be CONFIRMED)
- *   2. Resolve rootDriverId via RideRequest.passenger.rootDriverId
- *   3. computeRevenueSplit() → driver / platform / root cents
- *   4. Insert Settlement + 3 RevenueSplit rows
- *   5. Transition RideRequest.status → PAID
+ *   0. Validation Gate (VG-1..VG-6) — pré-condição obrigatória
+ *   1. Resolver RevenuePolicy vigente (RevenuePolicyRepository)
+ *   2. computeRevenueSplitV2() → splits calculados pela política
+ *   3. assertSettlementContext() → lança se qualquer invariante for violado
+ *   4. INSERT Settlement (com revenuePolicyId + revenuePolicyVersion)
+ *   5. INSERT RevenueSplit rows: PLATFORM + DRIVER + ROOT_DRIVER (quando aplicável)
  *
- * After commit (outside the tx):
- *   6. Persist + publish RIDE_SETTLED and REWARD_DISTRIBUTED domain events.
+ * Após o commit:
+ *   6. Publicar RIDE_SETTLED e REWARD_DISTRIBUTED
  *
- * Idempotency: if a Settlement already exists for this PaymentIntent, returns
- * it untouched and skips the events.
+ * Idempotente: retorna Settlement existente sem reprocessar.
  */
 export async function settleConfirmedPayment(
   paymentIntentId: string,
-  bus: EventBus
+  bus: EventBus,
 ): Promise<Settlement> {
   const existing = await prisma.settlement.findUnique({
     where: { paymentIntentId },
@@ -44,18 +45,67 @@ export async function settleConfirmedPayment(
   }
   if (intent.status !== PaymentStatus.CONFIRMED) {
     throw new Error(
-      `PaymentIntent ${paymentIntentId} is not CONFIRMED (status=${intent.status})`
+      `PaymentIntent ${paymentIntentId} is not CONFIRMED (status=${intent.status})`,
     );
   }
 
-  const rootDriverId = intent.rideRequest.passenger.rootDriverId ?? null;
-  const split = computeRevenueSplit({
+  const ride = intent.rideRequest;
+
+  // ADR-004: ler ownerId do OwnershipSnapshot (fonte canônica).
+  // Fallback para passenger.rootDriverId durante a transição para corridas históricas
+  // que não possuem snapshot (criadas antes da ADR-004).
+  const ownershipSnapshot = await prisma.ownershipSnapshot.findUnique({
+    where: { rideId: ride.id },
+  });
+  const rootDriverId =
+    ownershipSnapshot?.ownerId ?? ride.passenger.rootDriverId ?? null;
+  const settleDate = new Date();
+
+  // Resolve política vigente — MVP usa ROOT_DRIVER_STANDARD
+  const policyRepo = new RevenuePolicyRepository(prisma);
+  const policy = await policyRepo.resolveForRide(settleDate);
+
+  // Calcula os splits com a política (V2)
+  const split = computeRevenueSplitV2({
     totalCents: intent.amountCents,
+    rootDriverId,
+    // Se não houver política, usa ROOT_DRIVER_STANDARD placeholder apenas para
+    // calcular split zero; o gate VG-2 vai barrar logo abaixo se policy=null.
+    policy: policy ?? {
+      id: "",
+      code: "ROOT_DRIVER_STANDARD",
+      name: "",
+      version: 1,
+      baseType: "OPERATIONAL_REVENUE",
+      rootDriverBps: 0,
+      effectiveFrom: null,
+      effectiveUntil: null,
+      isActive: false,
+      createdAt: new Date(),
+    },
+  });
+
+  // Monta contexto do Pricing Snapshot para o Gate
+  const snapshotCtx: PricingSnapshotContext = {
+    totalCents: intent.amountCents,
+    driverNetAmountCents: split.driverNetAmountCents,
+    platformFeeCents: PLATFORM_FEE_CENTS,
+    // Snapshot é considerado completo quando priceEstimated coincide com amountCents.
+    // Campos adicionais (baseCOE, zoneMultiplier…) são validados opcionalmente.
+    isComplete: intent.amountCents > 0,
+  };
+
+  // Gate — lança erro descritivo se qualquer VG for violado
+  assertSettlementContext(snapshotCtx, policy, {
+    platformCents: split.platformCents,
+    driverCents: split.driverCents,
+    rootDriverCents: split.rootDriverCents,
     rootDriverId,
   });
 
-  const driverId = intent.rideRequest.selectedDriverId ?? null;
+  const driverId = ride.selectedDriverId ?? null;
 
+  let createdSettlement = true;
   const settlement = await prisma.$transaction(async (tx) => {
     const created = await tx.settlement.create({
       data: {
@@ -65,10 +115,14 @@ export async function settleConfirmedPayment(
         driverCents: split.driverCents,
         platformCents: split.platformCents,
         rootDriverCents: split.rootDriverCents,
-        rootDriverId: split.rootDriverId,
+        rootDriverId,
+        // Auditabilidade: qual política e versão foi aplicada (ADR-002 §§5 + usuário)
+        revenuePolicyId: split.policyId ?? null,
+        revenuePolicyVersion: split.policyVersion ?? null,
       },
     });
 
+    // PLATFORM row — R$2,50 fixo
     const splitRows: Array<{
       beneficiaryType: SplitBeneficiaryType;
       beneficiaryDriverId: string | null;
@@ -76,39 +130,47 @@ export async function settleConfirmedPayment(
       percentBps: number;
     }> = [
       {
-        beneficiaryType: SplitBeneficiaryType.DRIVER,
-        beneficiaryDriverId: driverId,
-        amountCents: split.driverCents,
-        percentBps: SPLIT_BPS.DRIVER,
-      },
-      {
         beneficiaryType: SplitBeneficiaryType.PLATFORM,
         beneficiaryDriverId: null,
         amountCents: split.platformCents,
-        percentBps:
-          split.rootDriverId === null
-            ? SPLIT_BPS.PLATFORM + SPLIT_BPS.ROOT_DRIVER
-            : SPLIT_BPS.PLATFORM,
+        percentBps: Math.round((split.platformCents / split.totalCents) * 10_000),
       },
       {
-        beneficiaryType: SplitBeneficiaryType.ROOT_DRIVER,
-        beneficiaryDriverId: split.rootDriverId,
-        amountCents: split.rootDriverCents,
-        percentBps: split.rootDriverId === null ? 0 : SPLIT_BPS.ROOT_DRIVER,
+        beneficiaryType: SplitBeneficiaryType.DRIVER,
+        beneficiaryDriverId: driverId,
+        amountCents: split.driverCents,
+        percentBps: Math.round((split.driverCents / split.totalCents) * 10_000),
       },
     ];
+
+    // ROOT_DRIVER row — somente quando aplicável (I-6)
+    if (rootDriverId !== null && split.rootDriverCents > 0) {
+      splitRows.push({
+        beneficiaryType: SplitBeneficiaryType.ROOT_DRIVER,
+        beneficiaryDriverId: rootDriverId,
+        amountCents: split.rootDriverCents,
+        percentBps: Math.round((split.rootDriverCents / split.totalCents) * 10_000),
+      });
+    }
 
     await tx.revenueSplit.createMany({
       data: splitRows.map((s) => ({ ...s, settlementId: created.id })),
     });
 
-    await tx.rideRequest.update({
-      where: { id: intent.rideRequestId },
-      data: { status: RideStatus.PAID },
-    });
-
     return created;
+  }).catch(async (error: unknown) => {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+      throw error;
+    }
+    // The unique paymentIntentId selects the creator; only it publishes settlement events.
+    const concurrentWinner = await prisma.settlement.findUnique({
+      where: { paymentIntentId: intent.id },
+    });
+    if (!concurrentWinner) throw error;
+    createdSettlement = false;
+    return concurrentWinner;
   });
+  if (!createdSettlement) return settlement;
 
   await recordAndPublish(bus, {
     type: DomainEventType.RIDE_SETTLED,
@@ -122,6 +184,8 @@ export async function settleConfirmedPayment(
       platformCents: settlement.platformCents,
       rootDriverCents: settlement.rootDriverCents,
       rootDriverId: settlement.rootDriverId,
+      revenuePolicyId: settlement.revenuePolicyId,
+      revenuePolicyVersion: settlement.revenuePolicyVersion,
     },
   });
 

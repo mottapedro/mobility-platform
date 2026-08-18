@@ -7,6 +7,10 @@ import { assignPassengerIdentity } from "../../domain/services/PassengerReferral
 const router = Router();
 const controller = new RideController();
 
+router.patch("/:id/reschedule", async (req, res) => controller.reschedule(req, res));
+router.post("/:id/start", async (req, res) => controller.start(req, res));
+router.post("/:id/complete", async (req, res) => controller.complete(req, res));
+
 router.post("/passengers", async (req, res) => {
   try {
     const { name, email, phone, referredByDriverId } = req.body;
@@ -88,6 +92,7 @@ router.post("/passengers", async (req, res) => {
 });
 
 router.post("/", (req, res) => controller.create(req, res));
+router.post("/:id/confirm-quote", (req, res) => controller.confirmQuote(req, res));
 router.patch("/:id", (req, res) => controller.patch(req, res));
 router.get("/:id", (req, res) => controller.getById(req, res));
 

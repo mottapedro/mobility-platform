@@ -8,6 +8,11 @@ import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwners
 import { getNetworkRelationships } from "../../domain/referral-network/NetworkGenealogyService";
 import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
 import { listDriverSkills } from "../../domain/skills/DriverSkillService";
+import { buildGenealogyProjection } from "../../domain/genealogy/BuildGenealogyProjectionService";
+import {
+  buildNetworkContextForDriver,
+  buildNetworkContextForPassenger,
+} from "../../domain/network/NetworkContextProjectionService";
 import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 
@@ -19,8 +24,9 @@ function paramId(req: Request, key: string): string {
 export class NetworkV2Controller {
   static async getOnboardingContext(req: Request, res: Response) {
     const slug = paramId(req, "slug");
+    const flow = typeof req.query.flow === "string" ? req.query.flow : undefined;
     try {
-      const ctx = await resolveOnboardingContext(slug);
+      const ctx = await resolveOnboardingContext(slug, flow);
       return res.json(ctx);
     } catch (err) {
       if (err instanceof OnboardingContextError) {
@@ -102,7 +108,7 @@ export class NetworkV2Controller {
     if (actorType === ActorType.DRIVER) {
       const driver = await prisma.driver.findUnique({
         where: { id: actorId },
-        select: { id: true, isActive: true, experienceLevel: true, networkLevel: true, publicSlug: true, referralCode: true },
+        select: { id: true, isActive: true },
       });
       if (!driver) {
         return res.status(404).json({ error: `Driver ${actorId} not found` });
@@ -124,40 +130,14 @@ export class NetworkV2Controller {
         });
       }
 
-      const [relationships, ownership, skills] = await Promise.all([
-        getNetworkRelationships(rootDriverId),
-        getOwnershipMetrics(rootDriverId),
-        listDriverSkills(actorId).catch(() => [] as { code: string }[]),
-      ]);
-
-      const level = driver.experienceLevel ?? "";
-      const capabilities = {
-        canInvitePassengers: true,
-        canInviteDrivers: level === "PROFISSIONAL" || level === "ELITE",
-        canReceiveRewards: true,
-        canExpandNetwork: true,
-        skillCodes: skills.map((s) => s.code),
-      };
-
-      return res.json({
-        state: "ACTIVE",
-        actorId,
-        actorType: ActorType.DRIVER,
-        rootDriverId,
-        isRoot: rootDriverId === actorId,
-        networkLevel: driver.networkLevel,
-        publicSlug: driver.publicSlug,
-        referralCode: driver.referralCode,
-        relationships,
-        ownership,
-        capabilities,
-      });
+      const context = await buildNetworkContextForDriver(actorId, rootDriverId);
+      return res.json(context);
     }
 
     // PASSENGER
     const passenger = await prisma.passenger.findUnique({
       where: { id: actorId },
-      select: { id: true, rootDriverId: true, referralCode: true, publicSlug: true, networkLevel: true },
+      select: { id: true },
     });
     if (!passenger) {
       return res.status(404).json({ error: `Passenger ${actorId} not found` });
@@ -172,21 +152,45 @@ export class NetworkV2Controller {
       });
     }
 
-    const [lineage, ownership] = await Promise.all([
-      getPassengerLineage(actorId).catch(() => null),
-      getOwnershipMetrics(rootDriverId),
-    ]);
+    const context = await buildNetworkContextForPassenger(actorId, rootDriverId);
+    return res.json(context);
+  }
 
-    return res.json({
-      state: "ACTIVE",
-      actorId,
-      actorType: ActorType.PASSENGER,
-      rootDriverId,
-      networkLevel: passenger.networkLevel,
-      referralCode: passenger.referralCode,
-      publicSlug: passenger.publicSlug,
-      lineage,
-      ownership,
+  /**
+   * GET /drivers/:id/network/tree?maxDepth=<n>
+   *
+   * Returns a genealogy projection for the driver's root network.
+   * The :id param is the driver's OWN id (we resolve their root first).
+   *
+   * Responses:
+   *   200 { rootDriverId, rootDriverName, nodes, edges, levels, metrics }
+   *   404 { error } — driver not found
+   *   400 { error } — missing param
+   */
+  static async getGenealogyTree(req: Request, res: Response) {
+    const driverId = paramId(req, "id");
+    if (!driverId) {
+      return res.status(400).json({ error: "driverId is required" });
+    }
+
+    const rawMaxDepth = req.query.maxDepth;
+    const maxDepth =
+      rawMaxDepth !== undefined ? Math.max(1, parseInt(String(rawMaxDepth), 10) || 10) : undefined;
+
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      select: { id: true },
     });
+    if (!driver) {
+      return res.status(404).json({ error: `Driver ${driverId} not found` });
+    }
+
+    const rootDriverId = await resolveDriverRoot(ActorType.DRIVER, driverId).catch(() => null);
+    if (!rootDriverId) {
+      return res.status(404).json({ error: "Could not resolve root driver for this driver" });
+    }
+
+    const projection = await buildGenealogyProjection(rootDriverId, { maxDepth });
+    return res.json(projection);
   }
 }

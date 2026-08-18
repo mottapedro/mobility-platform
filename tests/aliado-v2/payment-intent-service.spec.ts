@@ -4,13 +4,39 @@ import {
   PaymentStatus,
   RideStatus,
 } from "../../src/shared/enums";
-import { prisma } from "../setup";
+import { cleanTestData, prisma } from "../setup";
+import { useRevenuePolicyFixture } from "../fixtures/revenue-policy.fixture";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
 import { InMemoryPixProvider } from "../../src/domain/payment/providers/InMemoryPixProvider";
 import {
   createPaymentIntent,
   handlePixWebhook,
 } from "../../src/domain/payment/PaymentIntentService";
+
+useRevenuePolicyFixture(prisma, cleanTestData);
+
+function createReadBarrier(participants: number) {
+  let arrived = 0;
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return async () => {
+    arrived += 1;
+    if (arrived === participants) release();
+    await released;
+  };
+}
+
+function describeRejection(reason: unknown) {
+  const error = reason as { name?: unknown; code?: unknown; message?: unknown };
+  return {
+    name: String(error?.name ?? "unknown"),
+    code: String(error?.code ?? "unknown"),
+    message: String(error?.message ?? reason),
+  };
+}
 
 async function makeDriver(email: string) {
   const u = await prisma.user.create({
@@ -180,13 +206,16 @@ describe("PaymentIntentService.handlePixWebhook", () => {
       DomainEventType.REWARD_DISTRIBUTED,
     ]);
 
+    // Model B: payment status lives in PaymentIntent, ride stays COMPLETED
     const updatedRide = await prisma.rideRequest.findUnique({ where: { id: ride.id } });
-    expect(updatedRide?.status).toBe(RideStatus.PAID);
+    expect(updatedRide?.status).toBe(RideStatus.COMPLETED);
+    const finalIntent = await prisma.paymentIntent.findUnique({ where: { rideRequestId: ride.id } });
+    expect(finalIntent?.status).toBe(PaymentStatus.CONFIRMED);
   });
 
   it("is idempotent on duplicate CONFIRMED webhooks — only one Settlement", async () => {
     const driver = await makeDriver("wh.idem.driver@test.com");
-    const passenger = await makePassenger("wh.idem.passenger@test.com", null);
+    const passenger = await makePassenger("wh.idem.passenger@test.com", driver.id);
     const ride = await makeRide(passenger.id, driver.id);
 
     const provider = new InMemoryPixProvider();
@@ -239,6 +268,199 @@ describe("PaymentIntentService.handlePixWebhook", () => {
     const settlements = await prisma.settlement.findMany({ where: { paymentIntentId: intent.id } });
     expect(settlements).toHaveLength(0);
   });
+
+  it("keeps CONFIRMED terminal when a later FAILED webhook arrives", async () => {
+    const driver = await makeDriver("wh.terminal.driver@test.com");
+    const passenger = await makePassenger("wh.terminal.passenger@test.com", driver.id);
+    const ride = await makeRide(passenger.id, driver.id);
+    const bus = createEventBus();
+    const intent = await createPaymentIntent({
+      rideRequestId: ride.id,
+      amountCents: 10_000,
+      provider: new InMemoryPixProvider(),
+      bus,
+    });
+
+    const confirmed = await handlePixWebhook({
+      externalId: intent.externalId!,
+      status: "CONFIRMED",
+      bus,
+    });
+    const settlementBefore = await prisma.settlement.findUniqueOrThrow({
+      where: { paymentIntentId: intent.id },
+      include: { splits: { orderBy: { beneficiaryType: "asc" } } },
+    });
+    const eventCountBefore = await prisma.domainEvent.count({
+      where: {
+        type: { in: [
+          DomainEventType.PAYMENT_CONFIRMED,
+          DomainEventType.PAYMENT_FAILED,
+          DomainEventType.RIDE_SETTLED,
+          DomainEventType.REWARD_DISTRIBUTED,
+        ] },
+      },
+    });
+
+    const afterFailed = await handlePixWebhook({
+      externalId: intent.externalId!,
+      status: "FAILED",
+      failureReason: "late provider failure",
+      bus,
+    });
+
+    const persisted = await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+    const settlementAfter = await prisma.settlement.findUniqueOrThrow({
+      where: { paymentIntentId: intent.id },
+      include: { splits: { orderBy: { beneficiaryType: "asc" } } },
+    });
+    const eventCountAfter = await prisma.domainEvent.count({
+      where: {
+        type: { in: [
+          DomainEventType.PAYMENT_CONFIRMED,
+          DomainEventType.PAYMENT_FAILED,
+          DomainEventType.RIDE_SETTLED,
+          DomainEventType.REWARD_DISTRIBUTED,
+        ] },
+      },
+    });
+    const persistedRide = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
+
+    expect(afterFailed.status).toBe(PaymentStatus.CONFIRMED);
+    expect(persisted.status).toBe(PaymentStatus.CONFIRMED);
+    expect(persisted.confirmedAt).toEqual(confirmed.confirmedAt);
+    expect(persisted.failedAt).toBeNull();
+    expect(persisted.failureReason).toBeNull();
+    expect(settlementAfter).toEqual(settlementBefore);
+    expect(eventCountAfter).toBe(eventCountBefore);
+    expect(persistedRide.status).toBe(RideStatus.COMPLETED);
+  });
+
+  it("keeps FAILED unchanged when a later CONFIRMED webhook is not allowed by the matrix", async () => {
+    const driver = await makeDriver("wh.failed-terminal.driver@test.com");
+    const passenger = await makePassenger("wh.failed-terminal.passenger@test.com", null);
+    const ride = await makeRide(passenger.id, driver.id);
+    const bus = createEventBus();
+    const intent = await createPaymentIntent({
+      rideRequestId: ride.id,
+      amountCents: 2_500,
+      provider: new InMemoryPixProvider(),
+      bus,
+    });
+
+    const failed = await handlePixWebhook({
+      externalId: intent.externalId!,
+      status: "FAILED",
+      failureReason: "provider rejected",
+      bus,
+    });
+    const afterConfirmed = await handlePixWebhook({
+      externalId: intent.externalId!,
+      status: "CONFIRMED",
+      bus,
+    });
+    const persisted = await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } });
+
+    expect(afterConfirmed.status).toBe(PaymentStatus.FAILED);
+    expect(persisted.status).toBe(PaymentStatus.FAILED);
+    expect(persisted.failedAt).toEqual(failed.failedAt);
+    expect(persisted.confirmedAt).toBeNull();
+    expect(await prisma.settlement.count({ where: { paymentIntentId: intent.id } })).toBe(0);
+    expect(await prisma.domainEvent.count({
+      where: { type: DomainEventType.PAYMENT_CONFIRMED, aggregateId: intent.id },
+    })).toBe(0);
+    expect((await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } })).status)
+      .toBe(RideStatus.COMPLETED);
+  });
+
+  it("allows only one concurrent PENDING to CONFIRMED transition and one financial event chain", async () => {
+    for (let iteration = 0; iteration < 10; iteration += 1) {
+      const driver = await makeDriver(`wh.concurrent.driver-${iteration}@test.com`);
+      const root = await makeDriver(`wh.concurrent.root-${iteration}@test.com`);
+      const passenger = await makePassenger(`wh.concurrent.passenger-${iteration}@test.com`, root.id);
+      const ride = await makeRide(passenger.id, driver.id);
+      const intent = await createPaymentIntent({
+        rideRequestId: ride.id,
+        amountCents: 10_000,
+        provider: new InMemoryPixProvider(),
+        bus: createEventBus(),
+      });
+      const afterIntentRead = createReadBarrier(2);
+      const seen = {
+        [DomainEventType.PAYMENT_CONFIRMED]: 0,
+        [DomainEventType.RIDE_SETTLED]: 0,
+        [DomainEventType.REWARD_DISTRIBUTED]: 0,
+      };
+      const bus = createEventBus();
+      for (const type of Object.keys(seen) as Array<keyof typeof seen>) {
+        bus.subscribe(type, async () => { seen[type] += 1; });
+      }
+
+      const attempts = await Promise.allSettled([
+        handlePixWebhook({ externalId: intent.externalId!, status: "CONFIRMED", bus, afterIntentRead }),
+        handlePixWebhook({ externalId: intent.externalId!, status: "CONFIRMED", bus, afterIntentRead }),
+      ]);
+      const settlement = await prisma.settlement.findUnique({
+        where: { paymentIntentId: intent.id },
+        include: { splits: true },
+      });
+      const persistedEventCounts = {
+        paymentConfirmed: await prisma.domainEvent.count({
+          where: { type: DomainEventType.PAYMENT_CONFIRMED, aggregateId: intent.id },
+        }),
+        rideSettled: settlement === null ? 0 : await prisma.domainEvent.count({
+          where: { type: DomainEventType.RIDE_SETTLED, aggregateId: settlement.id },
+        }),
+        rewardDistributed: settlement === null ? 0 : await prisma.domainEvent.count({
+          where: { type: DomainEventType.REWARD_DISTRIBUTED, aggregateId: settlement.id },
+        }),
+      };
+
+      expect({
+        fulfilled: attempts.filter((attempt) => attempt.status === "fulfilled").length,
+        rejected: attempts.filter((attempt) => attempt.status === "rejected").length,
+        rejectedReasons: attempts.flatMap((attempt) =>
+          attempt.status === "rejected" ? [describeRejection(attempt.reason)] : []),
+        statuses: attempts.flatMap((attempt) =>
+          attempt.status === "fulfilled" ? [attempt.value.status] : []),
+        paymentIntentStatus: (await prisma.paymentIntent.findUniqueOrThrow({ where: { id: intent.id } })).status,
+        settlementCount: await prisma.settlement.count({ where: { paymentIntentId: intent.id } }),
+        splitCount: settlement?.splits.length ?? 0,
+        persistedEventCounts,
+        publishedEventCounts: seen,
+        rideStatus: (await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } })).status,
+      }).toEqual({
+        fulfilled: 2,
+        rejected: 0,
+        rejectedReasons: [],
+        statuses: [PaymentStatus.CONFIRMED, PaymentStatus.CONFIRMED],
+        paymentIntentStatus: PaymentStatus.CONFIRMED,
+        settlementCount: 1,
+        splitCount: 3,
+        persistedEventCounts: {
+          paymentConfirmed: 1,
+          rideSettled: 1,
+          rewardDistributed: 1,
+        },
+        publishedEventCounts: {
+          [DomainEventType.PAYMENT_CONFIRMED]: 1,
+          [DomainEventType.RIDE_SETTLED]: 1,
+          [DomainEventType.REWARD_DISTRIBUTED]: 1,
+        },
+        rideStatus: RideStatus.COMPLETED,
+      });
+
+      const replay = await handlePixWebhook({
+        externalId: intent.externalId!,
+        status: "CONFIRMED",
+        bus,
+      });
+      expect(replay.status).toBe(PaymentStatus.CONFIRMED);
+      expect(await prisma.settlement.count({ where: { paymentIntentId: intent.id } })).toBe(1);
+      expect(await prisma.domainEvent.count({
+        where: { type: DomainEventType.PAYMENT_CONFIRMED, aggregateId: intent.id },
+      })).toBe(1);
+    }
+  }, 60_000);
 
   it("rejects unknown externalId", async () => {
     await expect(

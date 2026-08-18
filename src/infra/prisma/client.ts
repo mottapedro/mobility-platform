@@ -1,8 +1,9 @@
 import "dotenv/config";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
 import { applyConnectionSerializer } from "./serializing-pool";
+import { ownershipImmutabilityExtension } from "./extensions/domainExtensions";
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -23,7 +24,16 @@ export { pool };
 
 const adapter = new PrismaPg(pool);
 
-export const prisma = new PrismaClient({ adapter });
+// Apply domain extensions. Note: soft delete filtering is handled explicitly in
+// Repository classes rather than via a global extension — more transparent and
+// auditable per user feedback.
+export const prisma = new PrismaClient({ adapter }).$extends(
+  ownershipImmutabilityExtension,
+);
+
+export type PrismaTransaction = Prisma.TransactionClient;
+/** Tipo do cliente Prisma estendido — use em vez de `PrismaClient` puro. */
+export type ExtendedPrismaClient = typeof prisma;
 
 let poolClosed = false;
 

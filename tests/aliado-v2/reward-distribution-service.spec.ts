@@ -3,7 +3,7 @@ import { PaymentStatus, RideStatus, SplitBeneficiaryType, DomainEventType } from
 import { prisma } from "../setup";
 import { execute } from "../../src/application/services/RewardDistributionService";
 import { createEventBus } from "../../src/domain/shared/events/EventBus";
-import { SPLIT_BPS } from "../../src/domain/payment/RevenueSplitService";
+import { PLATFORM_FEE_CENTS } from "../../src/domain/payment/RevenueSplitService";
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -46,6 +46,9 @@ async function makePassenger(email: string, rootDriverId: string | null = null) 
  * Creates all Settlement prerequisites (Driver, Passenger, RideRequest,
  * PaymentIntent) and then inserts a Settlement row directly — WITHOUT
  * RevenueSplit rows. This is the test baseline for RewardDistributionService.
+ *
+ * ADR-001 §3: platformCents = R$2,50 fixed; driverCents = total - 2,50;
+ * rootDriverCents = 0 (reserved for RevenueSplit V2).
  */
 async function seedSettlement(
   tag: string,
@@ -82,12 +85,10 @@ async function seedSettlement(
     },
   });
 
-  // Manually compute amounts mirroring computeRevenueSplit logic.
-  const driverCents = Math.floor((totalCents * SPLIT_BPS.DRIVER) / 10_000);
-  const platformBase = Math.floor((totalCents * SPLIT_BPS.PLATFORM) / 10_000);
-  const remainder = totalCents - driverCents - platformBase;
-  const platformCents = rootDriverId === null ? platformBase + remainder : platformBase;
-  const rootDriverCents = rootDriverId === null ? 0 : remainder;
+  // ADR-001 §3 fixed-fee model
+  const platformCents = PLATFORM_FEE_CENTS; // R$2,50
+  const driverCents = totalCents - platformCents;
+  const rootDriverCents = 0; // Reserved for RevenueSplit V2
 
   const settlement = await prisma.settlement.create({
     data: {
@@ -107,48 +108,48 @@ async function seedSettlement(
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 describe("RewardDistributionService", () => {
-  it("creates 3 RevenueSplit rows and emits REWARD_DISTRIBUTED (with rootDriver)", async () => {
-    const { driver, settlement } = await seedSettlement("happy", 10_000, { withRoot: true });
+  // ADR-001 §3+§4: 2 RevenueSplit rows (PLATFORM + DRIVER). ROOT_DRIVER reserved for V2.
+  it("creates 2 RevenueSplit rows and emits REWARD_DISTRIBUTED (with rootDriver)", async () => {
+    const totalCents = 10_000;
+    const { driver, settlement } = await seedSettlement("happy", totalCents, { withRoot: true });
     const bus = createEventBus();
 
     const result = await execute({ settlementId: settlement.id }, { bus });
 
     expect(result.distributed).toBe(true);
-    expect(result.driverCents).toBe(8_000);
-    expect(result.platformCents).toBe(1_500);
-    expect(result.rootDriverCents).toBe(500);
+    expect(result.platformCents).toBe(PLATFORM_FEE_CENTS);          // R$2,50
+    expect(result.driverCents).toBe(totalCents - PLATFORM_FEE_CENTS);
+    expect(result.rootDriverCents).toBe(0);
     expect(result.rootDriverId).toBe(driver.id);
 
-    // 3 RevenueSplit rows created
+    // 2 RevenueSplit rows created (PLATFORM + DRIVER — ROOT_DRIVER reserved for V2)
     const splits = await prisma.revenueSplit.findMany({
       where: { settlementId: settlement.id },
       orderBy: { beneficiaryType: "asc" },
     });
-    expect(splits).toHaveLength(3);
+    expect(splits).toHaveLength(2);
 
     const driverSplit = splits.find((s) => s.beneficiaryType === SplitBeneficiaryType.DRIVER)!;
     expect(driverSplit.beneficiaryDriverId).toBe(driver.id);
-    expect(driverSplit.amountCents).toBe(8_000);
-    expect(driverSplit.percentBps).toBe(SPLIT_BPS.DRIVER);
+    expect(driverSplit.amountCents).toBe(totalCents - PLATFORM_FEE_CENTS);
 
     const platformSplit = splits.find((s) => s.beneficiaryType === SplitBeneficiaryType.PLATFORM)!;
-    expect(platformSplit.amountCents).toBe(1_500);
-    expect(platformSplit.percentBps).toBe(SPLIT_BPS.PLATFORM);
-
-    const rootSplit = splits.find((s) => s.beneficiaryType === SplitBeneficiaryType.ROOT_DRIVER)!;
-    expect(rootSplit.beneficiaryDriverId).toBe(driver.id);
-    expect(rootSplit.amountCents).toBe(500);
-    expect(rootSplit.percentBps).toBe(SPLIT_BPS.ROOT_DRIVER);
+    expect(platformSplit.amountCents).toBe(PLATFORM_FEE_CENTS);
+    expect(platformSplit.beneficiaryDriverId).toBeNull();
 
     // REWARD_DISTRIBUTED event persisted
     const events = await prisma.domainEvent.findMany({
       where: { type: DomainEventType.REWARD_DISTRIBUTED, aggregateId: settlement.id },
     });
     expect(events).toHaveLength(1);
-    expect(events[0].payload).toMatchObject({ driverId: driver.id, driverCents: 8_000, rootDriverCents: 500 });
+    expect(events[0].payload).toMatchObject({
+      driverId: driver.id,
+      driverCents: totalCents - PLATFORM_FEE_CENTS,
+      rootDriverCents: 0,
+    });
   });
 
-  it("is idempotent — second call returns distributed:false, counts stay at 1", async () => {
+  it("is idempotent — second call returns distributed:false, counts stay at 2", async () => {
     const { settlement } = await seedSettlement("idem", 5_000, { withRoot: true });
     const bus = createEventBus();
 
@@ -160,9 +161,9 @@ describe("RewardDistributionService", () => {
     // Same amounts returned from Settlement row
     expect(second.driverCents).toBe(first.driverCents);
 
-    // RevenueSplit count unchanged at 3
+    // RevenueSplit count unchanged at 2
     const splits = await prisma.revenueSplit.findMany({ where: { settlementId: settlement.id } });
-    expect(splits).toHaveLength(3);
+    expect(splits).toHaveLength(2);
 
     // DomainEvent count unchanged at 1
     const events = await prisma.domainEvent.findMany({
@@ -171,29 +172,24 @@ describe("RewardDistributionService", () => {
     expect(events).toHaveLength(1);
   });
 
-  it("no-root: platform gets 20% (15+5 rollup), ROOT_DRIVER split has percentBps=0", async () => {
-    const { settlement } = await seedSettlement("noroot", 10_000, { withRoot: false });
+  it("no-root: same fixed-fee split; rootDriverId=null, rootDriverCents=0", async () => {
+    const totalCents = 10_000;
+    const { settlement } = await seedSettlement("noroot", totalCents, { withRoot: false });
 
     const result = await execute({ settlementId: settlement.id });
 
     expect(result.distributed).toBe(true);
-    expect(result.driverCents).toBe(8_000);
-    expect(result.platformCents).toBe(2_000); // 15% + 5% rollup
+    expect(result.platformCents).toBe(PLATFORM_FEE_CENTS);
+    expect(result.driverCents).toBe(totalCents - PLATFORM_FEE_CENTS);
     expect(result.rootDriverCents).toBe(0);
     expect(result.rootDriverId).toBeNull();
 
     const splits = await prisma.revenueSplit.findMany({
       where: { settlementId: settlement.id },
     });
-    expect(splits).toHaveLength(3);
+    expect(splits).toHaveLength(2);
 
     const platformSplit = splits.find((s) => s.beneficiaryType === SplitBeneficiaryType.PLATFORM)!;
-    expect(platformSplit.amountCents).toBe(2_000);
-    expect(platformSplit.percentBps).toBe(SPLIT_BPS.PLATFORM + SPLIT_BPS.ROOT_DRIVER);
-
-    const rootSplit = splits.find((s) => s.beneficiaryType === SplitBeneficiaryType.ROOT_DRIVER)!;
-    expect(rootSplit.amountCents).toBe(0);
-    expect(rootSplit.percentBps).toBe(0);
-    expect(rootSplit.beneficiaryDriverId).toBeNull();
+    expect(platformSplit.amountCents).toBe(PLATFORM_FEE_CENTS);
   });
 });

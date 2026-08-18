@@ -1,19 +1,15 @@
 import { disconnectPrisma, prisma } from "../src/infra/prisma/client";
 import { clearPendingReferralFallbacks } from "../src/application/use-cases/MatchRideUseCase";
+import { lifecycle } from "../src/infra/AppLifecycleManager";
+import { matchingJobScheduler } from "../src/infra/async/MatchingJobScheduler";
+import { referralFallbackScheduler } from "../src/infra/async/ReferralFallbackScheduler";
 
 export { prisma };
 
-// TEST DATA POLICY — DO NOT REMOVE
-//
-// Production drivers use @driver.com and mottapedro01@gmail.com.
-// ALL test-created records must use one of the TEST_EMAIL_DOMAINS below.
-// The cleanup helpers delete ONLY those records.
-// Production data (Pedro Paulo Motta, João Luiz, etc.) is NEVER touched.
-//
-// FORBIDDEN in tests:
-//   prisma.*.deleteMany({})          ← no naked deleteMany
-//   prisma.$executeRaw("TRUNCATE…")  ← no truncate
-//   prisma.user.deleteMany()         ← no unfiltered deleteMany
+// TEST DATA POLICY — see AGENTS.md §6 for the canonical statement.
+// Summary: every test-created record MUST use an email ending in one of the
+// TEST_EMAIL_DOMAINS below; cleanTestData() is the only sanctioned destructive
+// operation. Naked deleteMany / TRUNCATE / unfiltered deletes are forbidden.
 
 const TEST_EMAIL_DOMAINS = [
   "@test.com",
@@ -25,6 +21,7 @@ const TEST_EMAIL_DOMAINS = [
   "@vip.com",
   "@ptest.com",
   "@sqlval.com",
+  "@sla.com",
 ];
 
 const TEST_USER_WHERE = {
@@ -148,6 +145,42 @@ export async function cleanTestData(): Promise<void> {
       where: { aggregateType: "Ride", aggregateId: { in: testRideRequestIds } },
     });
 
+    // ADR-004: OwnershipSnapshot has FK to RideRequest — must delete before the ride.
+    await prisma.ownershipSnapshot.deleteMany({
+      where: { rideId: { in: testRideRequestIds } },
+    });
+
+    // Trip/GPS: DriverLocationPing has FK ON DELETE RESTRICT to RideRequest and
+    // Driver — must delete before both. Also wipes pings recorded by test drivers.
+    const testPingDriverIds = testDriverIds.length > 0 ? testDriverIds : [];
+    if (testPingDriverIds.length > 0 || testRideRequestIds.length > 0) {
+      await prisma.driverLocationPing.deleteMany({
+        where: {
+          OR: [
+            ...(testPingDriverIds.length > 0 ? [{ driverId: { in: testPingDriverIds } }] : []),
+            ...(testRideRequestIds.length > 0 ? [{ rideRequestId: { in: testRideRequestIds } }] : []),
+          ],
+        },
+      });
+    }
+
+    // Fase D — RideQuote has FK RESTRICT to RideRequest and Driver — must delete before both.
+    const testQuoteDriverIds = testDriverIds.length > 0 ? testDriverIds : [];
+    if (testQuoteDriverIds.length > 0 || testRideRequestIds.length > 0) {
+      await prisma.rideQuote.deleteMany({
+        where: {
+          OR: [
+            ...(testQuoteDriverIds.length > 0
+              ? [{ pricingDriverId: { in: testQuoteDriverIds } }]
+              : []),
+            ...(testRideRequestIds.length > 0
+              ? [{ rideRequestId: { in: testRideRequestIds } }]
+              : []),
+          ],
+        },
+      });
+    }
+
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {
@@ -238,15 +271,21 @@ export async function cleanTestData(): Promise<void> {
 }
 
 beforeAll(async () => {
+  // Referral fallback registered before matching: shutdownAsync drains in
+  // insertion order, and a firing referral callback enqueues matching work.
+  lifecycle.registerDrainable("referralFallbackScheduler", referralFallbackScheduler);
+  lifecycle.registerDrainable("matchingJobScheduler", matchingJobScheduler);
   await prisma.$connect();
 });
 
 afterAll(async () => {
+  await lifecycle.shutdownAsync({ drainTimeoutMs: 5_000 });
   await disconnectPrisma();
 });
 
 beforeEach(async () => {
   clearPendingReferralFallbacks();
+  await matchingJobScheduler.drain();
   await cleanTestData();
 });
 

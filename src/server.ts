@@ -12,7 +12,9 @@ import { authRoutes } from "./presentation/routes/auth.routes";
 import { testRoutes } from "./presentation/routes/test.routes";
 import { godnetworkRoutes } from "./presentation/routes/godnetwork.routes";
 import { ridesPaymentRouter, pixWebhookRouter } from "./presentation/routes/payment.routes";
+import { picpayWebhookRouter } from "./modules/settlement/presentation/routes/picpay-webhook.routes";
 import { rideLifecycleRouter } from "./presentation/routes/ride-lifecycle.routes";
+import { tripRouter } from "./api/controllers/TripController";
 import {
   onboardingRouter,
   passengersNetworkRouter,
@@ -22,6 +24,11 @@ import {
 import { genealogyRouter } from "./presentation/routes/genealogy.routes";
 import { ExpireOffersService } from "./application/use-cases/ExpireOffersService";
 import { prisma } from "./infra/prisma/client";
+import { lifecycle } from "./infra/AppLifecycleManager";
+import { httpLogger } from "./shared/logging/httpLog";
+import { matchingJobScheduler } from "./infra/async/MatchingJobScheduler";
+import { referralFallbackScheduler } from "./infra/async/ReferralFallbackScheduler";
+import { SyncProjectionJob } from "./domain/network/SyncProjectionJob";
 
 dotenv.config();
 
@@ -54,11 +61,7 @@ app.use(cors({
 
 app.options("/{*corsPreflight}", cors());
 app.use(express.json());
-
-app.use((req, res, next) => {
-  console.log("➡️", req.method, req.url);
-  next();
-});
+app.use(httpLogger);
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -71,6 +74,7 @@ app.use("/rides", rideRoutes);
 app.use("/rides", ridesPaymentRouter);
 app.use("/rides", rideLifecycleRouter);
 app.use("/webhooks", pixWebhookRouter);
+app.use("/webhooks", picpayWebhookRouter);
 app.use("/offers", offerRoutes);
 app.use("/passengers", passengerRoutes);
 app.use("/passengers", passengersNetworkRouter);
@@ -80,6 +84,7 @@ app.use("/drivers", genealogyRouter);
 app.use("/onboarding", onboardingRouter);
 app.use("/network", networkLegacyRouter);
 app.use("/godnetwork", godnetworkRoutes);
+app.use("/trips", tripRouter);
 
 if (process.env.NODE_ENV !== "production") {
   app.use("/test", testRoutes);
@@ -101,16 +106,55 @@ app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
 });
 
 if (process.env.NODE_ENV !== "test") {
+  // Order matters: referral fallback drains first because its callback can
+  // recursively enqueue matching work; we want that cascade to settle before
+  // we drain the matching scheduler.
+  lifecycle.registerDrainable("referralFallbackScheduler", referralFallbackScheduler);
+  lifecycle.registerDrainable("matchingJobScheduler", matchingJobScheduler);
+
   const expireOffersService = new ExpireOffersService();
-  setInterval(() => {
-    expireOffersService.execute().catch((err) => {
-      console.error("🔥 Erro no job de expiração de offers:", err);
-    });
-  }, 10_000);
+  lifecycle.registerInterval(
+    "expireOffers",
+    () => {
+      expireOffersService.execute().catch((err) => {
+        console.error("🔥 Erro no job de expiração de offers:", err);
+      });
+    },
+    10_000
+  );
+
+  lifecycle.registerInterval(
+    "syncProjection",
+    () => {
+      SyncProjectionJob.execute().catch((err) => {
+        console.error("🔥 Erro no SyncProjectionJob:", err);
+      });
+    },
+    5 * 60_000
+  );
+
+  let shuttingDown = false;
+  const gracefulShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`🛑 ${signal} received — draining runtime...`);
+    try {
+      await lifecycle.shutdownAsync({ drainTimeoutMs: 30_000 });
+      await prisma.$disconnect();
+      console.log("✅ Graceful shutdown complete");
+      process.exit(0);
+    } catch (err) {
+      console.error("🔥 Error during graceful shutdown:", err);
+      process.exit(1);
+    }
+  };
+  process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
   app.listen(3000, () => {
     console.log("🚀 Server running on port 3000");
     console.log("⏱️ Job de expiração de offers ativo (a cada 10s)");
+    console.log("🔄 SyncProjectionJob ativo (a cada 5min)");
   });
 }
 

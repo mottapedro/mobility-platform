@@ -15,6 +15,7 @@ describe("PATCH /offers/respond", () => {
           create: {
             experienceLevel: "PROFISSIONAL",
             isActive: true,
+            regions: ["ZN"],
           },
         },
       },
@@ -79,6 +80,7 @@ describe("PATCH /offers/respond", () => {
           create: {
             experienceLevel: "PROFISSIONAL",
             isActive: true,
+            regions: ["ZN"],
           },
         },
       },
@@ -128,8 +130,26 @@ describe("PATCH /offers/respond", () => {
     const updatedOffer = await prisma.rideOffer.findUnique({
       where: { id: offer.id },
     });
+    const updatedRide = await prisma.rideRequest.findUniqueOrThrow({
+      where: { id: ride.id },
+    });
+    const pendingOffers = await prisma.rideOffer.count({
+      where: { rideRequestId: ride.id, status: "PENDING" },
+    });
 
     expect(updatedOffer?.status).toBe("REJECTED");
+    expect(updatedRide.excludedDriverIds).toContain(driver.driver!.id);
+    expect(pendingOffers).toBeLessThanOrEqual(1);
+    if (pendingOffers === 0) {
+      // Exact P2025 regression: no candidate is available, so the optional
+      // recovery CAS must be idempotent and the endpoint must still return 200.
+      expect(updatedRide.status).toBe("MATCHING");
+      expect(updatedRide.currentDispatchStage).toBe("OWNER_RECOVERY");
+    } else {
+      // Other suites may leave protected bootstrap drivers in the shared DB.
+      // A legitimate redispatch must expose the general-pool UX tier.
+      expect(updatedRide.status).toBe("WAITING_GENERAL");
+    }
   });
 
   it("does not accept an offer after the referral fallback already expired it", async () => {

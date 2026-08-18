@@ -8,6 +8,16 @@ import { createDriverReferralChain, ReferralChainError } from "../../domain/serv
 import { assignPassengerIdentity, createPassengerReferral } from "../../domain/services/PassengerReferralService";
 import { recordRelationship } from "../../domain/referral-network/ReferralRelationshipService";
 import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
+import { RootOwnershipProjectionService } from "../../domain/ownership/RootOwnershipProjectionService";
+import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
+import { AuthSessionService } from "../../domain/auth/AuthSessionService";
+import { AuthTokenService } from "../../domain/auth/AuthTokenService";
+
+// Transaction client returned by prisma.$transaction is structurally compatible
+// with the extended prisma client but lacks the extension type branding. We use
+// a local cast to keep the transactional boundaries intact.
+type ExtendedTx = typeof prisma;
+const asExtendedTx = (tx: any): ExtendedTx => tx as ExtendedTx;
 
 class HttpError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -17,9 +27,12 @@ class HttpError extends Error {
 }
 
 export class AuthController {
+  private readonly sessionService = new AuthSessionService();
+  private readonly tokenService = new AuthTokenService();
+
   async register(req: Request, res: Response) {
     try {
-      const { name, email, password, role, phone, referralCode } = req.body;
+      const { name, email, password, role, phone, referralCode, operationalBase } = req.body;
 
       if (!name || !email || !password || !role || !phone) {
         return res
@@ -117,10 +130,51 @@ export class AuthController {
                 invitedActorType: ActorType.DRIVER,
                 invitedId: driver.id,
               },
-              tx
+              asExtendedTx(tx)
             ).catch((err) => {
               console.warn("[ReferralRelationship] driver→driver record failed:", err?.message);
             });
+          }
+
+          // Fase E — base operacional opcional no onboarding (origem M fixa).
+          // Dentro da transação: driver criado, base persistida em seguida.
+          if (operationalBase !== undefined && operationalBase !== null) {
+            if (
+              typeof operationalBase !== "object" ||
+              Array.isArray(operationalBase)
+            ) {
+              throw new HttpError(400, "operationalBase deve ser um objeto");
+            }
+            const baseInput = operationalBase as {
+              formattedAddress?: unknown;
+              providerPlaceId?: unknown;
+              latitude?: unknown;
+              longitude?: unknown;
+            };
+            const baseService = new DriverOperationalBaseService(undefined, asExtendedTx(tx));
+            const saved = await baseService.save(driver.id, {
+              providerPlaceId:
+                typeof baseInput.providerPlaceId === "string"
+                  ? baseInput.providerPlaceId
+                  : null,
+              address:
+                typeof baseInput.formattedAddress === "string"
+                  ? baseInput.formattedAddress
+                  : null,
+              lat:
+                typeof baseInput.latitude === "number" &&
+                Number.isFinite(baseInput.latitude)
+                  ? baseInput.latitude
+                  : null,
+              lng:
+                typeof baseInput.longitude === "number" &&
+                Number.isFinite(baseInput.longitude)
+                  ? baseInput.longitude
+                  : null,
+            });
+            if (!saved.valid) {
+              throw new HttpError(400, saved.reason);
+            }
           }
 
           return {
@@ -157,7 +211,7 @@ export class AuthController {
           resolvedRootDriverId = await resolveDriverRoot(
             ActorType.DRIVER,
             referrerDriverId,
-            tx
+            asExtendedTx(tx)
           ).catch(() => null);
           await recordRelationship(
             {
@@ -166,7 +220,7 @@ export class AuthController {
               invitedActorType: ActorType.PASSENGER,
               invitedId: passenger.id,
             },
-            tx
+            asExtendedTx(tx)
           ).catch((err) => {
             console.warn("[ReferralRelationship] driver→passenger record failed:", err?.message);
           });
@@ -174,7 +228,7 @@ export class AuthController {
           resolvedRootDriverId = await resolveDriverRoot(
             ActorType.PASSENGER,
             referrerPassengerId,
-            tx
+            asExtendedTx(tx)
           ).catch(() => null);
           await recordRelationship(
             {
@@ -183,18 +237,21 @@ export class AuthController {
               invitedActorType: ActorType.PASSENGER,
               invitedId: passenger.id,
             },
-            tx
+            asExtendedTx(tx)
           ).catch((err) => {
             console.warn("[ReferralRelationship] passenger→passenger record failed:", err?.message);
           });
         }
 
-        if (resolvedRootDriverId) {
-          await tx.passenger.update({
-            where: { id: passenger.id },
-            data: { rootDriverId: resolvedRootDriverId },
-          });
-        }
+        // Synchronous ownership projection: ensure Passenger.rootDriverId is set
+        // immediately after the relationship is recorded. If it failed, the
+        // resolvedRootDriverId fallback above provides a safety net.
+        await RootOwnershipProjectionService.projectPassengerOwnership(
+          passenger.id,
+          asExtendedTx(tx)
+        ).catch((err) => {
+          console.warn("[Ownership] passenger projection failed during register:", err);
+        });
 
         // Capture for use after transaction (createPassengerReferral needs to run outside tx)
         referrerPassengerIdOuter = referrerPassengerId;
@@ -260,6 +317,12 @@ export class AuthController {
 
       const role = user.role === "DRIVER" ? "driver" : "passenger";
 
+      const issued = await this.sessionService.createSession(user.id);
+      const accessToken = await this.tokenService.issueAccessToken({
+        userId: user.id,
+        sessionId: issued.session.id,
+      });
+
       if (role === "driver") {
         const driver = await prisma.driver.findUnique({
           where: { userId: user.id },
@@ -284,6 +347,9 @@ export class AuthController {
           publicSlug: driver.publicSlug ?? null,
           networkLevel: driver.networkLevel ?? 0,
           referredByDriverId: driver.referredByDriverId ?? null,
+          accessToken,
+          refreshToken: issued.refreshToken,
+          session: issued.session,
         });
       }
 
@@ -303,6 +369,9 @@ export class AuthController {
         user: { id: user.id, name: user.name, email: user.email, role },
         passengerId: passenger.id,
         referredByDriverId: passenger.referredByDriverId ?? null,
+        accessToken,
+        refreshToken: issued.refreshToken,
+        session: issued.session,
       });
     } catch (error) {
       console.error("🔥 Erro no login:", error);

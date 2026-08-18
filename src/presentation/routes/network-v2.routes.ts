@@ -10,6 +10,7 @@ passengersNetworkRouter.get("/:id/lineage", NetworkV2Controller.getPassengerLine
 export const driversNetworkRouter = Router();
 driversNetworkRouter.get("/:id/ownership", NetworkV2Controller.getDriverOwnership);
 driversNetworkRouter.get("/:id/network/summary", NetworkV2Controller.getDriverNetwork);
+driversNetworkRouter.get("/:id/network/tree", NetworkV2Controller.getGenealogyTree);
 
 /** /network/context?actorId=&actorType= — operational network context for any actor. */
 export const networkLegacyRouter = Router();

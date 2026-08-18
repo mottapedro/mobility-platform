@@ -71,15 +71,13 @@ describe("GET /network/context", () => {
 
     const res = await request(app).get(`/network/context?actorId=${driver.id}&actorType=DRIVER`);
     expect(res.status).toBe(200);
-    expect(res.body.state).toBe("ACTIVE");
-    expect(res.body.actorId).toBe(driver.id);
-    expect(res.body.actorType).toBe("DRIVER");
-    expect(res.body.rootDriverId).toBe(driver.id);
-    expect(res.body.isRoot).toBe(true);
+    expect(res.body.flowType).toBe("DRIVER_TO_DRIVER");
+    expect(res.body.genealogy.me.id).toBe(driver.id);
+    expect(res.body.genealogy.me.actorType).toBe("driver");
+    expect(res.body.rootDriver.id).toBe(driver.id);
     expect(res.body.capabilities).toBeDefined();
     expect(res.body.capabilities.canInviteDrivers).toBe(true); // ELITE
-    expect(res.body.relationships).toBeDefined();
-    expect(res.body.ownership).toBeDefined();
+    expect(res.body.networkMetrics).toBeDefined();
   });
 
   it("accepts lowercase actorType (case-insensitive)", async () => {
@@ -88,7 +86,7 @@ describe("GET /network/context", () => {
 
     const res = await request(app).get(`/network/context?actorId=${driver.id}&actorType=driver`);
     expect(res.status).toBe(200);
-    expect(res.body.state).toBe("ACTIVE");
+    expect(res.body.flowType).toBe("DRIVER_TO_DRIVER");
   });
 
   it("returns 200 ACTIVE context for a passenger with rootDriverId", async () => {
@@ -98,9 +96,9 @@ describe("GET /network/context", () => {
 
     const res = await request(app).get(`/network/context?actorId=${passenger.id}&actorType=PASSENGER`);
     expect(res.status).toBe(200);
-    expect(res.body.state).toBe("ACTIVE");
-    expect(res.body.rootDriverId).toBe(driver.id);
-    expect(res.body.actorType).toBe("PASSENGER");
+    expect(res.body.flowType).toBe("DRIVER_TO_PASSENGER");
+    expect(res.body.rootDriver.id).toBe(driver.id);
+    expect(res.body.genealogy.me.actorType).toBe("passenger");
   });
 
   it("returns 410 UNINITIALIZED when passenger has no root", async () => {
