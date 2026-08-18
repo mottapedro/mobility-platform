@@ -6,6 +6,7 @@ import { getDriverNetwork } from "../../domain/services/DriverReferralService";
 import { RegionResolver } from "../../domain/services/RegionResolver";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { DriverOriginResolver } from "../../domain/pricing/DriverOriginResolver";
 import { execute as createOfferService } from "../services/CreateOfferService";
 import { referralFallbackScheduler } from "../../infra/async/ReferralFallbackScheduler";
 import type { RideStatus } from "../../shared/enums";
@@ -116,7 +117,8 @@ export class MatchRideUseCase {
 
   constructor(
     private readonly regionResolver = new RegionResolver(),
-    private readonly driverRegionMatcher = new DriverRegionMatcher()
+    private readonly driverRegionMatcher = new DriverRegionMatcher(),
+    private readonly driverOriginResolver = new DriverOriginResolver(),
   ) {
     this.matchingPriorityEngine = new MatchingPriorityEngine(
       this.regionResolver,
@@ -239,16 +241,92 @@ export class MatchRideUseCase {
   }
 
   // ─── Criar offer com tolerância a duplicidade ───────────────────────────────
+  // Fase E — a oferta carrega o snapshot do contrato: pickup distance (M→A)
+  // do novo candidato, distância da corrida e recebível congelado da quote.
+  // O snapshot é não-fatal: falha de resolução de origem ou ausência de quote
+  // apenas deixa os campos null (a oferta e o dispatch continuam idênticos à
+  // fase anterior). O passageiro nunca é re-precificado no redispatch.
   private async createOffer(rideId: string, driverId: string, expiresAt: Date) {
     const result = await createOfferService({
       rideRequestId: rideId,
       driverId,
       expiresAt,
+      ...(await this.computeOfferSnapshot(rideId, driverId)),
     });
     if (result.created) {
       console.log(`📨 Offer enviada para driver ${driverId}`);
     }
     return result;
+  }
+
+  private async computeOfferSnapshot(
+    rideId: string,
+    driverId: string,
+  ): Promise<{
+    driverToPickupDistanceKm: number | null;
+    rideDistanceKm: number | null;
+    driverReceivableAmountCents: number | null;
+  }> {
+    try {
+      const [quote, ride] = await Promise.all([
+        prisma.rideQuote.findFirst({
+          where: { rideRequestId: rideId, status: "AGREED" },
+          orderBy: { createdAt: "desc" },
+        }),
+        prisma.rideRequest.findUnique({
+          where: { id: rideId },
+          select: {
+            originLat: true,
+            originLng: true,
+            distanceKm: true,
+            scheduledAt: true,
+          },
+        }),
+      ]);
+
+      if (!quote || !ride) {
+        return {
+          driverToPickupDistanceKm: null,
+          rideDistanceKm: null,
+          driverReceivableAmountCents: null,
+        };
+      }
+
+      let pickupKm = quote.distanceMtoAKm;
+      if (
+        driverId !== quote.pricingDriverId &&
+        ride.originLat !== null &&
+        ride.originLng !== null
+      ) {
+        // M2/M3 — distância M→A do novo candidato, sem tocar no contrato
+        // congelado (gross/recebível da quote permanecem os mesmos).
+        const origin = await this.driverOriginResolver.resolveOriginForDriver({
+          driverId,
+          rideLat: ride.originLat,
+          rideLng: ride.originLng,
+          mode: ride.scheduledAt ? "SCHEDULED" : "IMMEDIATE",
+        });
+        if (origin.resolved) {
+          pickupKm = origin.distanceMtoAKm;
+        }
+      }
+
+      return {
+        driverToPickupDistanceKm: pickupKm,
+        rideDistanceKm: quote.distanceAtoBKm ?? ride.distanceKm,
+        driverReceivableAmountCents: quote.driverReceivableAmountCents,
+      };
+    } catch (error) {
+      console.warn(
+        `[MatchRideUseCase] snapshot da oferta indisponível (não-fatal):`,
+        error instanceof Error ? error.message : error,
+      );
+      return {
+        driverToPickupDistanceKm: null,
+        rideDistanceKm: null,
+        driverReceivableAmountCents: null,
+      };
+    }
   }
 
   // ─── Governed sequential dispatch ───────────────────────────────────────────

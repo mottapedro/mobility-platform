@@ -92,6 +92,7 @@ router.post("/passengers", async (req, res) => {
 });
 
 router.post("/", (req, res) => controller.create(req, res));
+router.post("/:id/confirm-quote", (req, res) => controller.confirmQuote(req, res));
 router.patch("/:id", (req, res) => controller.patch(req, res));
 router.get("/:id", (req, res) => controller.getById(req, res));
 

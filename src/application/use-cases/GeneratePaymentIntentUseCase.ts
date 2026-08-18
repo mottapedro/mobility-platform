@@ -1,6 +1,7 @@
 import { prisma } from "../../infra/prisma/client";
 import { getEventBus, getPixProvider } from "../../infrastructure/composition/paymentComposition";
 import { createPaymentIntent } from "../../domain/payment/PaymentIntentService";
+import { resolveQuoteGrossCents } from "../../domain/ride-quote/RideQuoteService";
 
 export interface GeneratePaymentIntentInput {
   rideId: string;
@@ -20,13 +21,15 @@ export class GeneratePaymentIntentUseCase {
       throw new Error(`Ride ${rideId} not found`);
     }
 
-    const amountReais = amount ?? (ride.priceOffered ?? ride.priceEstimated ?? 0);
+    // Fase E — quote viva é autoritativa (gross em centavos = snapshot imutável).
+    const quoteCents = await resolveQuoteGrossCents(rideId);
+    const amountCents =
+      quoteCents ??
+      Math.round((amount ?? (ride.priceOffered ?? ride.priceEstimated ?? 0)) * 100);
 
-    if (!amountReais || amountReais <= 0) {
-      throw new Error(`Invalid amount for ride ${rideId}: ${amountReais}`);
+    if (!Number.isInteger(amountCents) || amountCents <= 0) {
+      throw new Error(`Invalid amount for ride ${rideId}: ${amountCents}`);
     }
-
-    const amountCents = Math.round(amountReais * 100);
 
     const intent = await createPaymentIntent({
       rideRequestId: rideId,

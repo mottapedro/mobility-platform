@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "../../infra/prisma/client";
 import { handlePixWebhook } from "../../domain/payment/PaymentIntentService";
+import { resolveQuoteGrossCents } from "../../domain/ride-quote/RideQuoteService";
 import { getEventBus } from "../../infrastructure/composition/paymentComposition";
 
 // ─── PIX Estático EMVCo inline — chave EVP fixa ───────────────────────────────
@@ -82,7 +83,9 @@ export class PaymentController {
         });
       }
 
-      const amountCents = Math.round(priceBrl * 100);
+      // Fase E — quote viva é autoritativa (gross em centavos = snapshot imutável).
+      const quoteCents = await resolveQuoteGrossCents(rideId);
+      const amountCents = quoteCents ?? Math.round(priceBrl * 100);
 
       // ── Verificar/criar PaymentIntent no banco ────────────────────────────
       let intent = await prisma.paymentIntent.findUnique({

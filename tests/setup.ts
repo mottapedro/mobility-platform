@@ -164,6 +164,23 @@ export async function cleanTestData(): Promise<void> {
       });
     }
 
+    // Fase D — RideQuote has FK RESTRICT to RideRequest and Driver — must delete before both.
+    const testQuoteDriverIds = testDriverIds.length > 0 ? testDriverIds : [];
+    if (testQuoteDriverIds.length > 0 || testRideRequestIds.length > 0) {
+      await prisma.rideQuote.deleteMany({
+        where: {
+          OR: [
+            ...(testQuoteDriverIds.length > 0
+              ? [{ pricingDriverId: { in: testQuoteDriverIds } }]
+              : []),
+            ...(testRideRequestIds.length > 0
+              ? [{ rideRequestId: { in: testRideRequestIds } }]
+              : []),
+          ],
+        },
+      });
+    }
+
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {

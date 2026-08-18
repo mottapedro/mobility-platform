@@ -2,6 +2,7 @@ import { prisma } from "../../infra/prisma/client";
 import { Prisma } from "@prisma/client";
 import { MATCHABLE_RIDE_STATUSES, MatchRideUseCase } from "./MatchRideUseCase";
 import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEngine";
+import { resolveQuoteGrossCents } from "../../domain/ride-quote/RideQuoteService";
 import { logMatchingEvent } from "../../shared/logging/matchingLog";
 
 // ─── PIX Estático EMVCo inline — sem injeção de dependência ──────────────────
@@ -106,12 +107,16 @@ export class RespondToRideOfferUseCase {
       console.log(`✅ Corrida ${offer.rideRequestId} aceita pelo driver ${offer.driverId}`);
 
       // ── PIX Estático inline — sem chamada HTTP ao PicPay ─────────────────
+      // Fase E — preço do passageiro vem da quote (gross, immutable snapshot).
+      // Sem quote, mantém o fallback legado (priceOffered/priceEstimated).
       const ride = await prisma.rideRequest.findUnique({
         where: { id: offer.rideRequestId },
         select: { priceOffered: true, priceEstimated: true },
       });
-      const amountReais = ride?.priceOffered ?? ride?.priceEstimated ?? 0;
-      const amountCents = Math.round(amountReais * 100);
+      const quoteCents = await resolveQuoteGrossCents(offer.rideRequestId);
+      const amountCents =
+        quoteCents ??
+        Math.round((ride?.priceOffered ?? ride?.priceEstimated ?? 0) * 100);
 
       let paymentIntent: { id: string; brCode: string; qrCodeUrl: string } | null = null;
 

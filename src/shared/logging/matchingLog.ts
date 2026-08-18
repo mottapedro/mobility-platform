@@ -14,6 +14,8 @@ export type MatchingLogEvent = {
     | "single_active_offer_enforced"
     // Acceptance policy events
     | "OFFER_CREATED"
+    | "OFFER_QUOTED"
+    | "QUOTE_ISSUED"
     | "OFFER_EXPIRED"
     | "OFFER_REJECTED"
     | "OFFER_REDISTRIBUTED"

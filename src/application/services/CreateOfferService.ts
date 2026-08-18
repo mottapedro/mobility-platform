@@ -23,6 +23,11 @@ export interface CreateOfferInput {
   rideRequestId: string;
   driverId: string;
   expiresAt: Date;
+  // Fase E — snapshot da oferta (fonte: RideQuote na primeira oferta;
+  // recomputado para M→A no redispatch, sem re-precificar o passageiro).
+  driverToPickupDistanceKm?: number | null;
+  rideDistanceKm?: number | null;
+  driverReceivableAmountCents?: number | null;
 }
 
 export interface CreateOfferResult {
@@ -48,6 +53,9 @@ export async function execute(
         rideRequestId: input.rideRequestId,
         driverId: input.driverId,
         expiresAt: input.expiresAt,
+        driverToPickupDistanceKm: input.driverToPickupDistanceKm ?? null,
+        rideDistanceKm: input.rideDistanceKm ?? null,
+        driverReceivableAmountCents: input.driverReceivableAmountCents ?? null,
       },
     });
   } catch (err) {

@@ -9,6 +9,7 @@ import { assignPassengerIdentity, createPassengerReferral } from "../../domain/s
 import { recordRelationship } from "../../domain/referral-network/ReferralRelationshipService";
 import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
 import { RootOwnershipProjectionService } from "../../domain/ownership/RootOwnershipProjectionService";
+import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
 
 // Transaction client returned by prisma.$transaction is structurally compatible
 // with the extended prisma client but lacks the extension type branding. We use
@@ -26,7 +27,7 @@ class HttpError extends Error {
 export class AuthController {
   async register(req: Request, res: Response) {
     try {
-      const { name, email, password, role, phone, referralCode } = req.body;
+      const { name, email, password, role, phone, referralCode, operationalBase } = req.body;
 
       if (!name || !email || !password || !role || !phone) {
         return res
@@ -128,6 +129,47 @@ export class AuthController {
             ).catch((err) => {
               console.warn("[ReferralRelationship] driver→driver record failed:", err?.message);
             });
+          }
+
+          // Fase E — base operacional opcional no onboarding (origem M fixa).
+          // Dentro da transação: driver criado, base persistida em seguida.
+          if (operationalBase !== undefined && operationalBase !== null) {
+            if (
+              typeof operationalBase !== "object" ||
+              Array.isArray(operationalBase)
+            ) {
+              throw new HttpError(400, "operationalBase deve ser um objeto");
+            }
+            const baseInput = operationalBase as {
+              formattedAddress?: unknown;
+              providerPlaceId?: unknown;
+              latitude?: unknown;
+              longitude?: unknown;
+            };
+            const baseService = new DriverOperationalBaseService(undefined, asExtendedTx(tx));
+            const saved = await baseService.save(driver.id, {
+              providerPlaceId:
+                typeof baseInput.providerPlaceId === "string"
+                  ? baseInput.providerPlaceId
+                  : null,
+              address:
+                typeof baseInput.formattedAddress === "string"
+                  ? baseInput.formattedAddress
+                  : null,
+              lat:
+                typeof baseInput.latitude === "number" &&
+                Number.isFinite(baseInput.latitude)
+                  ? baseInput.latitude
+                  : null,
+              lng:
+                typeof baseInput.longitude === "number" &&
+                Number.isFinite(baseInput.longitude)
+                  ? baseInput.longitude
+                  : null,
+            });
+            if (!saved.valid) {
+              throw new HttpError(400, saved.reason);
+            }
           }
 
           return {

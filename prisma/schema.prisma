@@ -59,6 +59,7 @@ model Driver {
   referredPassengers Passenger[]   @relation("DriverReferral")
   offers             RideOffer[]
   selectedRides      RideRequest[]
+  rideQuotes         RideQuote[]
   vehicles           Vehicle[]
   /// Extensible JSON metadata (skills, badges, tier, etc.)
   /// Example: { "skills": ["Colecionador"], "badges": [], "tier": null }
@@ -70,6 +71,8 @@ model Driver {
   skills                 DriverSkill[]
   operationalZones       DriverOperationalZone[]
   locationPings          DriverLocationPing[]
+  operationalBase        DriverOperationalBase?
+  currentLocation        DriverCurrentLocation?
 }
 
 model Passenger {
@@ -141,10 +144,15 @@ model DriverOperationalZone {
 model RideRequest {
   id                  String      @id @default(uuid())
   passengerId         String
-  origin              String
+    origin              String
   destination         String
-  scheduledAt         DateTime
+  /// null = IMMEDIATE; future date = SCHEDULED
+  scheduledAt         DateTime?
   operationalCutoffAt DateTime?
+  /// Google Place Details (New) — providerPlaceId validated server-side.
+  /// Never trust client lat/lng as the source of truth (Decision B).
+  originPlaceId       String?
+  destinationPlaceId  String?
   status              RideStatus  @default(PENDING)
   selectedDriverId    String?
   createdAt           DateTime    @default(now())
@@ -158,6 +166,7 @@ model RideRequest {
   priceOffered        Float?   // final accepted price (may differ from estimate)
   context             Json?
   offers              RideOffer[]
+  quotes              RideQuote[]
   passenger           Passenger   @relation(fields: [passengerId], references: [id])
   selectedDriver      Driver?     @relation(fields: [selectedDriverId], references: [id])
 
@@ -242,6 +251,12 @@ model RideOffer {
   expiresAt     DateTime
   respondedAt   DateTime?
   createdAt     DateTime        @default(now())
+  // Fase E — snapshot da oferta. Primeira oferta: copiado da RideQuote.
+  // Redispatch (M2/M3): M do novo candidato recalculado, sem reprifcar o
+  // passageiro (RideQuote/gross/preço do passageiro permanecem intactos).
+  driverToPickupDistanceKm    Float?
+  rideDistanceKm              Float?
+  driverReceivableAmountCents Int?
   driver        Driver          @relation(fields: [driverId], references: [id])
   rideRequest   RideRequest     @relation(fields: [rideRequestId], references: [id])
 
@@ -249,9 +264,95 @@ model RideOffer {
   @@index([driverId, status])
 }
 
+/// Contrato de precificação imutável — snapshot congelado antes da emissão de
+/// qualquer RideOffer (Fase D). Nenhum componente downstream recalcula estes
+/// valores; a quote é a fonte canônica do recebível do motorista no momento
+/// da precificação. Campos monetários em centavos (padrão Settlement).
+model RideQuote {
+  id              String           @id @default(uuid())
+  rideRequestId   String
+  /// Driver para quem a quote foi precificada (decisão M1/REGISTERED_BASE).
+  pricingDriverId String
+  /// Origem M — posição do driver no momento da precificação (perna M→A).
+  originMLat      Float
+  originMLng      Float
+  /// Fonte de M: REGISTERED_BASE | CURRENT_LOCATION (integração na Fase E).
+  originMSource   String
+  /// Distância M→A em km (deslocamento do motorista até a origem da corrida).
+  distanceMtoAKm  Float
+  /// Distância A→B em km (a corrida em si).
+  distanceAtoBKm  Float
+  /// Custo da perna M→A em centavos (R$1,20/km na decisão aprovada).
+  legCostMtoACents   Int
+  /// Precificação da perna A→B em centavos.
+  legPriceAtoBCents  Int
+  /// Total bruto final (gross) em centavos.
+  grossFinalCents    Int
+  /// Política de distribuição vigente (snapshot — mesmo padrão do Settlement).
+  revenuePolicyId      String?
+  revenuePolicyVersion Int?
+  /// Recebível contratual do driver em centavos (snapshot imutável).
+  driverReceivableAmountCents Int
+
+  status   RideQuoteStatus @default(QUOTED)
+  /// Lock otimista (CAS) — cada transição QUOTED→AGREED incrementa.
+  version  Int             @default(1)
+  /// createdAt + RIDE_QUOTE_TTL (15min). Quote expirada não confirma.
+  expiresAt DateTime
+  agreedAt  DateTime?
+  createdAt DateTime       @default(now())
+
+  rideRequest   RideRequest    @relation(fields: [rideRequestId], references: [id])
+  pricingDriver Driver         @relation(fields: [pricingDriverId], references: [id])
+  revenuePolicy RevenuePolicy? @relation(fields: [revenuePolicyId], references: [id])
+
+  @@index([rideRequestId])
+  @@index([pricingDriverId])
+  @@index([revenuePolicyId])
+  @@index([expiresAt])
+  @@index([rideRequestId, pricingDriverId, status])
+}
+
 enum UserRole {
   DRIVER
   PASSENGER
+}
+
+/// Base operacional do motorista (endereço M fixo — ponto de origem da
+/// perna M→A na precificação). Preenchida no onboarding (Fase E).
+model DriverOperationalBase {
+  id                 String   @id @default(uuid())
+  driverId           String   @unique
+  formattedAddress   String
+  /// Place ID do Google Places (quando o endereço veio do autocomplete).
+  providerPlaceId    String?
+  latitude           Float
+  longitude          Float
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  driver             Driver   @relation(fields: [driverId], references: [id])
+
+  @@index([driverId])
+}
+
+/// Posição global corrente do motorista (integração GPS — Fase E).
+/// Uma única linha por driver (upsert). Não é histórico: para histórico de
+/// trilha, usar DriverLocationPing.
+model DriverCurrentLocation {
+  id        String   @id @default(uuid())
+  driverId  String   @unique
+  latitude  Float
+  longitude Float
+  /// Precisão horizontal estimada em metros.
+  accuracy  Float?
+  /// Quilometragem do odômetro no momento da amostra.
+  odometer  Int?
+  speed     Float?
+  recordedAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  driver     Driver   @relation(fields: [driverId], references: [id])
+
+  @@index([driverId])
 }
 
 enum ExperienceLevel {
@@ -296,6 +397,17 @@ enum RideOfferStatus {
   REJECTED
   EXPIRED
   PAID
+}
+
+// Contrato persistente de precificação (Fase D). Uma quote é o snapshot
+// imutável congelado ANTES da emissão de qualquer RideOffer. Estados:
+// QUOTED → AGREE somente via CAS (status, version, expiresAt > now);
+// AGREED  → contrato firmado (retry idempotente retorna o mesmo AGREED);
+// EXPIRED → nunca confirma (expiresAt = createdAt + RIDE_QUOTE_TTL).
+enum RideQuoteStatus {
+  QUOTED
+  AGREED
+  EXPIRED
 }
 
 // Governed Sequential Dispatch — runtime dispatch stage persisted on
@@ -454,6 +566,7 @@ model RevenuePolicy {
   createdAt      DateTime  @default(now())
 
   settlements    Settlement[]
+  quotes         RideQuote[]
 
   @@unique([code, version])
   @@index([isActive, effectiveFrom, effectiveUntil])
