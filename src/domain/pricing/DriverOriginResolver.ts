@@ -55,6 +55,16 @@ export class DriverOriginResolver {
     return new Date(Date.now() - freshnessMs);
   }
 
+  /**
+   * Origem M degenerada (0,0) — default de coordenadas não persistidas. A
+   * quote já precificou M→A com 5.325 km (haversine do Atlântico até o Brasil)
+   * por causa de uma base com lat/lng = 0. Tratar (0,0) como origem inexistente
+   * é o guard que impede a regressão, mesmo com linhas sujas já no banco.
+   */
+  private isDegenerateOrigin(lat: number, lng: number): boolean {
+    return Math.abs(lat) < 1e-9 && Math.abs(lng) < 1e-9;
+  }
+
   async resolveOriginForDriver(
     input: ResolveOriginInput,
   ): Promise<ResolvedOrigin> {
@@ -64,7 +74,7 @@ export class DriverOriginResolver {
 
     // SCHEDULED — somente a base operacional é origem válida.
     if (input.mode === "SCHEDULED") {
-      if (!base) {
+      if (!base || this.isDegenerateOrigin(base.latitude, base.longitude)) {
         return { resolved: false, reason: "SCHEDULED_BASE_REQUIRED" };
       }
       return this.withDistance(
@@ -81,7 +91,10 @@ export class DriverOriginResolver {
       where: { driverId: input.driverId },
     });
 
-    if (location) {
+    if (
+      location &&
+      !this.isDegenerateOrigin(location.latitude, location.longitude)
+    ) {
       const cutoff = this.resolveFreshnessCutoff();
       if (location.recordedAt >= cutoff) {
         return this.withDistance(
@@ -93,7 +106,7 @@ export class DriverOriginResolver {
       }
     }
 
-    if (base) {
+    if (base && !this.isDegenerateOrigin(base.latitude, base.longitude)) {
       return this.withDistance(
         "REGISTERED_BASE",
         base.latitude,

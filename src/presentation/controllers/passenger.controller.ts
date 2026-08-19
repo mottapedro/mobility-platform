@@ -5,6 +5,7 @@ import {
   getPassengerNetwork,
   assignPassengerIdentity,
 } from "../../domain/services/PassengerReferralService";
+import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
 
 export class PassengerController {
   async create(req: Request, res: Response) {
@@ -55,10 +56,10 @@ export class PassengerController {
             : {}),
         },
         include: {
-          user: true,
+          user: { select: PUBLIC_USER_SELECT },
           referredByDriver: {
             include: {
-              user: true,
+              user: { select: PUBLIC_USER_SELECT },
             },
           },
         },
@@ -69,8 +70,8 @@ export class PassengerController {
       const updated = await prisma.passenger.findUniqueOrThrow({
         where: { id: passenger.id },
         include: {
-          user: true,
-          referredByDriver: { include: { user: true } },
+          user: { select: PUBLIC_USER_SELECT },
+          referredByDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
         },
       });
 
@@ -95,10 +96,10 @@ export class PassengerController {
       const passenger = await prisma.passenger.findUnique({
         where: { id },
         include: {
-          user: true,
+          user: { select: PUBLIC_USER_SELECT },
           referredByDriver: {
             include: {
-              user: true,
+              user: { select: PUBLIC_USER_SELECT },
               vehicles: true,
             },
           },

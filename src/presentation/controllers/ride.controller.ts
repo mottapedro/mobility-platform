@@ -26,6 +26,7 @@ import {
   ResolvedOrigin,
   RideMode,
 } from "../../domain/pricing/DriverOriginResolver";
+import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
 
 export interface RideContext {
   isVip?:     boolean;
@@ -344,9 +345,9 @@ export class RideController {
             pricingVersion:  ridePricing?.pricingVersion  ?? null,
           },
           include: {
-            passenger: { include: { user: true } },
+            passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
             offers: true,
-            selectedDriver: { include: { user: true } },
+            selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
           },
         });
 
@@ -548,9 +549,9 @@ export class RideController {
       const updatedRide = await prisma.rideRequest.findUnique({
         where: { id },
         include: {
-          passenger: { include: { user: true } },
+          passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
           offers: true,
-          selectedDriver: { include: { user: true } },
+          selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
         },
       });
       const agreedQuote = await prisma.rideQuote.findFirst({
@@ -693,9 +694,9 @@ export class RideController {
       const updatedRide = await prisma.rideRequest.findUnique({
         where: { id },
         include: {
-          passenger: { include: { user: true } },
+          passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
           offers: true,
-          selectedDriver: { include: { user: true } },
+          selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
         },
       });
 
@@ -731,8 +732,8 @@ export class RideController {
       const updatedRide = await prisma.rideRequest.findUnique({
         where: { id },
         include: {
-          passenger: { include: { user: true } },
-          selectedDriver: { include: { user: true } },
+          passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
+          selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
         },
       });
 
@@ -765,8 +766,8 @@ export class RideController {
       const updatedRide = await prisma.rideRequest.findUnique({
         where: { id },
         include: {
-          passenger: { include: { user: true } },
-          selectedDriver: { include: { user: true } },
+          passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
+          selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
         },
       });
 
@@ -793,13 +794,13 @@ export class RideController {
       const ride = await prisma.rideRequest.findUnique({
         where: { id },
         include: {
-          passenger: { include: { user: true } },
+          passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
           offers: {
             include: {
-              driver: { include: { user: true } },
+              driver: { include: { user: { select: PUBLIC_USER_SELECT } } },
             },
           },
-          selectedDriver: { include: { user: true } },
+          selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
         },
       });
 

@@ -13,6 +13,16 @@ class FakeConfiguredClient extends GooglePlacesClient {
         "PLACE_NOT_FOUND",
       );
     }
+    if (placeId === "ChIJ_no_geometry") {
+      // Google responde com local existente porém sem geometria utilizável.
+      return {
+        placeId,
+        displayName: "Local sem geometria",
+        formattedAddress: "Águas internacionais",
+        latitude: 0,
+        longitude: 0,
+      };
+    }
     return {
       placeId,
       displayName: "Barra da Tijuca",
@@ -118,6 +128,64 @@ describe("PlaceValidationService — Decision B (server-side operational base)",
 
     const result = await service.validateBase({
       address: "Lugar desconhecido",
+    });
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.code).toBe("BASE_NOT_RESOLVABLE");
+    }
+  });
+
+  it("providerPlaceId sem chave e sem coordenadas → BASE_NOT_RESOLVABLE (nunca fabrica 0/0)", async () => {
+    const noKeyConfig = loadPlacesConfig({});
+    const service = new PlaceValidationService(
+      new GooglePlacesClient(noKeyConfig),
+      noKeyConfig,
+    );
+
+    const result = await service.validateBase({
+      providerPlaceId: "ChIJ_sem_geometria",
+      address: "Endereço sem geometria",
+    });
+
+    // Antes do fix isto retornava valid:true com lat/lng = 0 — a base (0,0)
+    // inflou a perna M→A para 5.325 km e o preço para R$ 6.428,98.
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.code).toBe("BASE_NOT_RESOLVABLE");
+    }
+  });
+
+  it("coordenadas degeneradas (0,0) são rejeitadas mesmo no pass-through sem chave", async () => {
+    const noKeyConfig = loadPlacesConfig({});
+    const service = new PlaceValidationService(
+      new GooglePlacesClient(noKeyConfig),
+      noKeyConfig,
+    );
+
+    const result = await service.validateBase({
+      address: "Centro",
+      lat: 0,
+      lng: 0,
+    });
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.code).toBe("BASE_NOT_RESOLVABLE");
+    }
+  });
+
+  it("Google com geometria degenerada (0,0) → BASE_NOT_RESOLVABLE", async () => {
+    const service = new PlaceValidationService(
+      new FakeConfiguredClient(config),
+      config,
+    );
+
+    const result = await service.validateBase({
+      providerPlaceId: "ChIJ_no_geometry",
+      address: "Local sem geometria",
+      lat: -23.0,
+      lng: -43.35,
     });
 
     expect(result.valid).toBe(false);

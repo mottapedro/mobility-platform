@@ -41,6 +41,27 @@ export type OperationalBaseResult =
       code: string;
     };
 
+/**
+ * Coordenadas utilizáveis para persistência de base/precificação: finitas,
+ * dentro dos limites físicos globais e NÃO degeneradas (0,0). (0,0) — default
+ * de campos não preenchidos — já produz quotes com perna M→A de milhares de km
+ * (haversine do Atlântico até o Brasil) e nunca pode ser aceito.
+ */
+export function hasUsableCoords(
+  lat?: number | null,
+  lng?: number | null,
+): boolean {
+  return (
+    lat != null &&
+    lng != null &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng) &&
+    Math.abs(lat) <= 90 &&
+    Math.abs(lng) <= 180 &&
+    (Math.abs(lat) > 1e-9 || Math.abs(lng) > 1e-9)
+  );
+}
+
 export class PlaceValidationService {
   constructor(
     private readonly client: GooglePlacesClient = new GooglePlacesClient(),
@@ -48,25 +69,47 @@ export class PlaceValidationService {
   ) {}
 
   /**
-   * Validate a single operational base. When providerPlaceId is provided and
-   * the client is configured, coordinates come from Google (authoritative).
-   * Otherwise the client lat/lng is accepted as a pass-through (dev/tests).
+   * Valida um único endereço. Quando providerPlaceId é informado e a chave
+   * Google está configurada, as coordenadas autoritativas vêm do Google. Sem
+   * chave, as coordenadas do cliente são aceitas como pass-through — desde que
+   * finitas, dentro dos limites físicos e não degeneradas (0,0). O serviço
+   * NUNCA fabrica coordenadas: um local sem geometria utilizável é rejeitado
+   * (BASE_NOT_RESOLVABLE) em vez de persistir lat/lng = 0.
    */
   async validateBase(input: OperationalBaseInput): Promise<OperationalBaseResult> {
     if (input.providerPlaceId) {
       if (!this.client.isConfigured) {
+        if (hasUsableCoords(input.lat, input.lng)) {
+          return {
+            valid: true,
+            providerPlaceId: input.providerPlaceId,
+            address: input.address ?? null,
+            lat: input.lat as number,
+            lng: input.lng as number,
+            source: "CLIENT_FALLBACK",
+          };
+        }
         return {
-          valid: true,
+          valid: false,
           providerPlaceId: input.providerPlaceId,
           address: input.address ?? null,
-          lat: input.lat ?? 0,
-          lng: input.lng ?? 0,
-          source: "CLIENT_FALLBACK",
+          reason:
+            "Coordenadas da base indisponíveis — configure GOOGLE_PLACES_API_KEY ou envie lat/lng válidos",
+          code: "BASE_NOT_RESOLVABLE",
         };
       }
 
       try {
         const details = await this.client.getPlaceDetails(input.providerPlaceId);
+        if (!hasUsableCoords(details.latitude, details.longitude)) {
+          return {
+            valid: false,
+            providerPlaceId: details.placeId,
+            address: input.address ?? null,
+            reason: "O local não possui geometria utilizável (lat/lng ausentes)",
+            code: "BASE_NOT_RESOLVABLE",
+          };
+        }
         return {
           valid: true,
           providerPlaceId: details.placeId,
@@ -89,7 +132,7 @@ export class PlaceValidationService {
       }
     }
 
-    if (Number.isFinite(input.lat) && Number.isFinite(input.lng)) {
+    if (hasUsableCoords(input.lat, input.lng)) {
       return {
         valid: true,
         providerPlaceId: null,
@@ -104,7 +147,7 @@ export class PlaceValidationService {
       valid: false,
       providerPlaceId: null,
       address: input.address ?? null,
-      reason: "Missing providerPlaceId or coordinates",
+      reason: "Missing providerPlaceId or usable coordinates",
       code: "BASE_NOT_RESOLVABLE",
     };
   }

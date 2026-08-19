@@ -3,6 +3,7 @@ import { randomBytes } from "crypto";
 import { RideController } from "../controllers/ride.controller";
 import { prisma } from "../../infra/prisma/client";
 import { assignPassengerIdentity } from "../../domain/services/PassengerReferralService";
+import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
 
 const router = Router();
 const controller = new RideController();
@@ -42,7 +43,7 @@ router.post("/passengers", async (req, res) => {
     if (existingUser) {
       const existingPassenger = await prisma.passenger.findUnique({
         where: { userId: existingUser.id },
-        include: { user: true },
+        include: { user: { select: PUBLIC_USER_SELECT } },
       });
 
       if (existingPassenger) {
@@ -77,7 +78,7 @@ router.post("/passengers", async (req, res) => {
 
     const updated = await prisma.passenger.findUniqueOrThrow({
       where: { id: passenger.id },
-      include: { user: true },
+      include: { user: { select: PUBLIC_USER_SELECT } },
     });
 
     return res.status(201).json(updated);
