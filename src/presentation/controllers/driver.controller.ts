@@ -7,6 +7,7 @@ import { listDriverSkills } from "../../domain/skills/DriverSkillService";
 import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwnershipService";
 import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
 import { ReferralFlowType } from "../../shared/enums";
+import type { RideStatus } from "../../shared/enums";
 
 export class DriverController {
   private async findActivePublicDriver(referralCodeOrSlug: string) {
@@ -330,10 +331,41 @@ export class DriverController {
   }
 
   private async loadRidesForDriver(driverId: string) {
+    // Rides this driver was selected on (active + terminal), plus terminal
+    // rides the driver engaged as M1 pricing driver (having priced the
+    // RideQuote) but never got selected on — e.g. administratively cancelled
+    // requests that must stay visible in the driver's Histórico.
+    // Active statuses feed the "Ativas" tab; terminal ones feed "Histórico".
+    // CANCELLED rides are preserved in history — never silently dropped.
+    const DRIVER_RIDE_STATUSES: RideStatus[] = [
+      "ACCEPTED",
+      "IN_PROGRESS",
+      "COMPLETED",
+      "CANCELLED",
+      "REJECTED",
+      "EXPIRED",
+      "PAID",
+    ];
+    const TERMINAL_STATUSES: RideStatus[] = [
+      "COMPLETED",
+      "CANCELLED",
+      "REJECTED",
+      "EXPIRED",
+      "PAID",
+    ];
     return prisma.rideRequest.findMany({
       where: {
-        selectedDriverId: driverId,
-        status: "ACCEPTED",
+        OR: [
+          {
+            selectedDriverId: driverId,
+            status: { in: DRIVER_RIDE_STATUSES },
+          },
+          {
+            selectedDriverId: null,
+            status: { in: TERMINAL_STATUSES },
+            quotes: { some: { pricingDriverId: driverId } },
+          },
+        ],
       },
       include: {
         passenger: {
