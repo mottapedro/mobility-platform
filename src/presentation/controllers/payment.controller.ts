@@ -44,9 +44,12 @@ function buildStaticPix(amountCents: number, txid: string): string {
 }
 // ──────────────────────────────────────────────────────────────────────────────
 
+type BreakdownCode = "TRANSPORT_SERVICE" | "DRIVER_APPROACH" | "PLATFORM_FEE";
+
 interface BreakdownItem {
+  code: BreakdownCode;
   label: string;
-  value: number;
+  amountCents: number;
 }
 
 interface PaymentIntentResponseDTO {
@@ -118,20 +121,28 @@ export class PaymentController {
 
       const totalPrice = Number((amountCents / 100).toFixed(2));
 
-      let breakdown: BreakdownItem[];
-      if (rideWithPricing?.driverNetAmount != null && rideWithPricing?.platformFee != null) {
-        breakdown = [
-          { label: "Serviço de Transporte", value: rideWithPricing.driverNetAmount },
-          { label: "Taxa Cyborg",           value: rideWithPricing.platformFee },
-        ];
-      } else {
-        // Fallback para corridas sem breakdown persistido (pre-PricingEngine)
-        const platformFee = Number(parseFloat(process.env.PLATFORM_FEE_VALIDATION ?? "2.50").toFixed(2));
-        const driverAmount = Number(Math.max(0, totalPrice - platformFee).toFixed(2));
-        breakdown = [
-          { label: "Serviço de Transporte", value: driverAmount },
-          { label: "Taxa Cyborg",           value: platformFee },
-        ];
+      const quote = await prisma.rideQuote.findFirst({
+        where: { rideRequestId: rideId, status: { in: ["QUOTED", "AGREED"] } },
+        orderBy: { createdAt: "desc" },
+        select: { legCostMtoACents: true },
+      });
+      const platformFeeCents = Math.round(
+        (rideWithPricing?.platformFee ?? Number(parseFloat(process.env.PLATFORM_FEE_VALIDATION ?? "2.50").toFixed(2))) * 100,
+      );
+      const driverNetCents = rideWithPricing?.driverNetAmount != null
+        ? Math.round(rideWithPricing.driverNetAmount * 100)
+        : null;
+      const driverApproachCents = quote?.legCostMtoACents ?? 0;
+      // Legacy rides without a quote keep the persisted total; no M→A value is invented.
+      const transportServiceCents = driverNetCents ?? amountCents - driverApproachCents - platformFeeCents;
+      const breakdown: BreakdownItem[] = [
+        { code: "TRANSPORT_SERVICE", label: "Serviço de transporte", amountCents: transportServiceCents },
+        { code: "DRIVER_APPROACH", label: "Deslocamento do motorista", amountCents: driverApproachCents },
+        { code: "PLATFORM_FEE", label: "Taxa da plataforma", amountCents: platformFeeCents },
+      ];
+      const breakdownSumCents = breakdown.reduce((sum, item) => sum + item.amountCents, 0);
+      if (breakdownSumCents !== amountCents || breakdown.some((item) => item.amountCents < 0)) {
+        throw new Error(`Payment breakdown mismatch: ${breakdownSumCents} != ${amountCents}`);
       }
 
       console.log(`[INLINE PIX] Intent para corrida ${rideId}. Total: R$ ${totalPrice}`);
