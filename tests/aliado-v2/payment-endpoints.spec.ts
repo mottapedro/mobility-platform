@@ -61,6 +61,27 @@ describe("Payment HTTP endpoints", () => {
     const driver = await makeDriver("ep.pi.driver@test.com");
     const passenger = await makePassenger("ep.pi.passenger@test.com", null);
     const ride = await makeRide(passenger.id, driver.id, 30.00);
+    await prisma.rideRequest.update({
+      where: { id: ride.id },
+      data: { priceEstimated: 73.66, driverNetAmount: 63.36, platformFee: 2.50 },
+    });
+    await prisma.rideQuote.create({
+      data: {
+        rideRequestId: ride.id,
+        pricingDriverId: driver.id,
+        originMLat: -22.9,
+        originMLng: -43.2,
+        originMSource: "REGISTERED_BASE",
+        distanceMtoAKm: 6.5,
+        distanceAtoBKm: 12,
+        legCostMtoACents: 780,
+        legPriceAtoBCents: 6586,
+        grossFinalCents: 7366,
+        driverReceivableAmountCents: 7116,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+        status: "QUOTED",
+      },
+    });
 
     // Backend reads price from DB — no amountCents in body
     const res = await request(app)
@@ -69,13 +90,19 @@ describe("Payment HTTP endpoints", () => {
 
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
-    expect(res.body.totalPrice).toBe(30.00);
-    expect(res.body.amount).toBe(30.00);
+    expect(res.body.totalPrice).toBe(73.66);
+    expect(res.body.amount).toBe(73.66);
     expect(typeof res.body.qrCode).toBe("string");
     expect(res.body.qrCode).toMatch(/^000201/);
     expect(typeof res.body.intentId).toBe("string");
     expect(typeof res.body.externalId).toBe("string");
     expect(Array.isArray(res.body.breakdown)).toBe(true);
+    expect(res.body.breakdown).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "TRANSPORT_SERVICE", amountCents: 6336 }),
+      expect.objectContaining({ code: "DRIVER_APPROACH", amountCents: 780 }),
+      expect.objectContaining({ code: "PLATFORM_FEE", amountCents: 250 }),
+    ]));
+    expect(res.body.breakdown.reduce((sum: number, item: { amountCents: number }) => sum + item.amountCents, 0)).toBe(7366);
   });
 
   it("POST /rides/:id/payment-intent returns 422 when ride has no price", async () => {
