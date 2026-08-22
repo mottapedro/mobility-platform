@@ -11,4 +11,9 @@ export const FEATURES = {
   // ou posição corrente fresca) emitem RideQuote AGREED + primeira oferta com
   // snapshot síncrono. Corridas sem origem resolvida seguem o fluxo clássico.
   QUOTE_ENABLED: process.env.QUOTE_ENABLED !== "false",
+  // Tests may exercise the temporary flow by default; every real runtime,
+  // including development, must opt in explicitly through the environment.
+  MANUAL_PIX_CONFIRMATION_ENABLED:
+    process.env.PIX_MANUAL_CONFIRMATION_ENABLED === "true" ||
+    process.env.NODE_ENV === "test",
 };
