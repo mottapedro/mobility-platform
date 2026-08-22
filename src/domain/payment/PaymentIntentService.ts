@@ -108,6 +108,8 @@ export interface HandlePixWebhookInput {
   status: WebhookStatus;
   failureReason?: string;
   bus: EventBus;
+  /** Origin of the confirmation, persisted for auditability. */
+  confirmationSource?: "PIX_WEBHOOK" | "MANUAL";
   // Coordination seam used to prove read/update interleavings against real PostgreSQL.
   afterIntentRead?: (intent: PaymentIntent) => Promise<void>;
 }
@@ -123,7 +125,14 @@ export interface HandlePixWebhookInput {
 export async function handlePixWebhook(
   input: HandlePixWebhookInput
 ): Promise<PaymentIntent> {
-  const { externalId, status, failureReason, bus, afterIntentRead } = input;
+  const {
+    externalId,
+    status,
+    failureReason,
+    bus,
+    afterIntentRead,
+    confirmationSource = "PIX_WEBHOOK",
+  } = input;
 
   const intent = await prisma.paymentIntent.findUnique({
     where: { externalId },
@@ -142,6 +151,7 @@ export async function handlePixWebhook(
     }
 
     let confirmed = intent;
+    let wonTransition = false;
     if (intent.status !== PaymentStatus.CONFIRMED) {
       // CAS: exactly one caller owns the PENDING -> CONFIRMED transition/event.
       const transition = await prisma.paymentIntent.updateMany({
@@ -149,6 +159,7 @@ export async function handlePixWebhook(
         data: { status: PaymentStatus.CONFIRMED, confirmedAt: new Date() },
       });
       if (transition.count === 1) {
+        wonTransition = true;
         confirmed = await prisma.paymentIntent.findUniqueOrThrow({
           where: { id: intent.id },
         });
@@ -156,7 +167,11 @@ export async function handlePixWebhook(
           type: DomainEventType.PAYMENT_CONFIRMED,
           aggregateType: "PaymentIntent",
           aggregateId: intent.id,
-          payload: { externalId, amountCents: intent.amountCents },
+          payload: {
+            externalId,
+            amountCents: intent.amountCents,
+            confirmationMode: confirmationSource,
+          },
         });
       } else {
         confirmed = await prisma.paymentIntent.findUniqueOrThrow({
@@ -166,7 +181,9 @@ export async function handlePixWebhook(
       }
     }
     await settleConfirmedPayment(intent.id, bus);
-    await startTripExecution(intent.id, bus);
+    // A retry/loser must not replay the trip boundary event. The winner owns
+    // the complete synchronous confirmation side effect chain.
+    if (wonTransition) await startTripExecution(intent.id, bus);
     return confirmed;
   }
 

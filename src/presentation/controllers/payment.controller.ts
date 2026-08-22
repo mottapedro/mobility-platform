@@ -3,6 +3,9 @@ import { prisma } from "../../infra/prisma/client";
 import { handlePixWebhook } from "../../domain/payment/PaymentIntentService";
 import { resolveQuoteGrossCents } from "../../domain/ride-quote/RideQuoteService";
 import { getEventBus } from "../../infrastructure/composition/paymentComposition";
+import { execute as confirmPixSettlement } from "../../application/services/ConfirmPixSettlementService";
+import { FEATURES } from "../../config/features";
+import { AuthenticatedPassengerRequest } from "../middleware/requirePassengerBearerAuth";
 
 // ─── PIX Estático EMVCo inline — chave EVP fixa ───────────────────────────────
 const PIX_KEY = "91e47d2f-65f6-4b36-a33a-5af9ebc1c4e6";
@@ -175,6 +178,86 @@ export class PaymentController {
     });
     if (!settlement) return res.status(404).json({ error: "Settlement not found" });
     return res.status(200).json(settlement);
+  }
+
+  /**
+   * Explicit confirmation for the temporary static PIX flow.
+   * This is intentionally separate from /webhooks/pix: the passenger is
+   * asserting that they completed the QR payment, not impersonating a PSP.
+   */
+  async manualConfirm(req: AuthenticatedPassengerRequest, res: Response) {
+    if (!FEATURES.MANUAL_PIX_CONFIRMATION_ENABLED) {
+      return res.status(404).json({ error: "Manual PIX confirmation unavailable" });
+    }
+
+    const rideId = String(req.params.id);
+    const passengerId = req.authPassengerId;
+    if (!passengerId) {
+      return res.status(401).json({ error: "Passenger authentication required" });
+    }
+
+    const ride = await prisma.rideRequest.findUnique({
+      where: { id: rideId },
+      select: {
+        id: true,
+        passengerId: true,
+        paymentIntent: {
+          select: {
+            id: true,
+            externalId: true,
+            method: true,
+            status: true,
+            amountCents: true,
+          },
+        },
+      },
+    });
+    if (!ride) return res.status(404).json({ error: "RideRequest not found" });
+    if (ride.passengerId !== passengerId) {
+      return res.status(403).json({ error: "Passenger does not own this ride" });
+    }
+
+    const intent = ride.paymentIntent;
+    if (!intent) {
+      return res.status(404).json({ error: "PaymentIntent not found", code: "PAYMENT_INTENT_NOT_FOUND" });
+    }
+    if (intent.method !== "PIX") {
+      return res.status(409).json({ error: "PaymentIntent is not PIX", code: "PAYMENT_METHOD_MISMATCH" });
+    }
+    if (!Number.isInteger(intent.amountCents) || intent.amountCents <= 0) {
+      return res.status(409).json({ error: "PaymentIntent amount is invalid", code: "PAYMENT_AMOUNT_INVALID" });
+    }
+    if (!intent.externalId) {
+      return res.status(409).json({ error: "PaymentIntent has no confirmation reference", code: "PAYMENT_REFERENCE_MISSING" });
+    }
+    if (intent.status !== "PENDING" && intent.status !== "CONFIRMED") {
+      return res.status(409).json({
+        error: "PaymentIntent cannot be manually confirmed in its current state",
+        code: "PAYMENT_NOT_CONFIRMABLE",
+        status: intent.status,
+      });
+    }
+
+    try {
+      const result = await confirmPixSettlement(
+        { externalId: intent.externalId, confirmationSource: "MANUAL" },
+        { bus: getEventBus() },
+      );
+      return res.status(200).json({
+        success: true,
+        rideId,
+        intentId: result.intent.id,
+        status: result.intent.status,
+        settlementId: result.settlement.id,
+        settled: result.settled,
+        confirmationMode: "MANUAL",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/not found/i.test(msg)) return res.status(404).json({ error: msg });
+      console.error("manualConfirm error:", err);
+      return res.status(500).json({ error: msg });
+    }
   }
 
   async pixWebhook(req: Request, res: Response) {

@@ -31,6 +31,7 @@ import { EventBus } from "../../domain/shared/events/EventBus";
 
 export interface ConfirmPixSettlementInput {
   externalId: string;
+  confirmationSource?: "PIX_WEBHOOK" | "MANUAL";
 }
 
 export interface ConfirmPixSettlementResult {
@@ -64,6 +65,7 @@ export async function execute(
   const intent = await handlePixWebhook({
     externalId: input.externalId,
     status: "CONFIRMED",
+    confirmationSource: input.confirmationSource,
     bus: deps.bus,
   });
 
