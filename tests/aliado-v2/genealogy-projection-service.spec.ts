@@ -20,7 +20,10 @@
  *  - BFS ordering (levels in order)
  */
 
-import { buildGenealogyProjection } from "../../src/domain/genealogy/BuildGenealogyProjectionService";
+import {
+  buildGenealogyProjection,
+  sliceGenealogyProjectionForActor,
+} from "../../src/domain/genealogy/BuildGenealogyProjectionService";
 import { ActorType, ExperienceLevel, ReferralFlowType } from "../../src/shared/enums";
 
 type RelRow = {
@@ -267,5 +270,57 @@ describe("buildGenealogyProjection", () => {
       maxDepth: 0,
       appliedDepthLimit: 3,
     });
+  });
+});
+
+describe("sliceGenealogyProjectionForActor", () => {
+  it("rebases a non-root actor while preserving mixed-role descendants", async () => {
+    const rels: RelRow[] = [
+      { flowType: ReferralFlowType.DRIVER_TO_DRIVER, inviterActorType: ActorType.DRIVER, inviterId: "pedro", invitedActorType: ActorType.DRIVER, invitedId: "joao", createdAt: T0 },
+      { flowType: ReferralFlowType.DRIVER_TO_DRIVER, inviterActorType: ActorType.DRIVER, inviterId: "joao", invitedActorType: ActorType.DRIVER, invitedId: "gisele", createdAt: T0 },
+      { flowType: ReferralFlowType.DRIVER_TO_PASSENGER, inviterActorType: ActorType.DRIVER, inviterId: "joao", invitedActorType: ActorType.PASSENGER, invitedId: "passenger-2", createdAt: T0 },
+    ];
+    const projection = await buildGenealogyProjection(
+      "pedro",
+      {},
+      makeDb(
+        rels,
+        [makeDriverRow("pedro", "Pedro"), makeDriverRow("joao", "João"), makeDriverRow("gisele", "Gisele")],
+        [makePaxRow("passenger-2", "Passageiro Oficial 2")],
+      ),
+    );
+
+    const relative = sliceGenealogyProjectionForActor(projection, "joao");
+
+    expect(relative).not.toBeNull();
+    expect(relative!.rootDriver.id).toBe("joao");
+    expect(relative!.nodes.map((node) => node.actorId)).toEqual(["joao", "gisele", "passenger-2"]);
+    expect(relative!.nodes.find((node) => node.actorId === "joao")).toMatchObject({ level: 0, parentId: null, rootDriverId: "pedro" });
+    expect(relative!.nodes.find((node) => node.actorId === "gisele")).toMatchObject({ level: 1, parentId: "joao", rootDriverId: "pedro" });
+    expect(relative!.nodes.find((node) => node.actorId === "passenger-2")).toMatchObject({ actorType: ActorType.PASSENGER, level: 1, parentId: "joao" });
+    expect(relative!.levels).toEqual([
+      { depth: 0, nodeIds: ["joao"] },
+      { depth: 1, nodeIds: ["gisele", "passenger-2"] },
+    ]);
+    expect(relative!.metrics).toMatchObject({ totalDrivers: 2, totalPassengers: 1, totalD2D: 1, totalD2P: 1, maxDepth: 1 });
+  });
+
+  it("keeps the global root projection equivalent when the selected actor is the root", async () => {
+    const projection = await buildGenealogyProjection(
+      "pedro",
+      {},
+      makeDb(
+        [{ flowType: ReferralFlowType.DRIVER_TO_DRIVER, inviterActorType: ActorType.DRIVER, inviterId: "pedro", invitedActorType: ActorType.DRIVER, invitedId: "joao", createdAt: T0 }],
+        [makeDriverRow("pedro", "Pedro"), makeDriverRow("joao", "João")],
+      ),
+    );
+
+    const relative = sliceGenealogyProjectionForActor(projection, "pedro");
+    expect(relative).toEqual(projection);
+  });
+
+  it("returns null when the selected actor is outside the global projection", async () => {
+    const projection = await buildGenealogyProjection("pedro", {}, makeDb([], [makeDriverRow("pedro", "Pedro")]));
+    expect(sliceGenealogyProjectionForActor(projection, "unknown")).toBeNull();
   });
 });

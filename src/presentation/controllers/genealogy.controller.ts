@@ -1,5 +1,11 @@
 import { Request, Response } from "express";
-import { buildGenealogyProjection } from "../../domain/genealogy/BuildGenealogyProjectionService";
+import {
+  DEFAULT_DEPTH,
+  buildGenealogyProjection,
+  sliceGenealogyProjectionForActor,
+} from "../../domain/genealogy/BuildGenealogyProjectionService";
+import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
+import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 
 const ABSOLUTE_MAX_DEPTH = 10;
@@ -42,7 +48,23 @@ export class GenealogyController {
       return res.status(404).json({ error: `Driver ${driverId} not found` });
     }
 
-    const projection = await buildGenealogyProjection(driverId, { maxDepth });
-    return res.json(projection);
+    const globalRootDriverId = await resolveDriverRoot(ActorType.DRIVER, driverId);
+    if (!globalRootDriverId) {
+      return res.status(404).json({ error: `Could not resolve root driver for ${driverId}` });
+    }
+    // The selected actor may be several levels below the global root. Build
+    // the global projection first, then apply maxDepth relative to the actor.
+    const globalProjection = await buildGenealogyProjection(globalRootDriverId, {
+      maxDepth: ABSOLUTE_MAX_DEPTH,
+    });
+    const relativeProjection = sliceGenealogyProjectionForActor(globalProjection, driverId, {
+      maxDepth: maxDepth ?? DEFAULT_DEPTH,
+    });
+    if (!relativeProjection) {
+      return res.status(404).json({
+        error: `Driver ${driverId} is not present in the resolved genealogy projection`,
+      });
+    }
+    return res.json(relativeProjection);
   }
 }

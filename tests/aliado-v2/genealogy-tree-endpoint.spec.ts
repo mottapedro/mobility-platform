@@ -54,6 +54,21 @@ async function makeDriver(
   });
 }
 
+async function makePassenger(email: string) {
+  const u = await prisma.user.create({
+    data: {
+      name: email,
+      email,
+      phone: `21${Math.floor(1e9 + Math.random() * 8e9)}`,
+      role: "PASSENGER",
+      passwordHash: await bcrypt.hash("x", 4),
+    },
+  });
+  return prisma.passenger.create({
+    data: { userId: u.id, networkLevel: 0 },
+  });
+}
+
 beforeEach(cleanTestData);
 
 describe("GET /drivers/:id/network/genealogy", () => {
@@ -147,6 +162,41 @@ describe("GET /drivers/:id/network/genealogy", () => {
     expect(metrics.totalDrivers).toBe(2);
     expect(metrics.totalD2D).toBe(1);
     expect(metrics.maxDepth).toBe(1);
+  });
+
+  it("rebases a non-root driver over the global projection and preserves mixed-role descendants", async () => {
+    const tag = Math.random().toString(36).slice(2, 7);
+    const pedro = await makeDriver(`gte.relative.root.${tag}@test.com`, ExperienceLevel.ELITE);
+    const joao = await makeDriver(`gte.relative.joao.${tag}@test.com`, ExperienceLevel.PROFISSIONAL);
+    const gisele = await makeDriver(`gte.relative.gisele.${tag}@test.com`, ExperienceLevel.PROFISSIONAL);
+    const passenger = await makePassenger(`gte.relative.passenger.${tag}@test.com`);
+
+    await prisma.driver.update({ where: { id: joao.id }, data: { referredByDriverId: pedro.id } });
+    await prisma.driver.update({ where: { id: gisele.id }, data: { referredByDriverId: joao.id } });
+    await recordRelationship({ inviterActorType: ActorType.DRIVER, inviterId: pedro.id, invitedActorType: ActorType.DRIVER, invitedId: joao.id });
+    await recordRelationship({ inviterActorType: ActorType.DRIVER, inviterId: joao.id, invitedActorType: ActorType.DRIVER, invitedId: gisele.id });
+    await recordRelationship({ inviterActorType: ActorType.DRIVER, inviterId: joao.id, invitedActorType: ActorType.PASSENGER, invitedId: passenger.id });
+
+    const res = await request(app).get(`/drivers/${joao.id}/network/genealogy`);
+    expect(res.status).toBe(200);
+    expect(res.body.rootDriver.id).toBe(joao.id);
+    expect(res.body.nodes.map((node: any) => node.actorId)).toEqual([joao.id, gisele.id, passenger.id]);
+    expect(res.body.nodes.find((node: any) => node.actorId === joao.id)).toMatchObject({ level: 0, parentId: null, rootDriverId: pedro.id });
+    expect(res.body.nodes.find((node: any) => node.actorId === gisele.id)).toMatchObject({ level: 1, parentId: joao.id, actorType: ActorType.DRIVER });
+    expect(res.body.nodes.find((node: any) => node.actorId === passenger.id)).toMatchObject({ level: 1, parentId: joao.id, actorType: ActorType.PASSENGER });
+    expect(res.body.levels).toEqual([
+      { depth: 0, nodeIds: [joao.id] },
+      { depth: 1, nodeIds: [gisele.id, passenger.id] },
+    ]);
+    expect(res.body.metrics).toMatchObject({ totalDrivers: 2, totalPassengers: 1, totalD2D: 1, totalD2P: 1, maxDepth: 1 });
+    expect(res.body.nodes.some((node: any) => node.actorId === pedro.id)).toBe(false);
+
+    const persisted = await prisma.referralRelationship.findMany({
+      where: { rootDriverId: pedro.id },
+      orderBy: { createdAt: "asc" },
+    });
+    expect(persisted).toHaveLength(3);
+    expect(persisted.every((relationship) => relationship.rootDriverId === pedro.id)).toBe(true);
   });
 
   it("?maxDepth=0 returns only the root node", async () => {
