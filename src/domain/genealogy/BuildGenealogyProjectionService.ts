@@ -11,7 +11,7 @@ import {
 
 /** Absolute hard cap — prevents runaway projections in production. */
 const ABSOLUTE_MAX_DEPTH = 10;
-const DEFAULT_DEPTH = 5;
+export const DEFAULT_DEPTH = 5;
 
 type DbClient = Pick<typeof prisma, "referralRelationship" | "driver" | "passenger">;
 
@@ -286,6 +286,101 @@ export async function buildGenealogyProjection(
     nodes,
     edges,
     levels,
+    metrics,
+  };
+}
+
+/**
+ * Rebase a global projection to the selected actor without changing the
+ * persisted/global ownership root stamped on each node.
+ *
+ * The returned DTO keeps the public genealogy shape, but treats
+ * `selectedActorId` as the visual root: ancestors are removed, descendants
+ * are retained only when reachable through projection edges, and levels are
+ * rebased to zero.
+ */
+export function sliceGenealogyProjectionForActor(
+  projection: GenealogyProjection,
+  selectedActorId: string,
+  options: { maxDepth?: number } = {},
+): GenealogyProjection | null {
+  const selected = projection.nodes.find((node) => node.actorId === selectedActorId);
+  if (!selected) return null;
+  const nodeById = new Map(projection.nodes.map((node) => [node.actorId, node]));
+
+  const childrenBySource = new Map<string, GenealogyEdge[]>();
+  for (const edge of projection.edges) {
+    const children = childrenBySource.get(edge.sourceActorId) ?? [];
+    children.push(edge);
+    childrenBySource.set(edge.sourceActorId, children);
+  }
+
+  const includedIds = new Set<string>([selectedActorId]);
+  const queue = [selectedActorId];
+  while (queue.length > 0) {
+    const sourceId = queue.shift()!;
+    for (const edge of childrenBySource.get(sourceId) ?? []) {
+      if (includedIds.has(edge.targetActorId)) continue;
+      const target = nodeById.get(edge.targetActorId);
+      if (!target) continue;
+      if (
+        options.maxDepth !== undefined &&
+        target.level - selected.level > options.maxDepth
+      ) {
+        continue;
+      }
+      includedIds.add(edge.targetActorId);
+      queue.push(edge.targetActorId);
+    }
+  }
+
+  const relativeNodes = projection.nodes
+    .filter((node) => includedIds.has(node.actorId))
+    .map((node) => ({
+      ...node,
+      level: node.level - selected.level,
+      parentId: node.actorId === selectedActorId ? null : node.parentId,
+    }));
+  const relativeEdges = projection.edges.filter(
+    (edge) => includedIds.has(edge.sourceActorId) && includedIds.has(edge.targetActorId),
+  );
+  const levels = new Map<number, string[]>();
+  for (const node of relativeNodes) {
+    const nodeIds = levels.get(node.level) ?? [];
+    nodeIds.push(node.actorId);
+    levels.set(node.level, nodeIds);
+  }
+
+  const metrics = {
+    totalDrivers: relativeNodes.filter((node) => node.actorType === ActorType.DRIVER).length,
+    totalPassengers: relativeNodes.filter((node) => node.actorType === ActorType.PASSENGER).length,
+    totalRelationships: relativeEdges.length,
+    totalD2D: relativeEdges.filter((edge) => edge.flowType === ReferralFlowType.DRIVER_TO_DRIVER).length,
+    totalD2P: relativeEdges.filter((edge) => edge.flowType === ReferralFlowType.DRIVER_TO_PASSENGER).length,
+    totalP2P: relativeEdges.filter((edge) => edge.flowType === ReferralFlowType.PASSENGER_TO_PASSENGER).length,
+    maxDepth: relativeNodes.reduce((max, node) => Math.max(max, node.level), 0),
+  };
+
+  return {
+    rootDriver: {
+      id: selected.actorId,
+      name: selected.name,
+      experienceLevel: (selected.experienceLevel ?? null) as ExperienceLevel | null,
+      networkLevel: selected.networkLevel,
+      publicSlug: selected.publicSlug,
+      referralCode: selected.referralCode,
+    },
+    stats: {
+      totalNodes: relativeNodes.length,
+      totalEdges: relativeEdges.length,
+      maxDepth: metrics.maxDepth,
+      appliedDepthLimit: options.maxDepth ?? projection.stats.appliedDepthLimit,
+    },
+    nodes: relativeNodes,
+    edges: relativeEdges,
+    levels: [...levels.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([depth, nodeIds]) => ({ depth, nodeIds })),
     metrics,
   };
 }
