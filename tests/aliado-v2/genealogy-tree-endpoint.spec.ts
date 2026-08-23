@@ -173,6 +173,10 @@ describe("GET /drivers/:id/network/genealogy", () => {
 
     await prisma.driver.update({ where: { id: joao.id }, data: { referredByDriverId: pedro.id } });
     await prisma.driver.update({ where: { id: gisele.id }, data: { referredByDriverId: joao.id } });
+    await prisma.passenger.update({
+      where: { id: passenger.id },
+      data: { referredByDriverId: joao.id, rootDriverId: pedro.id },
+    });
     await recordRelationship({ inviterActorType: ActorType.DRIVER, inviterId: pedro.id, invitedActorType: ActorType.DRIVER, invitedId: joao.id });
     await recordRelationship({ inviterActorType: ActorType.DRIVER, inviterId: joao.id, invitedActorType: ActorType.DRIVER, invitedId: gisele.id });
     await recordRelationship({ inviterActorType: ActorType.DRIVER, inviterId: joao.id, invitedActorType: ActorType.PASSENGER, invitedId: passenger.id });

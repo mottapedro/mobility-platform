@@ -3,10 +3,12 @@ import { randomBytes } from "crypto";
 import { RideController } from "../controllers/ride.controller";
 import { prisma } from "../../infra/prisma/client";
 import { assignPassengerIdentity } from "../../domain/services/PassengerReferralService";
+import { recordPassengerReferralRelationship } from "../../domain/referral-network/ReferralRelationshipService";
 import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
 
 const router = Router();
 const controller = new RideController();
+const asExtendedTx = (tx: any): typeof prisma => tx as typeof prisma;
 
 router.patch("/:id/reschedule", async (req, res) => controller.reschedule(req, res));
 router.post("/:id/start", async (req, res) => controller.start(req, res));
@@ -53,32 +55,39 @@ router.post("/passengers", async (req, res) => {
 
     const tmpSlug = `p-${randomBytes(8).toString("hex")}`;
 
-    const passenger = await prisma.passenger.create({
-      data: {
-        referralCode: tmpSlug,
-        publicSlug: tmpSlug,
-        ...(referredByDriverId
-          ? { referredByDriver: { connect: { id: referredByDriverId } } }
-          : {}),
-        user: {
-          create: {
-            name,
-            email,
-            phone,
-            role: "PASSENGER",
+    const updated = await prisma.$transaction(async (tx) => {
+      const passenger = await tx.passenger.create({
+        data: {
+          referralCode: tmpSlug,
+          publicSlug: tmpSlug,
+          ...(referredByDriverId
+            ? { referredByDriver: { connect: { id: referredByDriverId } } }
+            : {}),
+          user: {
+            create: {
+              name,
+              email,
+              phone,
+              role: "PASSENGER",
+            },
           },
         },
-      },
-      include: {
-        user: true,
-      },
-    });
+        include: {
+          user: true,
+        },
+      });
 
-    await assignPassengerIdentity(passenger.id, name).catch(() => {});
+      await recordPassengerReferralRelationship(
+        passenger.id,
+        { referredByDriverId },
+        asExtendedTx(tx)
+      );
+      await assignPassengerIdentity(passenger.id, name, asExtendedTx(tx));
 
-    const updated = await prisma.passenger.findUniqueOrThrow({
-      where: { id: passenger.id },
-      include: { user: { select: PUBLIC_USER_SELECT } },
+      return tx.passenger.findUniqueOrThrow({
+        where: { id: passenger.id },
+        include: { user: { select: PUBLIC_USER_SELECT } },
+      });
     });
 
     return res.status(201).json(updated);

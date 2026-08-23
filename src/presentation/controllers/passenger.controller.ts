@@ -5,7 +5,12 @@ import {
   getPassengerNetwork,
   assignPassengerIdentity,
 } from "../../domain/services/PassengerReferralService";
+import {
+  recordPassengerReferralRelationship,
+} from "../../domain/referral-network/ReferralRelationshipService";
 import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
+
+const asExtendedTx = (tx: any): typeof prisma => tx as typeof prisma;
 
 export class PassengerController {
   async create(req: Request, res: Response) {
@@ -39,40 +44,47 @@ export class PassengerController {
 
       const tmpSlug = `p-${randomBytes(8).toString("hex")}`;
 
-      const passenger = await prisma.passenger.create({
-        data: {
-          referralCode: tmpSlug,
-          publicSlug: tmpSlug,
-          user: {
-            create: {
-              name,
-              email,
-              phone,
-              role: "PASSENGER",
+      const updated = await prisma.$transaction(async (tx) => {
+        const passenger = await tx.passenger.create({
+          data: {
+            referralCode: tmpSlug,
+            publicSlug: tmpSlug,
+            user: {
+              create: {
+                name,
+                email,
+                phone,
+                role: "PASSENGER",
+              },
+            },
+            ...(referredByDriverId
+              ? { referredByDriver: { connect: { id: referredByDriverId } } }
+              : {}),
+          },
+          include: {
+            user: { select: PUBLIC_USER_SELECT },
+            referredByDriver: {
+              include: {
+                user: { select: PUBLIC_USER_SELECT },
+              },
             },
           },
-          ...(referredByDriverId
-            ? { referredByDriver: { connect: { id: referredByDriverId } } }
-            : {}),
-        },
-        include: {
-          user: { select: PUBLIC_USER_SELECT },
-          referredByDriver: {
-            include: {
-              user: { select: PUBLIC_USER_SELECT },
-            },
+        });
+
+        await recordPassengerReferralRelationship(
+          passenger.id,
+          { referredByDriverId },
+          asExtendedTx(tx)
+        );
+        await assignPassengerIdentity(passenger.id, name, asExtendedTx(tx));
+
+        return tx.passenger.findUniqueOrThrow({
+          where: { id: passenger.id },
+          include: {
+            user: { select: PUBLIC_USER_SELECT },
+            referredByDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
           },
-        },
-      });
-
-      await assignPassengerIdentity(passenger.id, name);
-
-      const updated = await prisma.passenger.findUniqueOrThrow({
-        where: { id: passenger.id },
-        include: {
-          user: { select: PUBLIC_USER_SELECT },
-          referredByDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
-        },
+        });
       });
 
       return res.status(201).json(updated);

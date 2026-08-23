@@ -6,9 +6,10 @@ import { ActorType } from "../../shared/enums";
 import { prisma } from "../../infra/prisma/client";
 import { createDriverReferralChain, ReferralChainError } from "../../domain/services/DriverReferralService";
 import { assignPassengerIdentity, createPassengerReferral } from "../../domain/services/PassengerReferralService";
-import { recordRelationship } from "../../domain/referral-network/ReferralRelationshipService";
-import { resolveDriverRoot } from "../../domain/referral-network/DriverRootResolverService";
-import { RootOwnershipProjectionService } from "../../domain/ownership/RootOwnershipProjectionService";
+import {
+  recordRelationship,
+  recordPassengerReferralRelationship,
+} from "../../domain/referral-network/ReferralRelationshipService";
 import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
 import { AuthSessionService } from "../../domain/auth/AuthSessionService";
 import { AuthTokenService } from "../../domain/auth/AuthTokenService";
@@ -63,8 +64,6 @@ export class AuthController {
       }
 
       const passwordHash = await bcrypt.hash(password, 10);
-
-      let referrerPassengerIdOuter: string | null = null;
 
       const payload = await prisma.$transaction(async (tx) => {
         const existing = await tx.user.findUnique({ where: { email } });
@@ -206,78 +205,34 @@ export class AuthController {
           include: { user: { select: PUBLIC_USER_SELECT } },
         });
 
-        // V2 — set rootDriverId on Passenger + record relational graph
-        let resolvedRootDriverId: string | null = null;
-        if (referrerDriverId) {
-          resolvedRootDriverId = await resolveDriverRoot(
-            ActorType.DRIVER,
-            referrerDriverId,
-            asExtendedTx(tx)
-          ).catch(() => null);
-          await recordRelationship(
-            {
-              inviterActorType: ActorType.DRIVER,
-              inviterId: referrerDriverId,
-              invitedActorType: ActorType.PASSENGER,
-              invitedId: passenger.id,
-            },
-            asExtendedTx(tx)
-          ).catch((err) => {
-            console.warn("[ReferralRelationship] driver→passenger record failed:", err?.message);
-          });
-        } else if (referrerPassengerId) {
-          resolvedRootDriverId = await resolveDriverRoot(
-            ActorType.PASSENGER,
+        // Passenger, canonical V2 relationship, identity and P2P lineage all
+        // share this transaction. Any referral failure aborts the whole write.
+        await recordPassengerReferralRelationship(
+          passenger.id,
+          { referredByDriverId: referrerDriverId, referredByPassengerId: referrerPassengerId },
+          asExtendedTx(tx)
+        );
+        if (referrerPassengerId) {
+          await createPassengerReferral(
+            passenger.id,
             referrerPassengerId,
             asExtendedTx(tx)
-          ).catch(() => null);
-          await recordRelationship(
-            {
-              inviterActorType: ActorType.PASSENGER,
-              inviterId: referrerPassengerId,
-              invitedActorType: ActorType.PASSENGER,
-              invitedId: passenger.id,
-            },
-            asExtendedTx(tx)
-          ).catch((err) => {
-            console.warn("[ReferralRelationship] passenger→passenger record failed:", err?.message);
-          });
+          );
         }
-
-        // Synchronous ownership projection: ensure Passenger.rootDriverId is set
-        // immediately after the relationship is recorded. If it failed, the
-        // resolvedRootDriverId fallback above provides a safety net.
-        await RootOwnershipProjectionService.projectPassengerOwnership(
+        const identity = await assignPassengerIdentity(
           passenger.id,
+          name,
           asExtendedTx(tx)
-        ).catch((err) => {
-          console.warn("[Ownership] passenger projection failed during register:", err);
-        });
-
-        // Capture for use after transaction (createPassengerReferral needs to run outside tx)
-        referrerPassengerIdOuter = referrerPassengerId;
+        );
 
         return {
           user: { id: user.id, name: user.name, email: user.email, role: "passenger" },
           passengerId: passenger.id,
           referredByDriverId: passenger.referredByDriverId ?? null,
+          referralCode: identity.referralCode,
+          publicSlug: identity.publicSlug,
         };
       });
-
-      // Assign a name-based slug after the transaction so the tmp placeholder is replaced.
-      if (payload.passengerId) {
-        const identity = await assignPassengerIdentity(payload.passengerId, name).catch(() => null);
-        if (identity) {
-          (payload as Record<string, unknown>).referralCode = identity.referralCode;
-          (payload as Record<string, unknown>).publicSlug = identity.publicSlug;
-        }
-        // Wire passenger-to-passenger referral hierarchy (networkLevel, lineagePath, etc.)
-        if (referrerPassengerIdOuter) {
-          await createPassengerReferral(payload.passengerId, referrerPassengerIdOuter).catch(() => {
-            // Non-fatal: referral chain creation failed, passenger is still registered
-          });
-        }
-      }
 
       return res.status(201).json(payload);
     } catch (error: unknown) {
