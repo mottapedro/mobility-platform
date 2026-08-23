@@ -3,6 +3,8 @@ import bcrypt from "bcrypt";
 
 import { app } from "../src/app";
 import { prisma } from "./setup";
+import { ActorType } from "../src/shared/enums";
+import { recordRelationship } from "../src/domain/referral-network/ReferralRelationshipService";
 
 async function createDriverWithRegion(params: {
   name: string;
@@ -111,6 +113,12 @@ describe("POST /auth/register with referralCode", () => {
 
 describe("POST /auth/register — passenger referralCode", () => {
   it("links referredByPassengerId when passenger referralCode is valid", async () => {
+    const rootDriver = await createDriverWithRegion({
+      name: "P2P Root Driver",
+      email: "p2p-root-driver@test.com",
+      region: "ZN",
+    });
+
     await prisma.passenger.deleteMany({
       where: {
         user: {
@@ -145,6 +153,8 @@ describe("POST /auth/register — passenger referralCode", () => {
           create: {
             referralCode: "pass-ref-code",
             publicSlug: "referrer-passenger",
+            referredByDriver: { connect: { id: rootDriver.id } },
+            rootDriverId: rootDriver.id,
           },
         },
       },
@@ -154,6 +164,12 @@ describe("POST /auth/register — passenger referralCode", () => {
     });
 
     expect(referrerUser.passenger).not.toBeNull();
+    await recordRelationship({
+      inviterActorType: ActorType.DRIVER,
+      inviterId: rootDriver.id,
+      invitedActorType: ActorType.PASSENGER,
+      invitedId: referrerUser.passenger!.id,
+    });
 
     const response = await request(app)
       .post("/auth/register")

@@ -18,12 +18,26 @@ jest.setTimeout(20000);
 describe("smoke: passenger → passenger referral full flow", () => {
   it("registers Alice, registers Bob via Alice code, network and slug all consistent", async () => {
     // ── 1. Register Alice ─────────────────────────────────────────────────
+    const rootDriverRes = await request(app).post("/auth/register").send({
+      name: "Pedro Smoke Root",
+      email: "pedro-smoke-root@ptest.com",
+      password: "senha123",
+      role: "driver",
+      phone: "21900000000",
+      regions: ["ZN"],
+    });
+
+    expect(rootDriverRes.status).toBe(201);
+    const rootDriverId: string = rootDriverRes.body.driverId;
+    const rootDriverCode: string = rootDriverRes.body.referralCode;
+
     const aliceRes = await request(app).post("/auth/register").send({
       name: "Alice Smoke",
       email: "alice-smoke@ptest.com",
       password: "senha123",
       role: "passenger",
       phone: "21900000001",
+      referralCode: rootDriverCode,
     });
 
     expect(aliceRes.status).toBe(201);
@@ -34,6 +48,11 @@ describe("smoke: passenger → passenger referral full flow", () => {
     const aliceId: string = aliceRes.body.passengerId;
     const aliceCode: string = aliceRes.body.referralCode;
     const aliceSlug: string = aliceRes.body.publicSlug;
+
+    const aliceRecord = await prisma.passenger.findUniqueOrThrow({
+      where: { id: aliceId },
+    });
+    expect(aliceRecord.rootDriverId).toBe(rootDriverId);
 
     // ── 2. Register Bob using Alice's referralCode ─────────────────────────
     const bobRes = await request(app).post("/auth/register").send({

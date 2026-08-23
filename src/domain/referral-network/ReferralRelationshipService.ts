@@ -15,6 +15,11 @@ export interface RecordRelationshipInput {
   invitedId: string;
 }
 
+export interface PassengerReferralInput {
+  referredByDriverId?: string | null;
+  referredByPassengerId?: string | null;
+}
+
 /**
  * Idempotently records a referral relationship in the V2 graph.
  *
@@ -80,11 +85,63 @@ export async function recordRelationship(
       input.invitedId,
       db
     ).catch((err) => {
+      // Legacy callers may project ownership in a subsequent operation. The
+      // atomic passenger write path uses the helper below, which re-runs this
+      // projection without swallowing errors inside its transaction.
       console.warn("[ReferralRelationship] passenger ownership projection failed", err);
     });
   }
 
   return relationship;
+}
+
+/**
+ * Records the canonical V2 relationship for a newly-created passenger.
+ *
+ * Callers must invoke this inside the same transaction that creates the
+ * Passenger.  A referred passenger may have exactly one inviter kind; any
+ * failure is deliberately propagated so the enclosing transaction rolls back.
+ */
+export async function recordPassengerReferralRelationship(
+  passengerId: string,
+  input: PassengerReferralInput,
+  db: Db = prisma
+): Promise<ReferralRelationship | null> {
+  if (input.referredByDriverId && input.referredByPassengerId) {
+    throw new ReferralRelationshipError(
+      "Passenger cannot be referred by both a driver and a passenger"
+    );
+  }
+
+  if (input.referredByDriverId) {
+    const relationship = await recordRelationship(
+      {
+        inviterActorType: ActorType.DRIVER,
+        inviterId: input.referredByDriverId,
+        invitedActorType: ActorType.PASSENGER,
+        invitedId: passengerId,
+      },
+      db
+    );
+    await RootOwnershipProjectionService.projectPassengerOwnership(passengerId, db);
+    return relationship;
+  }
+
+  if (input.referredByPassengerId) {
+    const relationship = await recordRelationship(
+      {
+        inviterActorType: ActorType.PASSENGER,
+        inviterId: input.referredByPassengerId,
+        invitedActorType: ActorType.PASSENGER,
+        invitedId: passengerId,
+      },
+      db
+    );
+    await RootOwnershipProjectionService.projectPassengerOwnership(passengerId, db);
+    return relationship;
+  }
+
+  return null;
 }
 
 /**
