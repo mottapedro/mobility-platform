@@ -1,6 +1,8 @@
 import request from "supertest";
 import { app } from "../../src/app";
 import { prisma } from "../setup";
+import { AuthSessionService } from "../../src/domain/auth/AuthSessionService";
+import { AuthTokenService } from "../../src/domain/auth/AuthTokenService";
 
 // Regression contract for GET /drivers/:driverId/rides — the driver read-model.
 // See driver.controller.ts loadRidesForDriver. Covers the two-clause rule:
@@ -51,6 +53,22 @@ async function makePassenger(suffix: string) {
       userId: u.id,
     },
   });
+}
+
+async function bearerForUserId(userId: string) {
+  const issued = await new AuthSessionService().createSession(userId);
+  return new AuthTokenService().issueAccessToken({
+    userId,
+    sessionId: issued.session.id,
+  });
+}
+
+async function bearerForDriver(driverId: string) {
+  const driver = await prisma.driver.findUniqueOrThrow({
+    where: { id: driverId },
+    select: { userId: true },
+  });
+  return bearerForUserId(driver.userId);
 }
 
 function rideInput(passengerId: string) {
@@ -127,7 +145,10 @@ describe("Driver rides read-model — GET /drivers/:driverId/rides", () => {
       data: { ...quoteInput(rideQuotedActive.id, D.id), status: "QUOTED" },
     });
 
-    const res = await request(app).get(`/drivers/${D.id}/rides`);
+    const tokenD = await bearerForDriver(D.id);
+    const res = await request(app)
+      .get(`/drivers/${D.id}/rides`)
+      .set("Authorization", `Bearer ${tokenD}`);
     expect(res.status).toBe(200);
     const ids = res.body.map((r: { id: string }) => r.id);
 
@@ -168,12 +189,63 @@ describe("Driver rides read-model — GET /drivers/:driverId/rides", () => {
       data: { ...quoteInput(orphan.id, D.id), status: "EXPIRED" },
     });
 
-    const resD = await request(app).get(`/drivers/${D.id}/rides`);
+    const tokenD = await bearerForDriver(D.id);
+    const tokenE = await bearerForDriver(E.id);
+    const resD = await request(app)
+      .get(`/drivers/${D.id}/rides`)
+      .set("Authorization", `Bearer ${tokenD}`);
     expect(resD.status).toBe(200);
     expect(resD.body.map((r: { id: string }) => r.id)).toContain(orphan.id);
 
-    const resE = await request(app).get(`/drivers/${E.id}/rides`);
+    const resE = await request(app)
+      .get(`/drivers/${E.id}/rides`)
+      .set("Authorization", `Bearer ${tokenE}`);
     expect(resE.status).toBe(200);
     expect(resE.body.map((r: { id: string }) => r.id)).not.toContain(orphan.id);
+  });
+
+  it("exige Bearer e impede spoof de route, driver cruzado e token de passageiro", async () => {
+    const suffix = tag();
+    const D = await makeDriver("D", suffix);
+    const E = await makeDriver("E", suffix);
+    const passenger = await makePassenger(suffix);
+    const ride = await prisma.rideRequest.create({
+      data: { ...rideInput(passenger.id), status: "COMPLETED", selectedDriverId: D.id },
+    });
+    const tokenD = await bearerForDriver(D.id);
+    const tokenE = await bearerForDriver(E.id);
+    const passengerToken = await bearerForUserId(passenger.userId);
+
+    const anonymous = await request(app).get(`/drivers/${D.id}/rides`);
+    const invalid = await request(app)
+      .get(`/drivers/${D.id}/rides`)
+      .set("Authorization", "Bearer invalid-token");
+    const allowed = await request(app)
+      .get(`/drivers/${D.id}/rides`)
+      .set("Authorization", `Bearer ${tokenD}`);
+    const routeSpoof = await request(app)
+      .get(`/drivers/${E.id}/rides`)
+      .set("Authorization", `Bearer ${tokenD}`);
+    const passengerRead = await request(app)
+      .get(`/drivers/${D.id}/rides`)
+      .set("Authorization", `Bearer ${passengerToken}`);
+    const spoofHeader = await request(app)
+      .get(`/drivers/${D.id}/rides`)
+      .set("Authorization", `Bearer ${tokenD}`)
+      .set("x-driver-id", E.id);
+    const driverB = await request(app)
+      .get(`/drivers/${E.id}/rides`)
+      .set("Authorization", `Bearer ${tokenE}`);
+
+    expect(anonymous.status).toBe(401);
+    expect(invalid.status).toBe(401);
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.map((r: { id: string }) => r.id)).toContain(ride.id);
+    expect(routeSpoof.status).toBe(404);
+    expect(passengerRead.status).toBe(401);
+    expect(spoofHeader.status).toBe(200);
+    expect(spoofHeader.body.map((r: { id: string }) => r.id)).toContain(ride.id);
+    expect(driverB.status).toBe(200);
+    expect(driverB.body.map((r: { id: string }) => r.id)).not.toContain(ride.id);
   });
 });

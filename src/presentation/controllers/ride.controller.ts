@@ -27,6 +27,8 @@ import {
   RideMode,
 } from "../../domain/pricing/DriverOriginResolver";
 import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
+import type { AuthenticatedPassengerRequest } from "../middleware/requirePassengerBearerAuth";
+import type { AuthenticatedRideReadRequest } from "../middleware/requireRideReadBearerAuth";
 
 export interface RideContext {
   isVip?:     boolean;
@@ -51,6 +53,48 @@ const routeCalc = new HaversineRouteCalculator();
 const placeValidationService = new PlaceValidationService();
 
 export class RideController {
+  private readonly rideReadInclude = {
+    passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
+    offers: {
+      include: {
+        driver: { include: { user: { select: PUBLIC_USER_SELECT } } },
+      },
+    },
+    selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
+  } as const;
+
+  private toRidePayload<T extends { priceOffered: number | null; priceEstimated: number | null }>(
+    ride: T,
+  ) {
+    return {
+      ...ride,
+      priceBrl: ride.priceOffered ?? ride.priceEstimated ?? null,
+    };
+  }
+
+  async listMyRides(req: AuthenticatedPassengerRequest, res: Response) {
+    const passengerId = req.authPassengerId;
+    if (!passengerId) {
+      return res.status(401).json({ error: "Passenger authentication required" });
+    }
+
+    try {
+      const rides = await prisma.rideRequest.findMany({
+        where: { passengerId },
+        include: this.rideReadInclude,
+        orderBy: { createdAt: "desc" },
+      });
+
+      return res.status(200).json(rides.map((ride) => this.toRidePayload(ride)));
+    } catch (error) {
+      console.error("Erro ao listar corridas do passageiro:", error);
+      return res.status(500).json({
+        error: "Erro interno ao listar corridas",
+        details: error instanceof Error ? error.message : error,
+      });
+    }
+  }
+
   async create(req: Request, res: Response) {
     console.log("🚨 VERSÃO MELHORADA DO CONTROLLER");
     console.log("🔥 BODY:", req.body);
@@ -781,7 +825,7 @@ export class RideController {
     }
   }
 
-  async getById(req: Request, res: Response) {
+  async getById(req: AuthenticatedRideReadRequest, res: Response) {
     try {
       const { id } = req.params;
 
@@ -791,17 +835,41 @@ export class RideController {
 
       console.log("🔥 BUSCANDO RIDE:", id);
 
-      const ride = await prisma.rideRequest.findUnique({
-        where: { id },
-        include: {
-          passenger: { include: { user: { select: PUBLIC_USER_SELECT } } },
-          offers: {
-            include: {
-              driver: { include: { user: { select: PUBLIC_USER_SELECT } } },
-            },
+      const access: Prisma.RideRequestWhereInput[] = [];
+      if (req.authPassengerId) {
+        access.push({ passengerId: req.authPassengerId });
+      }
+      if (req.authDriverId) {
+        const driverRideStatuses = [
+          "ACCEPTED",
+          "IN_PROGRESS",
+          "COMPLETED",
+          "CANCELLED",
+          "REJECTED",
+          "EXPIRED",
+          "PAID",
+        ] as const;
+        const terminalStatuses = ["COMPLETED", "CANCELLED", "REJECTED", "EXPIRED", "PAID"] as const;
+        access.push(
+          { selectedDriverId: req.authDriverId, status: { in: [...driverRideStatuses] } },
+          {
+            selectedDriverId: null,
+            status: { in: [...terminalStatuses] },
+            quotes: { some: { pricingDriverId: req.authDriverId } },
           },
-          selectedDriver: { include: { user: { select: PUBLIC_USER_SELECT } } },
+        );
+      }
+
+      if (access.length === 0) {
+        return res.status(401).json({ error: "Authentication required" });
+      }
+
+      const ride = await prisma.rideRequest.findFirst({
+        where: {
+          id,
+          OR: access,
         },
+        include: this.rideReadInclude,
       });
 
       console.log("🔥 RIDE ENCONTRADA:", ride);
@@ -810,12 +878,7 @@ export class RideController {
         return res.status(404).json({ error: "Ride not found" });
       }
 
-      const payload = {
-        ...ride,
-        priceBrl: ride.priceOffered ?? ride.priceEstimated ?? null,
-      };
-
-      return res.status(200).json(payload);
+      return res.status(200).json(this.toRidePayload(ride));
     } catch (error) {
       console.error("🔥 ERRO GET:", error);
       return res.status(500).json({

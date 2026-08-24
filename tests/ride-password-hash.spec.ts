@@ -11,6 +11,8 @@ import bcrypt from "bcrypt";
 import { app } from "../src/app";
 import { prisma, cleanTestData } from "./setup";
 import { DriverOperationalBaseService } from "../src/domain/driver/DriverOperationalBaseService";
+import { AuthSessionService } from "../src/domain/auth/AuthSessionService";
+import { AuthTokenService } from "../src/domain/auth/AuthTokenService";
 
 jest.setTimeout(20000);
 
@@ -84,6 +86,18 @@ function rideBody(passengerId: string) {
   };
 }
 
+async function bearerForPassenger(passengerId: string) {
+  const passenger = await prisma.passenger.findUniqueOrThrow({
+    where: { id: passengerId },
+    select: { userId: true },
+  });
+  const session = await new AuthSessionService().createSession(passenger.userId);
+  return new AuthTokenService().issueAccessToken({
+    userId: passenger.userId,
+    sessionId: session.session.id,
+  });
+}
+
 describe("P0 — sem passwordHash/tokens em respostas HTTP de corrida", () => {
   it("POST /rides (sem M1) e GET /rides/:id não serializam segredos", async () => {
     const passenger = await createPassengerUser(`p0.nom1.${tag()}@test.com`);
@@ -95,7 +109,10 @@ describe("P0 — sem passwordHash/tokens em respostas HTTP de corrida", () => {
     assertNoSecretKeys(create.body);
     expect(create.body.ride.passenger.user?.passwordHash).toBeUndefined();
 
-    const get = await request(app).get(`/rides/${create.body.ride.id}`);
+    const token = await bearerForPassenger(passenger);
+    const get = await request(app)
+      .get(`/rides/${create.body.ride.id}`)
+      .set("Authorization", `Bearer ${token}`);
     expect(get.status).toBe(200);
     assertNoSecretKeys(get.body);
     expect(get.body.passenger.user?.passwordHash).toBeUndefined();

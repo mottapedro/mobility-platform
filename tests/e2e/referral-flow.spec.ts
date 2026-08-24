@@ -18,7 +18,7 @@ async function login(
   ctx: APIRequestContext,
   email: string,
   password: string
-): Promise<{ userId: string; driverId?: string; passengerId?: string; role: string }> {
+): Promise<{ userId: string; driverId?: string; passengerId?: string; role: string; accessToken: string }> {
   const res = await ctx.post(`${BASE}/auth/login`, {
     data: { email, password },
   });
@@ -35,6 +35,7 @@ async function login(
     driverId: body.driverId,
     passengerId: body.passengerId,
     role: body.user.role,
+    accessToken: body.accessToken,
   };
 }
 
@@ -133,7 +134,9 @@ async function getRideStatus(
   ctx: APIRequestContext,
   rideId: string
 ): Promise<{ status: string; selectedDriverId: string | null }> {
-  const res = await ctx.get(`${BASE}/rides/${rideId}`);
+  const res = await ctx.get(`${BASE}/rides/${rideId}`, {
+    headers: { Authorization: `Bearer ${passengerAccessToken}` },
+  });
 
   if (!res.ok()) {
     const body = await res.text();
@@ -156,6 +159,7 @@ let passengerId: string;
 let pedroDriverId: string;
 let joaoDriverId: string;
 let pedroReferralCode: string;
+let passengerAccessToken: string;
 
 async function getPublicDriverProfile(
   ctx: APIRequestContext,
@@ -228,7 +232,9 @@ test.beforeEach(async () => {
     data: { name: "Test Passenger", email: "passenger@e2e.test", password: "123456", role: "passenger", phone: "21900000003", referralCode: pedroReferralCode },
   });
   if (!passReg.ok()) throw new Error(`Passenger register: ${await passReg.text()}`);
-  passengerId = (await passReg.json()).passengerId;
+  const passBody = await passReg.json();
+  passengerId = passBody.passengerId;
+  passengerAccessToken = passBody.accessToken;
 
   console.log(`\n📋 Actors (fresh):`);
   console.log(`   Test Passenger: ${passengerId} (referred by Pedro)`);

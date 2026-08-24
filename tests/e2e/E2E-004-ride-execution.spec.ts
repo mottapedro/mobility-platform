@@ -63,7 +63,7 @@ async function login(
   ctx: APIRequestContext,
   email: string,
   password: string
-): Promise<void> {
+): Promise<string> {
   const res = await ctx.post(`${BASE}/auth/login`, {
     data: { email, password },
   });
@@ -72,6 +72,8 @@ async function login(
     const body = await res.text();
     throw new Error(`Login failed for ${email}: ${res.status()} — ${body}`);
   }
+  const body = await res.json();
+  return body.accessToken as string;
 }
 
 async function createRide(
@@ -112,7 +114,9 @@ async function getRide(
   ctx: APIRequestContext,
   rideId: string
 ): Promise<{ status: string; selectedDriverId: string | null; currentDispatchStage?: string }> {
-  const res = await ctx.get(`${BASE}/rides/${rideId}`);
+  const res = await ctx.get(`${BASE}/rides/${rideId}`, {
+    headers: { Authorization: `Bearer ${passengerAccessToken}` },
+  });
 
   if (!res.ok()) {
     const body = await res.text();
@@ -238,6 +242,7 @@ let passengerId: string;
 let driverId: string;
 let passengerEmail: string;
 let driverEmail: string;
+let passengerAccessToken: string;
 const PASSWORD = "e2e123456";
 
 test.beforeAll(async () => {
@@ -277,7 +282,7 @@ test.afterAll(async () => {
 test("Driver accepts, starts, and completes a ride through the full execution lifecycle", async () => {
   // Step 1 — Authenticate both actors
   await test.step("1 — Authenticate passenger and driver", async () => {
-    await login(passengerCtx, passengerEmail, PASSWORD);
+    passengerAccessToken = await login(passengerCtx, passengerEmail, PASSWORD);
     await login(driverCtx, driverEmail, PASSWORD);
   });
 

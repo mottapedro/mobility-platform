@@ -41,6 +41,6 @@ router.get("/r/:slug", (req, res) => controller.resolvePublicReferral(req, res))
 
 
 // GET /drivers/:driverId/rides  — corridas ACCEPTED do driver
-router.get("/:driverId/rides", (req, res) => controller.listRides(req, res));
+router.get("/:driverId/rides", requireDriverBearerAuth, (req, res) => controller.listRides(req, res));
 
 export { router as driverRoutes };

@@ -65,7 +65,7 @@ async function login(
   ctx: APIRequestContext,
   email: string,
   password: string
-): Promise<{ passengerId?: string; driverId?: string }> {
+): Promise<{ passengerId?: string; driverId?: string; accessToken: string }> {
   const res = await ctx.post(`${BASE}/auth/login`, {
     data: { email, password },
   });
@@ -77,7 +77,7 @@ async function login(
   }
 
   const body = await res.json();
-  return { passengerId: body.passengerId, driverId: body.driverId };
+  return { passengerId: body.passengerId, driverId: body.driverId, accessToken: body.accessToken };
 }
 
 async function createRide(
@@ -162,7 +162,9 @@ async function getRide(
   ctx: APIRequestContext,
   rideId: string
 ): Promise<{ status: string; selectedDriverId: string | null; currentDispatchStage?: string }> {
-  const res = await ctx.get(`${BASE}/rides/${rideId}`);
+  const res = await ctx.get(`${BASE}/rides/${rideId}`, {
+    headers: { Authorization: `Bearer ${passengerAccessToken}` },
+  });
 
   if (!res.ok()) {
     const body = await res.text();
@@ -187,6 +189,7 @@ let passengerId: string;
 let driverId: string;
 let passengerEmail: string;
 let driverEmail: string;
+let passengerAccessToken: string;
 const PASSWORD = "e2e123456";
 
 test.beforeAll(async () => {
@@ -228,7 +231,7 @@ test.afterAll(async () => {
 test("Passenger creates a ride and the driver accepts the offer", async () => {
   // Step 1 — Authenticate both actors
   await test.step("1 — Authenticate passenger and driver", async () => {
-    await login(passengerCtx, passengerEmail, PASSWORD);
+    passengerAccessToken = (await login(passengerCtx, passengerEmail, PASSWORD)).accessToken;
     await login(driverCtx, driverEmail, PASSWORD);
   });
 

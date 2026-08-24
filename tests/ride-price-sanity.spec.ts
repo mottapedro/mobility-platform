@@ -17,6 +17,8 @@ import request from "supertest";
 import { app } from "../src/app";
 import { prisma, cleanTestData } from "./setup";
 import { DriverOperationalBaseService } from "../src/domain/driver/DriverOperationalBaseService";
+import { AuthSessionService } from "../src/domain/auth/AuthSessionService";
+import { AuthTokenService } from "../src/domain/auth/AuthTokenService";
 
 jest.setTimeout(20000);
 
@@ -78,6 +80,18 @@ function rideBody(passengerId: string, scheduledAt?: string) {
     destinationLat: -23.9,
     destinationLng: -46.65,
   };
+}
+
+async function bearerForPassenger(passengerId: string) {
+  const passenger = await prisma.passenger.findUniqueOrThrow({
+    where: { id: passengerId },
+    select: { userId: true },
+  });
+  const session = await new AuthSessionService().createSession(passenger.userId);
+  return new AuthTokenService().issueAccessToken({
+    userId: passenger.userId,
+    sessionId: session.session.id,
+  });
 }
 
 describe("Fase E — regressão: base operacional (0,0) é origem inválida", () => {
@@ -152,7 +166,10 @@ describe("Fase E — regressão: base operacional (0,0) é origem inválida", ()
     expect(res.body.ride.priceEstimated).toBe(quote.grossFinalCents / 100);
 
     // O mesmo valor correto volta no GET — base da renderização do card.
-    const get = await request(app).get(`/rides/${quote.rideRequestId}`);
+    const token = await bearerForPassenger(passenger);
+    const get = await request(app)
+      .get(`/rides/${quote.rideRequestId}`)
+      .set("Authorization", `Bearer ${token}`);
     expect(get.status).toBe(200);
     expect(get.body.priceEstimated).toBe(quote.grossFinalCents / 100);
   });
