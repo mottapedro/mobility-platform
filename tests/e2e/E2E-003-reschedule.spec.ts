@@ -129,7 +129,7 @@ async function waitForPendingOffer(
 
   while (Date.now() < deadline) {
     const res = await ctx.get(`${BASE}/drivers/${driverId}/offers`, {
-      headers: { "x-driver-id": driverId },
+      headers: { Authorization: `Bearer ${driverAccessToken}` },
     });
 
     if (!res.ok()) {
@@ -157,6 +157,7 @@ async function respondToOffer(
   accept: boolean
 ): Promise<{ accepted: boolean }> {
   const res = await ctx.patch(`${BASE}/offers/${offerId}/respond`, {
+    headers: { Authorization: `Bearer ${driverAccessToken}` },
     data: { accept },
   });
 
@@ -178,6 +179,7 @@ let driverId: string;
 let passengerEmail: string;
 let driverEmail: string;
 let passengerAccessToken: string;
+let driverAccessToken: string;
 const PASSWORD = "e2e123456";
 
 test.beforeAll(async () => {
@@ -218,7 +220,7 @@ test("Root driver reschedules a ride after network recovery failure", async () =
   // Step 1 — Authenticate both actors
   await test.step("1 — Authenticate passenger and driver", async () => {
     passengerAccessToken = await login(passengerCtx, passengerEmail, PASSWORD);
-    await login(driverCtx, driverEmail, PASSWORD);
+    driverAccessToken = await login(driverCtx, driverEmail, PASSWORD);
   });
 
   // Step 2 — Passenger creates a ride assigned to the root driver

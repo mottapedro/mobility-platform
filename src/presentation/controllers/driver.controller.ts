@@ -392,7 +392,7 @@ export class DriverController {
       }
 
       if (authDriverId !== driverId) {
-        return res.status(403).json({ error: "Driver cannot access another network" });
+        return res.status(404).json({ error: "Ofertas do driver não encontradas" });
       }
 
       const payload = await this.loadOffersForDriver(driverId);

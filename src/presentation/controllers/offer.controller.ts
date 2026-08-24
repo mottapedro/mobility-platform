@@ -1,14 +1,16 @@
-import { Request, Response } from "express";
+import { Response } from "express";
 import { RespondToRideOfferUseCase, OfferResponseError } from "../../application/use-cases/RespondToRideOfferUseCase";
+import { AuthenticatedDriverRequest } from "../middleware/requireDriverAuth";
 
 const ERROR_STATUS_MAP: Record<string, number> = {
   OFFER_NOT_FOUND: 404,
   OFFER_ALREADY_RESPONDED: 409,
+  OFFER_CONFLICT: 409,
   OFFER_EXPIRED: 410,
 };
 
 export class OfferController {
-  async respond(req: Request, res: Response) {
+  async respond(req: AuthenticatedDriverRequest, res: Response) {
     try {
       const { offerId } = req.params;
       const { accept } = req.body;
@@ -24,8 +26,12 @@ export class OfferController {
         });
       }
 
+      if (!req.authDriverId) {
+        return res.status(401).json({ error: "Driver authentication required" });
+      }
+
       const useCase = new RespondToRideOfferUseCase();
-      const result = await useCase.execute(offerId, accept);
+      const result = await useCase.execute(offerId, accept, req.authDriverId);
 
       return res.json({
         message: result.accepted

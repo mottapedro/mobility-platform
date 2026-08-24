@@ -2,6 +2,14 @@ import request from "supertest";
 import { app } from "../src/app";
 import { prisma } from "./setup";
 import { ExpireOffersService } from "../src/application/use-cases/ExpireOffersService";
+import { AuthSessionService } from "../src/domain/auth/AuthSessionService";
+import { AuthTokenService } from "../src/domain/auth/AuthTokenService";
+
+async function tokenForDriver(driverId: string) {
+  const driver = await prisma.driver.findUniqueOrThrow({ where: { id: driverId }, select: { userId: true } });
+  const session = await new AuthSessionService().createSession(driver.userId);
+  return new AuthTokenService().issueAccessToken({ userId: driver.userId, sessionId: session.session.id });
+}
 
 describe("PATCH /offers/respond", () => {
   it("deve aceitar uma offer", async () => {
@@ -43,7 +51,7 @@ describe("PATCH /offers/respond", () => {
         origin: "A",
         destination: "B",
         scheduledAt: new Date(),
-        status: "WAITING_DRIVER",
+        status: "MATCHING",
       },
     });
 
@@ -56,8 +64,10 @@ describe("PATCH /offers/respond", () => {
       },
     });
 
+    const token = await tokenForDriver(driver.driver!.id);
     const res = await request(app)
       .patch(`/offers/${offer.id}/respond`)
+      .set("Authorization", `Bearer ${token}`)
       .send({ accept: true });
 
     expect(res.status).toBe(200);
@@ -121,8 +131,10 @@ describe("PATCH /offers/respond", () => {
       },
     });
 
+    const token = await tokenForDriver(driver.driver!.id);
     const res = await request(app)
       .patch(`/offers/${offer.id}/respond`)
+      .set("Authorization", `Bearer ${token}`)
       .send({ accept: false });
 
     expect(res.status).toBe(200);
@@ -207,8 +219,10 @@ describe("PATCH /offers/respond", () => {
     const expireOffers = new ExpireOffersService();
     await expireOffers.execute();
 
+    const token = await tokenForDriver(referredDriver.driver!.id);
     const response = await request(app)
       .patch(`/offers/${offer.id}/respond`)
+      .set("Authorization", `Bearer ${token}`)
       .send({ accept: true });
 
     expect(response.status).toBe(410);

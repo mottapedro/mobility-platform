@@ -71,7 +71,9 @@ async function getDriverOffers(
   driverId: string
 ): Promise<Array<{ id: string; rideRequestId: string; status: string }>> {
   const res = await ctx.get(`${BASE}/drivers/${driverId}/offers`, {
-    headers: { "x-driver-id": driverId },
+    headers: {
+      Authorization: `Bearer ${ctx === pedroCtx ? pedroAccessToken : joaoAccessToken}`,
+    },
   });
 
   if (!res.ok()) {
@@ -117,6 +119,9 @@ async function respondToOffer(
   accept: boolean
 ): Promise<{ accepted: boolean; message: string }> {
   const res = await ctx.patch(`${BASE}/offers/${offerId}/respond`, {
+    headers: {
+      Authorization: `Bearer ${ctx === pedroCtx ? pedroAccessToken : joaoAccessToken}`,
+    },
     data: { accept },
   });
 
@@ -160,6 +165,8 @@ let pedroDriverId: string;
 let joaoDriverId: string;
 let pedroReferralCode: string;
 let passengerAccessToken: string;
+let pedroAccessToken: string;
+let joaoAccessToken: string;
 
 async function getPublicDriverProfile(
   ctx: APIRequestContext,
@@ -214,6 +221,7 @@ test.beforeEach(async () => {
   const pedroBody = await pedroReg.json();
   pedroDriverId = pedroBody.driverId;
   pedroReferralCode = pedroBody.referralCode;
+  pedroAccessToken = pedroBody.accessToken;
 
   const pedroPublicProfile = await getPublicDriverProfile(passengerCtx, pedroReferralCode);
   expect(pedroPublicProfile.referralCode).toBe(pedroReferralCode);
@@ -225,7 +233,9 @@ test.beforeEach(async () => {
     data: { name: "João Brito", email: "joao@e2e.test", password: "123456", role: "driver", phone: "21900000002", referralCode: pedroReferralCode },
   });
   if (!joaoReg.ok()) throw new Error(`João register: ${await joaoReg.text()}`);
-  joaoDriverId = (await joaoReg.json()).driverId;
+  const joaoBody = await joaoReg.json();
+  joaoDriverId = joaoBody.driverId;
+  joaoAccessToken = joaoBody.accessToken;
 
   // 4. Register a test passenger referred by Pedro
   const passReg = await passengerCtx.post(`${BASE}/auth/register`, {

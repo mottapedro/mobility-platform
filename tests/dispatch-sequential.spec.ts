@@ -91,7 +91,7 @@ describe("Governed Sequential Dispatch — invariants", () => {
 
     // Driver A rejects → re-dispatch should hand the offer to driver B (network L1).
     const respond = new RespondToRideOfferUseCase();
-    await respond.execute(firstOffer.id, false);
+    await respond.execute(firstOffer.id, false, firstOffer.driverId);
 
     // Invariant: still exactly 1 PENDING offer.
     expect(await pendingCount(ride.id)).toBe(1);
@@ -221,7 +221,7 @@ describe("Governed Sequential Dispatch — invariants", () => {
     expect(offer.driverId).toBe(driverA.id);
 
     // A rejects → escalate to L1 partner B
-    await respond.execute(offer.id, false);
+    await respond.execute(offer.id, false, offer.driverId);
     expect(await pendingCount(ride.id)).toBe(1);
     row = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
     expect(row.status).toBe("WAITING_PARTNER");
@@ -231,7 +231,7 @@ describe("Governed Sequential Dispatch — invariants", () => {
     expect(offer.driverId).toBe(driverB.id);
 
     // B rejects → network exhausted → falls to GENERAL pool
-    await respond.execute(offer.id, false);
+    await respond.execute(offer.id, false, offer.driverId);
     expect(await pendingCount(ride.id)).toBe(1);
     row = await prisma.rideRequest.findUniqueOrThrow({ where: { id: ride.id } });
     expect(row.status).toBe("WAITING_GENERAL");
