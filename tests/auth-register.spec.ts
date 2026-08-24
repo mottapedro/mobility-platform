@@ -53,6 +53,9 @@ describe("POST /auth/register with referralCode", () => {
 
     expect(response.status).toBe(201);
     expect(response.body.driverId).toBeDefined();
+    expect(response.body.accessToken).toEqual(expect.any(String));
+    expect(response.body.refreshToken).toEqual(expect.any(String));
+    expect(response.body.session.id).toEqual(expect.any(String));
 
     const driver = await prisma.driver.findUnique({
       where: {
@@ -84,6 +87,9 @@ describe("POST /auth/register with referralCode", () => {
 
     expect(response.status).toBe(201);
     expect(response.body.passengerId).toBeDefined();
+    expect(response.body.accessToken).toEqual(expect.any(String));
+    expect(response.body.refreshToken).toEqual(expect.any(String));
+    expect(response.body.session.id).toEqual(expect.any(String));
 
     const passenger = await prisma.passenger.findUnique({
       where: {
@@ -184,6 +190,9 @@ describe("POST /auth/register — passenger referralCode", () => {
 
     expect(response.status).toBe(201);
     expect(response.body.passengerId).toBeDefined();
+    expect(response.body.accessToken).toEqual(expect.any(String));
+    expect(response.body.refreshToken).toEqual(expect.any(String));
+    expect(response.body.session.id).toEqual(expect.any(String));
 
     const passenger = await prisma.passenger.findUnique({
       where: {
@@ -210,6 +219,9 @@ describe("POST /auth/register — passenger referralCode", () => {
 
     expect(response.status).toBe(201);
     expect(response.body.passengerId).toBeDefined();
+    expect(response.body.accessToken).toEqual(expect.any(String));
+    expect(response.body.refreshToken).toEqual(expect.any(String));
+    expect(response.body.session.id).toEqual(expect.any(String));
 
     const passenger = await prisma.passenger.findUnique({
       where: {
