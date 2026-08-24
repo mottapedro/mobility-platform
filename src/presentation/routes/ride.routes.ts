@@ -5,6 +5,8 @@ import { prisma } from "../../infra/prisma/client";
 import { assignPassengerIdentity } from "../../domain/services/PassengerReferralService";
 import { recordPassengerReferralRelationship } from "../../domain/referral-network/ReferralRelationshipService";
 import { PUBLIC_USER_SELECT } from "../../shared/http/userPublic";
+import { requirePassengerBearerAuth } from "../middleware/requirePassengerBearerAuth";
+import { requireRideReadBearerAuth } from "../middleware/requireRideReadBearerAuth";
 
 const router = Router();
 const controller = new RideController();
@@ -102,8 +104,9 @@ router.post("/passengers", async (req, res) => {
 });
 
 router.post("/", (req, res) => controller.create(req, res));
+router.get("/", requirePassengerBearerAuth, (req, res) => controller.listMyRides(req, res));
 router.post("/:id/confirm-quote", (req, res) => controller.confirmQuote(req, res));
 router.patch("/:id", (req, res) => controller.patch(req, res));
-router.get("/:id", (req, res) => controller.getById(req, res));
+router.get("/:id", requireRideReadBearerAuth, (req, res) => controller.getById(req, res));
 
 export { router as rideRoutes };

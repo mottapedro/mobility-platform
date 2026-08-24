@@ -412,15 +412,24 @@ export class DriverController {
     return res.status(410).json({ error: "Use autenticação do driver para offers" });
   }
 
-  async listRides(req: Request, res: Response) {
+  async listRides(req: AuthenticatedDriverRequest, res: Response) {
     try {
       const { driverId } = req.params;
+      const authDriverId = req.authDriverId;
 
       if (!driverId || typeof driverId !== "string") {
         return res.status(400).json({ error: "driverId inválido na URL" });
       }
 
-      const rides = await this.loadRidesForDriver(driverId);
+      if (!authDriverId) {
+        return res.status(401).json({ error: "Driver authentication required" });
+      }
+
+      if (driverId !== authDriverId) {
+        return res.status(404).json({ error: "Corridas do driver não encontradas" });
+      }
+
+      const rides = await this.loadRidesForDriver(authDriverId);
 
       return res.status(200).json(rides);
     } catch (error) {
