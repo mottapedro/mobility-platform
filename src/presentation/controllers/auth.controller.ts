@@ -234,7 +234,21 @@ export class AuthController {
         };
       });
 
-      return res.status(201).json(payload);
+      // Registration is an auto-login flow in the frontend. Issue the same
+      // revocable session contract as password login; never mark the UI as
+      // authenticated without a backend credential.
+      const issued = await this.sessionService.createSession(payload.user.id);
+      const accessToken = await this.tokenService.issueAccessToken({
+        userId: payload.user.id,
+        sessionId: issued.session.id,
+      });
+
+      return res.status(201).json({
+        ...payload,
+        accessToken,
+        refreshToken: issued.refreshToken,
+        session: issued.session,
+      });
     } catch (error: unknown) {
       if (error instanceof HttpError) {
         return res.status(error.statusCode).json({ error: error.message });
