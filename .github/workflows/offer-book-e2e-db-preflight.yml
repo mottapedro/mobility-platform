@@ -1,0 +1,311 @@
+name: Offer Book E2E DB Preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offer-book-e2e-db-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: E2E PostgreSQL preflight and migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_E2E_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.OFFER_BOOK_E2E_DIRECT_URL }}
+      E2E_RUN_ID: offer-book-e2e-db-preflight-${{ github.run_id }}
+      E2E_SERVICE_NAME: mobility-platform-offer-book-e2e
+      EXPECTED_DATABASE_NAME: mobility_platform_offer_book_e2e_db
+      EXPECTED_DATABASE_HOST_TOKEN: dpg-da6tiubbc2fs73em6v50-a
+
+    steps:
+      - name: Checkout selected branch or commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Guard checkout ancestry
+        id: checkout_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          head_sha="$(git rev-parse HEAD)"
+          echo "HEAD_SHA=${head_sha}" >> "$GITHUB_OUTPUT"
+          echo "HEAD_SHA=${head_sha}"
+          git merge-base --is-ancestor \
+            1e35b1a95677a04ee8dd0eaeff212e4138d16140 \
+            "$head_sha"
+
+      - name: Guard E2E secrets, database identity, and env-file isolation
+        id: target_guard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for key in DATABASE_URL DIRECT_URL E2E_RUN_ID; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "${key}_PRESENT=NO"
+              echo "Required E2E value is missing: ${key}" >&2
+              exit 1
+            fi
+            echo "${key}_PRESENT=YES"
+          done
+
+          for forbidden_file in .env .env.local .env.production; do
+            if [[ -e "$forbidden_file" ]]; then
+              echo "Forbidden environment file present: ${forbidden_file}" >&2
+              exit 1
+            fi
+          done
+
+          node <<'NODE'
+          if (process.env.E2E_SERVICE_NAME !== 'mobility-platform-offer-book-e2e') {
+            console.error('E2E service identity mismatch');
+            process.exit(1);
+          }
+
+          const expectedDatabase = process.env.EXPECTED_DATABASE_NAME;
+          const expectedHostToken = process.env.EXPECTED_DATABASE_HOST_TOKEN;
+          const denyPatterns = [
+            /supabase/i,
+            /mobility-platform-aliado/i,
+            /(^|\.)localhost$/i,
+            /^127\./,
+            /^::1$/,
+          ];
+
+          for (const key of ["DATABASE_URL", "DIRECT_URL"]) {
+            let parsed;
+            try {
+              parsed = new URL(process.env[key]);
+            } catch {
+              console.error(`${key} is not a valid PostgreSQL URL`);
+              process.exit(1);
+            }
+
+            if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) {
+              console.error(`${key} is not a PostgreSQL URL`);
+              process.exit(1);
+            }
+
+            const databaseName = parsed.pathname.replace(/^\/+/, '');
+            if (databaseName !== expectedDatabase) {
+              console.error(`${key} database identity mismatch`);
+              process.exit(1);
+            }
+
+            if (!parsed.hostname.includes(expectedHostToken)) {
+              console.error(`${key} host is not the approved E2E database host`);
+              process.exit(1);
+            }
+
+            if (denyPatterns.some((pattern) => pattern.test(parsed.hostname))) {
+              console.error(`${key} matches a denied operational host pattern`);
+              process.exit(1);
+            }
+          }
+
+          console.log('DATABASE_TARGET=E2E');
+          console.log(`SERVICE=${process.env.E2E_SERVICE_NAME}`);
+          console.log('DATABASE_URL_BINDING_GUARD=PASS');
+          console.log('DIRECT_URL_BINDING_GUARD=PASS');
+          NODE
+
+      - name: Install dependencies
+        run: npm ci --include=dev
+
+      - name: Verify Offer Book migration artifact
+        id: offer_book_migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          migration="prisma/migrations/20260824000000_add_ride_offer_history_index/migration.sql"
+          test -f "$migration"
+          grep -Fq 'CREATE INDEX "RideOffer_driverId_createdAt_idx"' "$migration"
+          echo "OFFER_BOOK_MIGRATION_PRESENT=YES"
+
+      - name: Prisma migration status before deploy
+        id: migrate_status_before
+        shell: bash
+        run: |
+          set +e
+          npx prisma migrate status \
+            --config scripts/prisma.bootstrap.ts \
+            > "$RUNNER_TEMP/prisma-status-before.log" 2>&1
+          exit_code=$?
+          set -e
+
+          sed -E 's#postgres(ql)?://[^[:space:]]+#<REDACTED_DATABASE_URL>#g' \
+            "$RUNNER_TEMP/prisma-status-before.log"
+
+          if [[ $exit_code -ne 0 ]]; then
+            if grep -Eqi \
+              'pending migrations|not yet applied|database schema is not up to date' \
+              "$RUNNER_TEMP/prisma-status-before.log"; then
+              echo "status=PENDING" >> "$GITHUB_OUTPUT"
+              echo "PRISMA_STATUS_BEFORE=PENDING"
+              exit 0
+            fi
+
+            echo "MIGRATION_CHAIN_BLOCKED=YES" >&2
+            exit "$exit_code"
+          fi
+
+          echo "status=PASS" >> "$GITHUB_OUTPUT"
+          echo "PRISMA_STATUS_BEFORE=PASS"
+
+      - name: Verify database identity (read-only)
+        id: database_identity
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { PrismaClient } = require('@prisma/client');
+          const prisma = new PrismaClient();
+
+          (async () => {
+            try {
+              const rows = await prisma.$queryRaw`SELECT current_database() AS "databaseName"`;
+              const databaseName = rows[0]?.databaseName;
+              console.log(`CURRENT_DATABASE=${databaseName}`);
+              if (databaseName !== process.env.EXPECTED_DATABASE_NAME) {
+                console.error('DATABASE_IDENTITY_MATCH=NO');
+                process.exitCode = 1;
+                return;
+              }
+              console.log('DATABASE_IDENTITY_MATCH=YES');
+            } catch {
+              console.error('DATABASE_CONNECTIVITY=FAIL');
+              process.exitCode = 1;
+            } finally {
+              await prisma.$disconnect();
+            }
+          })();
+          NODE
+
+      - name: Apply E2E migrations
+        id: migrate_deploy
+        shell: bash
+        run: |
+          set +e
+          npx prisma migrate deploy \
+            --config scripts/prisma.bootstrap.ts \
+            > "$RUNNER_TEMP/prisma-migrate-deploy.log" 2>&1
+          exit_code=$?
+          set -e
+
+          sed -E 's#postgres(ql)?://[^[:space:]]+#<REDACTED_DATABASE_URL>#g' \
+            "$RUNNER_TEMP/prisma-migrate-deploy.log"
+          if [[ $exit_code -ne 0 ]]; then
+            echo "MIGRATION_CHAIN_BLOCKED=YES" >&2
+          else
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Prisma migration status after deploy
+        id: migrate_status_after
+        shell: bash
+        run: |
+          set +e
+          npx prisma migrate status \
+            --config scripts/prisma.bootstrap.ts \
+            > "$RUNNER_TEMP/prisma-status-after.log" 2>&1
+          exit_code=$?
+          set -e
+
+          sed -E 's#postgres(ql)?://[^[:space:]]+#<REDACTED_DATABASE_URL>#g' \
+            "$RUNNER_TEMP/prisma-status-after.log"
+          if [[ $exit_code -eq 0 ]]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$exit_code"
+
+      - name: Verify Offer Book migration and index (read-only)
+        id: offer_book_index
+        shell: bash
+        run: |
+          node <<'NODE'
+          const { PrismaClient } = require('@prisma/client');
+          const prisma = new PrismaClient();
+          const migrationName = '20260824000000_add_ride_offer_history_index';
+          const indexName = 'RideOffer_driverId_createdAt_idx';
+
+          (async () => {
+            try {
+              const migration = await prisma.$queryRaw`
+                SELECT 1
+                FROM "_prisma_migrations"
+                WHERE migration_name = ${migrationName}
+                  AND finished_at IS NOT NULL
+                LIMIT 1
+              `;
+              const index = await prisma.$queryRaw`
+                SELECT 1
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname = ${indexName}
+                  AND c.relkind = 'i'
+                LIMIT 1
+              `;
+
+              if (migration.length !== 1 || index.length !== 1) {
+                console.error('OFFER_BOOK_MIGRATION_OR_INDEX=NOT_PRESENT');
+                process.exitCode = 1;
+                return;
+              }
+
+              console.log('OFFER_BOOK_MIGRATION_APPLIED=YES');
+              console.log('OFFER_BOOK_INDEX_PRESENT=YES');
+            } catch {
+              console.error('OFFER_BOOK_INDEX_CHECK=FAIL');
+              process.exitCode = 1;
+            } finally {
+              await prisma.$disconnect();
+            }
+          })();
+          NODE
+
+      - name: Write preflight summary
+        if: always()
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.checkout_guard.outputs.HEAD_SHA }}
+          DATABASE_IDENTITY_MATCH: ${{ steps.database_identity.outcome == 'success' && 'YES' || 'NO' }}
+          STATUS_BEFORE_STATUS: ${{ steps.migrate_status_before.outputs.status }}
+          STATUS_BEFORE_OUTCOME: ${{ steps.migrate_status_before.outcome }}
+          MIGRATE_DEPLOY_STATUS: ${{ steps.migrate_deploy.outputs.status }}
+          MIGRATE_DEPLOY_OUTCOME: ${{ steps.migrate_deploy.outcome }}
+          STATUS_AFTER_STATUS: ${{ steps.migrate_status_after.outputs.status }}
+          STATUS_AFTER_OUTCOME: ${{ steps.migrate_status_after.outcome }}
+          OFFER_BOOK_MIGRATION_OUTCOME: ${{ steps.offer_book_migration.outcome }}
+          OFFER_BOOK_INDEX_OUTCOME: ${{ steps.offer_book_index.outcome }}
+        run: |
+          {
+            echo '## Offer Book E2E database preflight'
+            echo '- SERVICE: mobility-platform-offer-book-e2e'
+            echo "- HEAD_SHA: ${HEAD_SHA:-NOT_AVAILABLE}"
+            echo "- DATABASE_IDENTITY_MATCH: ${DATABASE_IDENTITY_MATCH:-NO}"
+            echo "- PRISMA_STATUS_BEFORE: ${STATUS_BEFORE_STATUS:-${STATUS_BEFORE_OUTCOME:-not_run}}"
+            echo "- MIGRATION_CHAIN_BLOCKED: $([[ "${STATUS_BEFORE_OUTCOME:-}" == failure || "${MIGRATE_DEPLOY_OUTCOME:-}" == failure ]] && echo YES || echo NO/NOT_PROVEN)"
+            echo "- MIGRATIONS_APPLIED: ${MIGRATE_DEPLOY_STATUS:-${MIGRATE_DEPLOY_OUTCOME:-not_run}}"
+            echo "- PRISMA_STATUS_AFTER: ${STATUS_AFTER_STATUS:-${STATUS_AFTER_OUTCOME:-not_run}}"
+            echo "- OFFER_BOOK_MIGRATION_PRESENT: ${OFFER_BOOK_MIGRATION_OUTCOME:-not_run}"
+            echo "- OFFER_BOOK_INDEX_PRESENT: ${OFFER_BOOK_INDEX_OUTCOME:-not_run}"
+            echo '- FIXTURES_CREATED: 0'
+            echo '- BUSINESS_WRITES_EXECUTED: migrations only, if all guards passed'
+            echo '- PRODUCTION_SERVICE_ACCESSED: NO'
+            echo '- PRODUCTION_DATABASE_ACCESSED: NO'
+          } >> "$GITHUB_STEP_SUMMARY"
