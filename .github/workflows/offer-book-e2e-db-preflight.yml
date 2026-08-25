@@ -27,7 +27,8 @@ jobs:
       - name: Checkout selected branch or commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.ref }}
+          ref: feat/aliado-v2-domain-hardening
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Node
