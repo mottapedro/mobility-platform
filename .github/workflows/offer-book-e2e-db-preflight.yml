@@ -200,7 +200,11 @@ jobs:
                 return;
               }
               console.log('DATABASE_IDENTITY_MATCH=YES');
-            } catch {
+            } catch (error) {
+              const errorName = error instanceof Error ? error.name : 'UnknownError';
+              const errorMessage = error instanceof Error ? error.message : String(error);
+              console.error(`DATABASE_CONNECTIVITY_ERROR_NAME=${errorName}`);
+              console.error(`DATABASE_CONNECTIVITY_ERROR_MESSAGE=${errorMessage}`);
               console.error('DATABASE_CONNECTIVITY=FAIL');
               process.exitCode = 1;
             } finally {
