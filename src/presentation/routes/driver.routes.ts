@@ -15,6 +15,7 @@ router.get("/", (req, res) => controller.list(req, res));
 // Autenticação Bearer (Fase C): /drivers/me/* — sem x-driver-id
 router.get("/me", requireDriverBearerAuth, (req, res) => controller.getMe(req, res));
 router.get("/me/offers", requireDriverBearerAuth, (req, res) => controller.getMyOffers(req, res));
+router.get("/me/offers/history", requireDriverBearerAuth, (req, res) => controller.getMyOfferHistory(req, res));
 router.get("/me/rides", requireDriverBearerAuth, (req, res) => controller.getMyRides(req, res));
 // Fase E — base operacional (origem M fixa) em self-service, Bearer only.
 router.get("/me/operational-base", requireDriverBearerAuth, (req, res) => controller.getMyOperationalBase(req, res));

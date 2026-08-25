@@ -262,6 +262,7 @@ model RideOffer {
 
   @@unique([rideRequestId, driverId])
   @@index([driverId, status])
+  @@index([driverId, createdAt(sort: Desc)])
 }
 
 /// Contrato de precificação imutável — snapshot congelado antes da emissão de
