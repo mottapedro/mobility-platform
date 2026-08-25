@@ -153,7 +153,14 @@ jobs:
 
           if [[ $exit_code -ne 0 ]]; then
             if grep -Eqi \
-              'pending migrations|not yet applied|database schema is not up to date' \
+              'failed migration|migration failed|P3009|P3018|P3015|P3006|drift|diverg|checksum|modified migration' \
+              "$RUNNER_TEMP/prisma-status-before.log"; then
+              echo "MIGRATION_CHAIN_BLOCKED=YES" >&2
+              exit "$exit_code"
+            fi
+
+            if grep -Eqi \
+              'pending migrations|not yet been applied|not yet applied|to apply migrations in production run prisma migrate deploy|database schema is not up to date' \
               "$RUNNER_TEMP/prisma-status-before.log"; then
               echo "status=PENDING" >> "$GITHUB_OUTPUT"
               echo "PRISMA_STATUS_BEFORE=PENDING"
