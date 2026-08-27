@@ -331,7 +331,7 @@ model DriverOperationalBase {
   longitude          Float
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
-  driver             Driver   @relation(fields: [driverId], references: [id])
+  driver             Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId])
 }
@@ -351,7 +351,7 @@ model DriverCurrentLocation {
   speed     Float?
   recordedAt DateTime @default(now())
   updatedAt  DateTime @updatedAt
-  driver     Driver   @relation(fields: [driverId], references: [id])
+  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId])
 }

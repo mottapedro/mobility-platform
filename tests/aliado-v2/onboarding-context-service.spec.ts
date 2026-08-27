@@ -81,6 +81,7 @@ describe("OnboardingContextService.resolveOnboardingContext", () => {
       inviterActorType: ActorType.DRIVER, inviterId: root.id,
       invitedActorType: ActorType.PASSENGER, invitedId: inviter.id,
     });
+    await prisma.invite.deleteMany({ where: { slug: "join-p2p-002" } });
     await prisma.invite.create({
       data: {
         slug: "join-p2p-002",

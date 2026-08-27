@@ -60,7 +60,10 @@ describe("Smoke: PIX payment flow", () => {
     expect(intent.body.amount).toBeCloseTo(ride.priceEstimated!, 2);
     expect(intent.body.externalId).toBeTruthy();
     expect(Array.isArray(intent.body.breakdown)).toBe(true);
-    expect(intent.body.breakdown).toHaveLength(2);
+    expect(intent.body.breakdown).toHaveLength(3);
+    const breakdownTotalCents = (intent.body.breakdown as unknown as Array<{ amountCents: number }>)
+      .reduce((sum, item) => sum + item.amountCents, 0);
+    expect(breakdownTotalCents).toBe(Math.round(intent.body.amount * 100));
 
     const { externalId } = intent.body;
 

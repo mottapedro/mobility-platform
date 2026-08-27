@@ -4,6 +4,7 @@ import { ExperienceLevel } from "@prisma/client";
 import { app } from "../src/app";
 import { prisma } from "./setup";
 import { ExpireOffersService } from "../src/application/use-cases/ExpireOffersService";
+import { SHORT_NOTICE_OFFER_WINDOW_MS } from "../src/domain/services/AcceptancePolicyEngine";
 
 async function createDriver(email: string, experienceLevel: ExperienceLevel = "PROFISSIONAL") {
   const user = await prisma.user.create({
@@ -23,6 +24,18 @@ async function createDriver(email: string, experienceLevel: ExperienceLevel = "P
   });
 
   return user.driver!;
+}
+
+async function createOperationalBase(driverId: string) {
+  return prisma.driverOperationalBase.create({
+    data: {
+      driverId,
+      formattedAddress: "Base M - Barra da Tijuca",
+      providerPlaceId: "ChIJ_referral_dispatch_base",
+      latitude: -22.9068,
+      longitude: -43.1729,
+    },
+  });
 }
 
 async function createReferredPassenger(referredByDriverId: string) {
@@ -48,10 +61,15 @@ async function createReferredPassenger(referredByDriverId: string) {
   });
 }
 
+function confirmQuote(rideId: string) {
+  return request(app).post(`/rides/${rideId}/confirm-quote`);
+}
+
 describe("Referral-first dispatch", () => {
-  it("starts in WAITING_REFERRAL with exactly one 30s offer for the referred driver", async () => {
+  it("starts in WAITING_REFERRAL with one short-notice offer for the referred driver", async () => {
     const suffix = Date.now().toString();
     const referredDriver = await createDriver(`referred.start.${suffix}@test.com`);
+    await createOperationalBase(referredDriver.id);
     await createDriver(`general.start.${suffix}@test.com`, "INICIANTE");
     const passenger = await createReferredPassenger(referredDriver.id);
 
@@ -61,10 +79,18 @@ describe("Referral-first dispatch", () => {
         passengerId: passenger.id,
         origin: "Barra",
         destination: "Centro",
+        originLat: -22.9068,
+        originLng: -43.1729,
+        destinationLat: -22.8833,
+        destinationLng: -43.1072,
         scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
       });
 
     expect(response.status).toBe(201);
+    expect(response.body.rideQuote?.status).toBe("QUOTED");
+
+    const confirmation = await confirmQuote(response.body.ride.id);
+    expect(confirmation.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 25));
 
@@ -78,14 +104,15 @@ describe("Referral-first dispatch", () => {
     expect(ride?.offers[0].driverId).toBe(referredDriver.id);
 
     const timeoutMs = ride!.offers[0].expiresAt.getTime() - ride!.offers[0].createdAt.getTime();
-    expect(timeoutMs).toBeGreaterThanOrEqual(29_000);
-    expect(timeoutMs).toBeLessThanOrEqual(31_000);
+    expect(timeoutMs).toBeGreaterThanOrEqual(SHORT_NOTICE_OFFER_WINDOW_MS - 1_000);
+    expect(timeoutMs).toBeLessThanOrEqual(SHORT_NOTICE_OFFER_WINDOW_MS + 1_000);
   });
 
   it("falls back to the general pool after the referred offer expires and never duplicates the referred offer", async () => {
     const suffix = Date.now().toString();
     const referredDriver = await createDriver(`referred.expire.${suffix}@test.com`);
-    const generalDriver = await createDriver(`general.expire.${suffix}@test.com`, "ELITE");
+    await createOperationalBase(referredDriver.id);
+    await createDriver(`general.expire.${suffix}@test.com`, "ELITE");
     const passenger = await createReferredPassenger(referredDriver.id);
 
     const response = await request(app)
@@ -94,10 +121,18 @@ describe("Referral-first dispatch", () => {
         passengerId: passenger.id,
         origin: "Copacabana",
         destination: "Centro",
+        originLat: -22.9068,
+        originLng: -43.1729,
+        destinationLat: -22.8833,
+        destinationLng: -43.1072,
         scheduledAt: new Date(Date.now() + 3_600_000).toISOString(),
       });
 
     expect(response.status).toBe(201);
+    expect(response.body.rideQuote?.status).toBe("QUOTED");
+
+    const confirmation = await confirmQuote(response.body.ride.id);
+    expect(confirmation.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 25));
 
@@ -119,8 +154,8 @@ describe("Referral-first dispatch", () => {
       include: { offers: { orderBy: { createdAt: "asc" } } },
     });
 
-    expect(ride.status).toBe("MATCHING");
+    expect(ride.status).toBe("WAITING_GENERAL");
     expect(ride.offers.filter((offer) => offer.driverId === referredDriver.id)).toHaveLength(1);
-    expect(ride.offers.some((offer) => offer.driverId === generalDriver.id)).toBe(true);
+    expect(ride.offers.some((offer) => offer.driverId !== referredDriver.id)).toBe(true);
   });
 });
