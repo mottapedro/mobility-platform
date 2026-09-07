@@ -1,0 +1,419 @@
+name: Offer Book E2E PG17 Rebuild Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offer-book-e2e-pg17-rebuild-validation
+  cancel-in-progress: false
+
+jobs:
+  pg17-rebuild-validation:
+    name: PostgreSQL 17 governed rebuild validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mobility_validation
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mobility_validation"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mobility_validation?schema=public
+
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Wait for PostgreSQL 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres -d mobility_validation; then
+              echo "PG_ISREADY=PASS"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PG_ISREADY=FAIL" >&2
+          exit 1
+
+      - name: Materialize authorized migration catalog
+        id: authorized_catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_file="$RUNNER_TEMP/authorized-migration-catalog.log"
+          npx tsx scripts/materialize-authorized-migration-catalog.ts > "$output_file"
+
+          catalog_path="$(sed -n 's/^AUTHORIZED_CATALOG_PATH=//p' "$output_file")"
+          catalog_count="$(sed -n 's/^AUTHORIZED_CATALOG_COUNT=//p' "$output_file")"
+          unknown_count="$(sed -n 's/^UNKNOWN_MIGRATION_COUNT=//p' "$output_file")"
+          excluded_count="$(sed -n 's/^EXCLUDED_MIGRATION_COUNT=//p' "$output_file")"
+
+          test -n "$catalog_path"
+          test "$catalog_count" = "51"
+          test "$unknown_count" = "0"
+          test "$excluded_count" = "3"
+          test -d "$catalog_path"
+          test -f "$catalog_path/20260101000000_init_baseline/migration.sql"
+          test -f "$catalog_path/20260824000000_add_ride_offer_history_index/migration.sql"
+
+          echo "PRISMA_MIGRATIONS_PATH=$catalog_path" >> "$GITHUB_ENV"
+          echo "catalog_path=$catalog_path" >> "$GITHUB_OUTPUT"
+          echo "catalog_count=$catalog_count" >> "$GITHUB_OUTPUT"
+          echo "unknown_count=$unknown_count" >> "$GITHUB_OUTPUT"
+          echo "excluded_count=$excluded_count" >> "$GITHUB_OUTPUT"
+          echo "AUTHORIZED_CATALOG_COUNT=$catalog_count"
+          echo "UNKNOWN_MIGRATION_COUNT=$unknown_count"
+          echo "EXCLUDED_MIGRATION_COUNT=$excluded_count"
+          echo "PRISMA_MIGRATIONS_PATH_PRESENT=YES"
+
+      - name: Apply certified baseline SQL
+        id: baseline_sql
+        shell: bash
+        run: |
+          set +e
+          npx prisma db execute \
+            --config scripts/prisma.bootstrap.ts \
+            --file "$PRISMA_MIGRATIONS_PATH/20260101000000_init_baseline/migration.sql" \
+            > "$RUNNER_TEMP/prisma-baseline-sql.log" 2>&1
+          exit_code=$?
+          set -e
+
+          if [[ $exit_code -eq 0 ]]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+            echo "BASELINE_SQL=PASS"
+            exit 0
+          fi
+
+          echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          echo "classification=DATABASE_STATE_FAILURE" >> "$GITHUB_OUTPUT"
+          echo "migration=20260101000000_init_baseline" >> "$GITHUB_OUTPUT"
+          echo "BASELINE_SQL=FAIL"
+          echo "BASELINE_SQL_FAILURE_CLASSIFICATION=DATABASE_STATE_FAILURE"
+          echo "BASELINE_SQL_AFFECTED_MIGRATION=20260101000000_init_baseline"
+          exit "$exit_code"
+
+      - name: Mark certified baseline as applied
+        id: baseline_resolve
+        shell: bash
+        run: |
+          set +e
+          npx prisma migrate resolve \
+            --config scripts/prisma.bootstrap.ts \
+            --applied 20260101000000_init_baseline \
+            > "$RUNNER_TEMP/prisma-baseline-resolve.log" 2>&1
+          exit_code=$?
+          set -e
+
+          if [[ $exit_code -eq 0 ]]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+            echo "BASELINE_RESOLVE=PASS"
+            exit 0
+          fi
+
+          echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          echo "classification=DATABASE_STATE_FAILURE" >> "$GITHUB_OUTPUT"
+          echo "migration=20260101000000_init_baseline" >> "$GITHUB_OUTPUT"
+          echo "BASELINE_RESOLVE=FAIL"
+          echo "BASELINE_RESOLVE_FAILURE_CLASSIFICATION=DATABASE_STATE_FAILURE"
+          echo "BASELINE_RESOLVE_AFFECTED_MIGRATION=20260101000000_init_baseline"
+          exit "$exit_code"
+
+      - name: Resolve authorized historical migrations
+        id: historical_resolve
+        shell: bash
+        run: |
+          set +e
+          npx tsx scripts/baseline-resolve-historical.ts \
+            > "$RUNNER_TEMP/prisma-historical-resolve.log" 2>&1
+          exit_code=$?
+          set -e
+
+          if [[ $exit_code -eq 0 ]]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+            echo "HISTORICAL_RESOLVE=PASS"
+            exit 0
+          fi
+
+          migration="$(
+            grep -Eo '[0-9]{14}_[A-Za-z0-9_-]+' "$RUNNER_TEMP/prisma-historical-resolve.log" \
+              | head -n 1 \
+              || true
+          )"
+          if [[ -z "$migration" ]]; then
+            migration="UNKNOWN"
+          fi
+
+          echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          echo "classification=DATABASE_STATE_FAILURE" >> "$GITHUB_OUTPUT"
+          echo "migration=$migration" >> "$GITHUB_OUTPUT"
+          echo "HISTORICAL_RESOLVE=FAIL"
+          echo "HISTORICAL_RESOLVE_FAILURE_CLASSIFICATION=DATABASE_STATE_FAILURE"
+          echo "HISTORICAL_RESOLVE_AFFECTED_MIGRATION=$migration"
+          exit "$exit_code"
+
+      - name: Apply post-cutoff migrations
+        id: migrate_deploy
+        shell: bash
+        run: |
+          set +e
+          echo "executed=true" >> "$GITHUB_OUTPUT"
+          npx prisma migrate deploy \
+            --config scripts/prisma.bootstrap.ts \
+            > "$RUNNER_TEMP/prisma-migrate-deploy.log" 2>&1
+          exit_code=$?
+          set -e
+
+          if [[ $exit_code -eq 0 ]]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+            echo "MIGRATE_DEPLOY=PASS"
+            exit 0
+          fi
+
+          classification="CONNECTION_FAILURE"
+          if grep -Eqi 'P3009|P3018|failed migration|migration failed|already failed|database schema is not empty|drift|diverg|checksum|modified migration' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="DATABASE_STATE_FAILURE"
+          elif grep -Eqi 'authentication failed|password authentication failed|permission denied|role .* does not exist|P1000' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="AUTHENTICATION_FAILURE"
+          elif grep -Eqi 'certificate|self-signed|unable to verify|tls|ssl|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="TLS_FAILURE"
+          elif grep -Eqi 'timeout|timed out|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|P1001' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="NETWORK_FAILURE"
+          fi
+
+          migration="$(
+            grep -Eo '[0-9]{14}_[A-Za-z0-9_-]+' "$RUNNER_TEMP/prisma-migrate-deploy.log" \
+              | head -n 1 \
+              || true
+          )"
+          if [[ -z "$migration" ]]; then
+            migration="UNKNOWN"
+          fi
+
+          echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          echo "classification=$classification" >> "$GITHUB_OUTPUT"
+          echo "migration=$migration" >> "$GITHUB_OUTPUT"
+          echo "MIGRATE_DEPLOY=FAIL"
+          echo "MIGRATE_DEPLOY_FAILURE_CLASSIFICATION=$classification"
+          echo "MIGRATE_DEPLOY_AFFECTED_MIGRATION=$migration"
+          exit "$exit_code"
+
+      - name: Audit rebuilt schema read-only
+        id: schema_audit
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { Client } = require('pg');
+
+          const migrationsPath = process.env.PRISMA_MIGRATIONS_PATH;
+          if (!migrationsPath) {
+            console.error('REBUILD_AUDIT=FAIL missing=PRISMA_MIGRATIONS_PATH');
+            process.exit(1);
+          }
+
+          const expectedMigrations = fs.readdirSync(migrationsPath, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .filter((name) => fs.existsSync(path.join(migrationsPath, name, 'migration.sql')))
+            .sort();
+
+          const client = new Client({ connectionString: process.env.DATABASE_URL });
+          const fail = (message) => {
+            console.error(message);
+            process.exitCode = 1;
+          };
+
+          (async () => {
+            try {
+              await client.connect();
+              await client.query('BEGIN READ ONLY');
+
+              const version = await client.query("SELECT current_setting('server_version_num')::int AS version_num");
+              const migrations = await client.query(`
+                SELECT migration_name, finished_at, rolled_back_at, logs
+                FROM public."_prisma_migrations"
+                ORDER BY migration_name
+              `);
+              const tables = await client.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+              `);
+              const enums = await client.query(`
+                SELECT t.typname AS enum_name
+                FROM pg_type t
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = 'public'
+                  AND t.typtype = 'e'
+                ORDER BY t.typname
+              `);
+              const indexes = await client.query(`
+                SELECT c.relname AS index_name
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind = 'i'
+                ORDER BY c.relname
+              `);
+              const foreignKeys = await client.query(`
+                SELECT c.conname AS constraint_name
+                FROM pg_constraint c
+                JOIN pg_namespace n ON n.oid = c.connamespace
+                WHERE n.nspname = 'public'
+                  AND c.contype = 'f'
+                ORDER BY c.conname
+              `);
+              const constraints = await client.query(`
+                SELECT c.conname AS constraint_name
+                FROM pg_constraint c
+                JOIN pg_namespace n ON n.oid = c.connamespace
+                WHERE n.nspname = 'public'
+                ORDER BY c.conname
+              `);
+
+              const applied = migrations.rows.map((row) => row.migration_name);
+              const failed = migrations.rows.filter((row) => !row.finished_at || row.rolled_back_at || row.logs);
+              const missing = expectedMigrations.filter((name) => !applied.includes(name));
+              const unexpected = applied.filter((name) => !expectedMigrations.includes(name));
+              const duplicateTables = duplicateNames(tables.rows.map((row) => row.table_name));
+              const duplicateEnums = duplicateNames(enums.rows.map((row) => row.enum_name));
+
+              console.log(`REBUILD_AUDIT_PG17=${version.rows[0].version_num >= 170000 && version.rows[0].version_num < 180000 ? 'PASS' : 'FAIL'}`);
+              console.log(`REBUILD_AUDIT_MIGRATIONS_EXPECTED=${expectedMigrations.length}`);
+              console.log(`REBUILD_AUDIT_MIGRATIONS_APPLIED=${applied.length}`);
+              console.log(`REBUILD_AUDIT_MIGRATIONS_FAILED=${failed.length}`);
+              console.log(`REBUILD_AUDIT_MIGRATIONS_MISSING=${missing.length}`);
+              console.log(`REBUILD_AUDIT_MIGRATIONS_UNEXPECTED=${unexpected.length}`);
+              console.log(`REBUILD_AUDIT_PUBLIC_TABLES=${tables.rows.length}`);
+              console.log(`REBUILD_AUDIT_PUBLIC_ENUMS=${enums.rows.length}`);
+              console.log(`REBUILD_AUDIT_PUBLIC_INDEXES=${indexes.rows.length}`);
+              console.log(`REBUILD_AUDIT_PUBLIC_FOREIGN_KEYS=${foreignKeys.rows.length}`);
+              console.log(`REBUILD_AUDIT_PUBLIC_CONSTRAINTS=${constraints.rows.length}`);
+              console.log(`REBUILD_AUDIT_DUPLICATE_TABLES=${duplicateTables.join(',') || 'NONE'}`);
+              console.log(`REBUILD_AUDIT_DUPLICATE_ENUMS=${duplicateEnums.join(',') || 'NONE'}`);
+
+              if (
+                version.rows[0].version_num < 170000 ||
+                version.rows[0].version_num >= 180000 ||
+                failed.length > 0 ||
+                missing.length > 0 ||
+                unexpected.length > 0 ||
+                duplicateTables.length > 0 ||
+                duplicateEnums.length > 0 ||
+                tables.rows.length === 0 ||
+                enums.rows.length === 0 ||
+                indexes.rows.length === 0 ||
+                foreignKeys.rows.length === 0 ||
+                constraints.rows.length === 0
+              ) {
+                fail('REBUILD_AUDIT=FAIL');
+              } else {
+                console.log('REBUILD_AUDIT=PASS');
+              }
+
+              await client.query('COMMIT');
+            } catch {
+              fail('REBUILD_AUDIT=FAIL');
+              try {
+                await client.query('ROLLBACK');
+              } catch {}
+            } finally {
+              await client.end().catch(() => {});
+            }
+          })();
+
+          function duplicateNames(values) {
+            const seen = new Set();
+            const duplicates = new Set();
+            for (const value of values) {
+              if (seen.has(value)) duplicates.add(value);
+              seen.add(value);
+            }
+            return [...duplicates].sort();
+          }
+          NODE
+
+      - name: Validate E2E guards and typecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/e2e-guards/supabase-target.test.cjs
+          node --check scripts/e2e/supabase-target.cjs
+          node --check scripts/e2e/supabase-connection-proof.cjs
+          npx tsc --noEmit -p tsconfig.json
+
+      - name: Write validation summary
+        if: always()
+        env:
+          CATALOG_COUNT: ${{ steps.authorized_catalog.outputs.catalog_count || 'not_run' }}
+          BASELINE_SQL_STATUS: ${{ steps.baseline_sql.outputs.status || 'not_run' }}
+          BASELINE_RESOLVE_STATUS: ${{ steps.baseline_resolve.outputs.status || 'not_run' }}
+          HISTORICAL_RESOLVE_STATUS: ${{ steps.historical_resolve.outputs.status || 'not_run' }}
+          MIGRATE_DEPLOY_EXECUTED: ${{ steps.migrate_deploy.outputs.executed || 'false' }}
+          MIGRATE_DEPLOY_STATUS: ${{ steps.migrate_deploy.outputs.status || 'not_run' }}
+          MIGRATE_DEPLOY_FAILURE_CLASSIFICATION: ${{ steps.migrate_deploy.outputs.classification || 'not_applicable' }}
+          MIGRATE_DEPLOY_AFFECTED_MIGRATION: ${{ steps.migrate_deploy.outputs.migration || 'not_applicable' }}
+          SCHEMA_AUDIT_OUTCOME: ${{ steps.schema_audit.outcome || 'not_run' }}
+        shell: bash
+        run: |
+          {
+            echo '## Offer Book E2E PG17 rebuild validation'
+            echo '- supabaseAccessed=false'
+            echo '- bootstrapExecuted=false'
+            echo '- seedExecuted=false'
+            echo '- postgresService=17'
+            echo "- authorizedCatalogCount=${CATALOG_COUNT}"
+            echo "- baselineSql=${BASELINE_SQL_STATUS}"
+            echo "- baselineResolve=${BASELINE_RESOLVE_STATUS}"
+            echo "- historicalResolve=${HISTORICAL_RESOLVE_STATUS}"
+            echo "- migrateDeployExecuted=${MIGRATE_DEPLOY_EXECUTED}"
+            echo "- migrateDeployStatus=${MIGRATE_DEPLOY_STATUS}"
+            echo "- failureClassification=${MIGRATE_DEPLOY_FAILURE_CLASSIFICATION}"
+            echo "- affectedMigration=${MIGRATE_DEPLOY_AFFECTED_MIGRATION}"
+            echo "- readOnlyAudit=${SCHEMA_AUDIT_OUTCOME}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup authorized migration catalog
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          catalog_path="${PRISMA_MIGRATIONS_PATH:-}"
+          if [[ -z "$catalog_path" ]]; then
+            echo "No temporary migration catalog to clean"
+            exit 0
+          fi
+          case "$catalog_path" in
+            /tmp/mobility-authorized-migrations-*) rm -rf -- "$catalog_path" ;;
+            *) echo "Refusing to remove unexpected catalog path: $catalog_path" >&2; exit 1 ;;
+          esac
