@@ -35,6 +35,7 @@ function printDatabaseStateChecks(checks) {
   for (const [name, passed] of Object.entries(checks)) {
     console.error(`${name}=${passed ? 'PASS' : 'FAIL'}`);
   }
+  console.error(`TLS_SOCKET=${checks.DATABASE_STATE_TLS ? 'PASS' : 'FAIL'}`);
 }
 
 async function main() {
@@ -64,11 +65,11 @@ async function main() {
     });
     try {
       await client.connect();
+      const tlsSocket = client.connection?.stream?.encrypted === true;
       await client.query('BEGIN READ ONLY');
       const { rows: [row] } = await client.query(`SELECT current_database() AS database,
         current_setting('server_version_num')::int AS version_num,
         current_setting('transaction_read_only') AS read_only,
-        (SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()) AS tls,
         (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
           WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f','i','I')) AS relations,
         (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
@@ -76,6 +77,7 @@ async function main() {
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='public') AS routines,
         to_regclass('public._prisma_migrations')::text AS migrations`);
+      row.tls = tlsSocket;
       const checks = databaseStateChecks(row);
       if (Object.values(checks).some((passed) => !passed)) {
         printDatabaseStateChecks(checks);
