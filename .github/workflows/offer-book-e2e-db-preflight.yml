@@ -11,23 +11,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  connection-proof:
+    name: Supabase E2E connection proof (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Test target rejection
+        run: node --test tests/e2e-guards/supabase-target.test.cjs
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --include=dev --ignore-scripts
+
+      - name: Prove both connections and fresh public scope
+        env:
+          DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DIRECT_URL }}
+          E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+        run: node scripts/e2e/supabase-connection-proof.cjs
+
+      - name: Record outcome
+        if: always()
+        env:
+          PROOF_JOB_STATUS: ${{ job.status }}
+        run: |
+          echo "Connection job status: $PROOF_JOB_STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bootstrap authorized: NO. Bootstrap executed: NO." >> "$GITHUB_STEP_SUMMARY"
+
   preflight:
+    # Bootstrap remains disabled until a separate execution gate authorizes writes.
+    if: ${{ false }}
     name: E2E PostgreSQL preflight and migrations
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      DATABASE_URL: ${{ secrets.OFFER_BOOK_E2E_DATABASE_URL }}
-      DIRECT_URL: ${{ secrets.OFFER_BOOK_E2E_DIRECT_URL }}
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DIRECT_URL }}
       E2E_RUN_ID: offer-book-e2e-db-preflight-${{ github.run_id }}
       E2E_SERVICE_NAME: mobility-platform-offer-book-e2e
-      EXPECTED_DATABASE_NAME: mobility_platform_offer_book_e2e_db
-      EXPECTED_DATABASE_HOST_TOKEN: dpg-da6tiubbc2fs73em6v50-a
+      EXPECTED_DATABASE_NAME: postgres
+      EXPECTED_SUPABASE_PROJECT_REF: azgzwflujgerrddrkmjh
 
     steps:
       - name: Checkout selected branch or commit
         uses: actions/checkout@v4
         with:
-          ref: feat/aliado-v2-domain-hardening
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -71,58 +111,7 @@ jobs:
             fi
           done
 
-          node <<'NODE'
-          if (process.env.E2E_SERVICE_NAME !== 'mobility-platform-offer-book-e2e') {
-            console.error('E2E service identity mismatch');
-            process.exit(1);
-          }
-
-          const expectedDatabase = process.env.EXPECTED_DATABASE_NAME;
-          const expectedHostToken = process.env.EXPECTED_DATABASE_HOST_TOKEN;
-          const denyPatterns = [
-            /supabase/i,
-            /mobility-platform-aliado/i,
-            /(^|\.)localhost$/i,
-            /^127\./,
-            /^::1$/,
-          ];
-
-          for (const key of ["DATABASE_URL", "DIRECT_URL"]) {
-            let parsed;
-            try {
-              parsed = new URL(process.env[key]);
-            } catch {
-              console.error(`${key} is not a valid PostgreSQL URL`);
-              process.exit(1);
-            }
-
-            if (!['postgres:', 'postgresql:'].includes(parsed.protocol)) {
-              console.error(`${key} is not a PostgreSQL URL`);
-              process.exit(1);
-            }
-
-            const databaseName = parsed.pathname.replace(/^\/+/, '');
-            if (databaseName !== expectedDatabase) {
-              console.error(`${key} database identity mismatch`);
-              process.exit(1);
-            }
-
-            if (!parsed.hostname.includes(expectedHostToken)) {
-              console.error(`${key} host is not the approved E2E database host`);
-              process.exit(1);
-            }
-
-            if (denyPatterns.some((pattern) => pattern.test(parsed.hostname))) {
-              console.error(`${key} matches a denied operational host pattern`);
-              process.exit(1);
-            }
-          }
-
-          console.log('DATABASE_TARGET=E2E');
-          console.log(`SERVICE=${process.env.E2E_SERVICE_NAME}`);
-          console.log('DATABASE_URL_BINDING_GUARD=PASS');
-          console.log('DIRECT_URL_BINDING_GUARD=PASS');
-          NODE
+          node scripts/e2e/supabase-connection-proof.cjs --guard-only
 
       - name: Install dependencies
         run: npm ci --include=dev
