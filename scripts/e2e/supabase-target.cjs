@@ -1,5 +1,5 @@
 'use strict';
-const PROJECT_REF = 'azgzwflujgerrddrkmjh';
+const PROJECT_REF = 'fuojmuyggmnlsxfyvby';
 function validateTarget(value) {
   const fail = () => { throw new Error('E2E_TARGET_REJECTED'); };
   let url;
