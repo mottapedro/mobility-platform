@@ -20,6 +20,23 @@ function classifyFailure(error) {
   return 'CONNECTION_FAILURE';
 }
 
+function databaseStateChecks(row) {
+  return {
+    DATABASE_STATE_DATABASE: row.database === 'postgres',
+    DATABASE_STATE_PG17: Math.floor(row.version_num / 10000) === 17,
+    DATABASE_STATE_READ_ONLY: row.read_only === 'on',
+    DATABASE_STATE_TLS: row.tls === true,
+    DATABASE_STATE_PUBLIC_SCOPE: row.relations === 0 && row.enums === 0 && row.routines === 0,
+    DATABASE_STATE_PRISMA_MIGRATIONS: row.migrations === null,
+  };
+}
+
+function printDatabaseStateChecks(checks) {
+  for (const [name, passed] of Object.entries(checks)) {
+    console.error(`${name}=${passed ? 'PASS' : 'FAIL'}`);
+  }
+}
+
 async function main() {
   for (const file of fs.readdirSync('.')) {
     if ((file === '.env' || file.startsWith('.env.')) && file !== '.env.example') throw new Error('ENV_FILE_FORBIDDEN');
@@ -59,9 +76,9 @@ async function main() {
         (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
           WHERE n.nspname='public') AS routines,
         to_regclass('public._prisma_migrations')::text AS migrations`);
-      if (row.database !== 'postgres' || Math.floor(row.version_num / 10000) !== 17
-        || row.read_only !== 'on' || row.tls !== true || row.relations !== 0
-        || row.enums !== 0 || row.routines !== 0 || row.migrations !== null) {
+      const checks = databaseStateChecks(row);
+      if (Object.values(checks).some((passed) => !passed)) {
+        printDatabaseStateChecks(checks);
         throw new Error('E2E_INITIAL_STATE_REJECTED');
       }
       await client.query('ROLLBACK');
