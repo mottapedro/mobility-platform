@@ -1,13 +1,30 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { validateTarget, PROJECT_REF } = require('../../scripts/e2e/supabase-target.cjs');
+const { validateTarget, targetDiagnostics, PROJECT_REF } = require('../../scripts/e2e/supabase-target.cjs');
 const OLD_PROJECT_REF = 'azgzwflujgerrddrkmjh';
 const direct = `postgresql://postgres:fake-password@db.${PROJECT_REF}.supabase.co:5432/postgres`;
 const session = `postgresql://postgres.${PROJECT_REF}:fake-password@aws-0-us-east-1.pooler.supabase.com:5432/postgres`;
 test('accepts exact E2E direct and session destinations with verified SSL', () => {
   assert.equal(validateTarget(direct).mode, 'direct');
   assert.equal(validateTarget(session + '?sslmode=verify-full&schema=public').mode, 'session');
+});
+
+test('reports sanitized target diagnostics by variable and field', () => {
+  assert.deepEqual(targetDiagnostics([
+    { key: 'DATABASE_URL', value: direct },
+    { key: 'DIRECT_URL', value: session + '?sslmode=verify-full&schema=public' },
+  ]), {
+    TARGET_DATABASE_URL_HOST: true,
+    TARGET_DATABASE_URL_USER: true,
+    TARGET_DATABASE_URL_PORT: true,
+    TARGET_DATABASE_URL_DATABASE: true,
+    TARGET_DIRECT_URL_HOST: true,
+    TARGET_DIRECT_URL_USER: true,
+    TARGET_DIRECT_URL_PORT: true,
+    TARGET_DIRECT_URL_DATABASE: true,
+    TARGET_SSL_OPTIONS: true,
+  });
 });
 for (const [name, value] of Object.entries({
   missing: undefined,

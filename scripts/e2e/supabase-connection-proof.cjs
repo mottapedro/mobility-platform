@@ -1,6 +1,6 @@
 'use strict';
 const fs = require('node:fs');
-const { validateTarget, PROJECT_REF } = require('./supabase-target.cjs');
+const { validateTarget, targetDiagnostics, PROJECT_REF } = require('./supabase-target.cjs');
 
 function classifyFailure(error) {
   const code = typeof error?.code === 'string' ? error.code : '';
@@ -38,6 +38,12 @@ function printDatabaseStateChecks(checks) {
   console.error(`TLS_SOCKET=${checks.DATABASE_STATE_TLS ? 'PASS' : 'FAIL'}`);
 }
 
+function printTargetDiagnostics(checks) {
+  for (const [name, passed] of Object.entries(checks)) {
+    console.error(`${name}=${passed ? 'PASS' : 'FAIL'}`);
+  }
+}
+
 async function main() {
   for (const file of fs.readdirSync('.')) {
     if ((file === '.env' || file.startsWith('.env.')) && file !== '.env.example') throw new Error('ENV_FILE_FORBIDDEN');
@@ -46,7 +52,14 @@ async function main() {
     if (process.env[key]) throw new Error('ENV_OVERRIDE_FORBIDDEN');
   }
   // Validate both URLs before opening either connection.
-  const targets = ['DATABASE_URL', 'DIRECT_URL'].map(key => ({ key, ...validateTarget(process.env[key]) }));
+  const targetInputs = ['DATABASE_URL', 'DIRECT_URL'].map(key => ({ key, value: process.env[key] }));
+  let targets;
+  try {
+    targets = targetInputs.map(({ key, value }) => ({ key, ...validateTarget(value) }));
+  } catch (error) {
+    printTargetDiagnostics(targetDiagnostics(targetInputs));
+    throw error;
+  }
   if (process.argv.includes('--guard-only')) {
     console.log('E2E_TARGET_GUARDS=PASS');
     return;
