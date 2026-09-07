@@ -367,6 +367,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          npx prisma generate --config scripts/prisma.bootstrap.ts
           node --test tests/e2e-guards/supabase-target.test.cjs
           node --check scripts/e2e/supabase-target.cjs
           node --check scripts/e2e/supabase-connection-proof.cjs
