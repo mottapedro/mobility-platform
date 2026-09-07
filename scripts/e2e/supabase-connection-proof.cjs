@@ -2,6 +2,24 @@
 const fs = require('node:fs');
 const { validateTarget, PROJECT_REF } = require('./supabase-target.cjs');
 
+function classifyFailure(error) {
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (message === 'E2E_TARGET_REJECTED' || message === 'ENV_FILE_FORBIDDEN' || message === 'ENV_OVERRIDE_FORBIDDEN') {
+    return 'TARGET_REJECTED';
+  }
+  if (message === 'E2E_INITIAL_STATE_REJECTED') return 'DATABASE_STATE_FAILURE';
+  if (code === '28P01' || code === '28000') return 'AUTHENTICATION_FAILURE';
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET') {
+    return 'NETWORK_FAILURE';
+  }
+  if (code.startsWith('CERT_') || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'SELF_SIGNED_CERT_IN_CHAIN'
+    || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
+    return 'TLS_FAILURE';
+  }
+  return 'CONNECTION_FAILURE';
+}
+
 async function main() {
   for (const file of fs.readdirSync('.')) {
     if ((file === '.env' || file.startsWith('.env.')) && file !== '.env.example') throw new Error('ENV_FILE_FORBIDDEN');
@@ -56,8 +74,8 @@ async function main() {
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `\nConnection proof: PASS\n\nProject: ${PROJECT_REF}\n\nCommit: ${process.env.GITHUB_SHA}\n\nPG17, TLS and empty public scope verified for both URLs. No bootstrap executed.\n`);
 }
-main().catch(() => {
+main().catch((error) => {
   // Driver error messages can contain secrets: do not print raw errors or URLs.
-  console.error('E2E_CONNECTION_PROOF=FAIL (check target, credentials, network, CA and initial state)');
+  console.error(`E2E_CONNECTION_PROOF=${classifyFailure(error)}`);
   process.exitCode = 1;
 });
