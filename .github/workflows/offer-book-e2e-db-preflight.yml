@@ -55,6 +55,187 @@ jobs:
           echo "Connection job status: $PROOF_JOB_STATUS" >> "$GITHUB_STEP_SUMMARY"
           echo "Bootstrap authorized: NO. Bootstrap executed: NO." >> "$GITHUB_STEP_SUMMARY"
 
+  migration-state-audit:
+    name: Supabase E2E migration state audit (read-only)
+    if: ${{ github.event.inputs.authorize_migrate != 'I_UNDERSTAND' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DIRECT_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DIRECT_URL }}
+      E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+      PRISMA_MIGRATIONS_PATH: prisma/migrations
+
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Audit current migration state read-only
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const { Client } = require('pg');
+
+          const redact = (value) => String(value ?? '')
+            .replace(/postgres(?:ql)?:\/\/\S+/gi, '<REDACTED_DATABASE_URL>')
+            .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '<REDACTED_CERTIFICATE>')
+            .replace(/password\s*=\s*[^;\s]+/gi, 'password=<REDACTED>');
+
+          const required = ['DIRECT_URL', 'E2E_CA_CERT', 'PRISMA_MIGRATIONS_PATH'];
+          for (const key of required) {
+            if (!process.env[key]) {
+              console.log(`STATE_AUDIT=FAIL missing=${key}`);
+              process.exit(1);
+            }
+          }
+
+          const baselineFile = path.join(
+            process.env.PRISMA_MIGRATIONS_PATH,
+            '20260101000000_init_baseline',
+            'migration.sql',
+          );
+          const baselineSql = fs.existsSync(baselineFile)
+            ? fs.readFileSync(baselineFile, 'utf8')
+            : '';
+          const expectedBaselineTables = [...baselineSql.matchAll(/CREATE TABLE\s+(?:"public"\.)?"([^"]+)"/g)]
+            .map((match) => match[1])
+            .sort();
+          const expectedBaselineEnums = [...baselineSql.matchAll(/CREATE TYPE\s+(?:"public"\.)?"([^"]+)"/g)]
+            .map((match) => match[1])
+            .sort();
+
+          const client = new Client({
+            connectionString: process.env.DIRECT_URL,
+            ssl: {
+              ca: process.env.E2E_CA_CERT,
+              rejectUnauthorized: true,
+            },
+          });
+
+          const names = (rows, key) => rows.map((row) => row[key]).sort();
+
+          (async () => {
+            try {
+              await client.connect();
+              await client.query('BEGIN READ ONLY');
+
+              const controlTable = await client.query(`
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM information_schema.tables
+                  WHERE table_schema = 'public'
+                    AND table_name = '_prisma_migrations'
+                    AND table_type = 'BASE TABLE'
+                ) AS exists
+              `);
+              const hasMigrationsTable = controlTable.rows[0].exists === true;
+
+              const tables = await client.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+                ORDER BY table_name
+              `);
+              const enums = await client.query(`
+                SELECT t.typname AS enum_name
+                FROM pg_type t
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = 'public'
+                  AND t.typtype = 'e'
+                ORDER BY t.typname
+              `);
+              const indexes = await client.query(`
+                SELECT c.relname AS index_name
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind = 'i'
+                ORDER BY c.relname
+              `);
+              const constraints = await client.query(`
+                SELECT conname AS constraint_name, contype AS constraint_type
+                FROM pg_constraint c
+                JOIN pg_namespace n ON n.oid = c.connamespace
+                WHERE n.nspname = 'public'
+                ORDER BY conname
+              `);
+
+              console.log(`STATE_AUDIT_PRISMA_MIGRATIONS_TABLE=${hasMigrationsTable ? 'YES' : 'NO'}`);
+              console.log(`STATE_AUDIT_PUBLIC_TABLE_COUNT=${tables.rows.length}`);
+              console.log(`STATE_AUDIT_PUBLIC_ENUM_COUNT=${enums.rows.length}`);
+              console.log(`STATE_AUDIT_PUBLIC_INDEX_COUNT=${indexes.rows.length}`);
+              console.log(`STATE_AUDIT_PUBLIC_CONSTRAINT_COUNT=${constraints.rows.length}`);
+              console.log(`STATE_AUDIT_PUBLIC_TABLES=${names(tables.rows, 'table_name').join(',') || 'NONE'}`);
+              console.log(`STATE_AUDIT_PUBLIC_ENUMS=${names(enums.rows, 'enum_name').join(',') || 'NONE'}`);
+              console.log(`STATE_AUDIT_PUBLIC_INDEXES=${names(indexes.rows, 'index_name').join(',') || 'NONE'}`);
+              console.log(`STATE_AUDIT_PUBLIC_CONSTRAINTS=${constraints.rows.map((row) => `${row.constraint_name}:${row.constraint_type}`).join(',') || 'NONE'}`);
+
+              const actualTables = new Set(names(tables.rows, 'table_name'));
+              const actualEnums = new Set(names(enums.rows, 'enum_name'));
+              const baselineTablesPresent = expectedBaselineTables.filter((name) => actualTables.has(name));
+              const baselineEnumsPresent = expectedBaselineEnums.filter((name) => actualEnums.has(name));
+              console.log(`STATE_AUDIT_BASELINE_TABLES_EXPECTED=${expectedBaselineTables.length}`);
+              console.log(`STATE_AUDIT_BASELINE_TABLES_PRESENT=${baselineTablesPresent.length}`);
+              console.log(`STATE_AUDIT_BASELINE_TABLES_PARTIAL=${baselineTablesPresent.join(',') || 'NONE'}`);
+              console.log(`STATE_AUDIT_BASELINE_ENUMS_EXPECTED=${expectedBaselineEnums.length}`);
+              console.log(`STATE_AUDIT_BASELINE_ENUMS_PRESENT=${baselineEnumsPresent.length}`);
+              console.log(`STATE_AUDIT_BASELINE_ENUMS_PARTIAL=${baselineEnumsPresent.join(',') || 'NONE'}`);
+
+              if (hasMigrationsTable) {
+                const migrations = await client.query(`
+                  SELECT migration_name, started_at, finished_at, rolled_back_at, logs
+                  FROM public."_prisma_migrations"
+                  ORDER BY started_at NULLS LAST, migration_name
+                `);
+                const unfinished = migrations.rows.filter((row) => !row.finished_at && !row.rolled_back_at);
+                const withLogs = migrations.rows.filter((row) => row.logs);
+
+                console.log(`STATE_AUDIT_MIGRATION_ROW_COUNT=${migrations.rows.length}`);
+                console.log(`STATE_AUDIT_MIGRATIONS_UNFINISHED=${unfinished.length}`);
+                console.log(`STATE_AUDIT_MIGRATIONS_WITH_LOGS=${withLogs.length}`);
+                console.log(`STATE_AUDIT_UNFINISHED_NAMES=${unfinished.map((row) => row.migration_name).join(',') || 'NONE'}`);
+
+                for (const row of withLogs) {
+                  const sanitizedLog = redact(row.logs);
+                  const digest = crypto.createHash('sha256').update(sanitizedLog).digest('hex');
+                  console.log(`STATE_AUDIT_FAILED_MIGRATION=${row.migration_name}`);
+                  console.log(`STATE_AUDIT_FAILED_LOG_SHA256=${digest}`);
+                  console.log(`STATE_AUDIT_FAILED_LOG_BYTES=${Buffer.byteLength(sanitizedLog, 'utf8')}`);
+                  console.log('STATE_AUDIT_FAILED_LOG_BEGIN');
+                  console.log(sanitizedLog.split(/\r?\n/).slice(0, 20).join('\n') || 'EMPTY');
+                  console.log('STATE_AUDIT_FAILED_LOG_END');
+                }
+              }
+
+              await client.query('COMMIT');
+              console.log('STATE_AUDIT=PASS');
+            } catch {
+              console.log('STATE_AUDIT=FAIL');
+              try {
+                await client.query('ROLLBACK');
+              } catch {}
+              process.exitCode = 1;
+            } finally {
+              await client.end().catch(() => {});
+            }
+          })();
+          NODE
+
   preflight:
     # Bootstrap remains disabled until a separate execution gate authorizes writes.
     if: ${{ false }}
@@ -421,7 +602,8 @@ jobs:
 
   migrate-deploy:
     name: Supabase E2E migrate deploy (manual)
-    if: ${{ github.event.inputs.authorize_migrate == 'I_UNDERSTAND' }}
+    needs: connection-proof
+    if: ${{ github.event.inputs.authorize_migrate == 'I_UNDERSTAND' && needs.connection-proof.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
