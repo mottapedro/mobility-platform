@@ -2,6 +2,12 @@ name: Offer Book E2E DB Preflight
 
 on:
   workflow_dispatch:
+    inputs:
+      authorize_migrate:
+        description: 'Type I_UNDERSTAND to authorize Supabase E2E migrate deploy'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -412,3 +418,205 @@ jobs:
             /tmp/mobility-authorized-migrations-*) rm -rf -- "$catalog_path" ;;
             *) echo "Refusing to remove unexpected catalog path: $catalog_path" >&2; exit 1 ;;
           esac
+
+  migrate-deploy:
+    name: Supabase E2E migrate deploy (manual)
+    if: ${{ github.event.inputs.authorize_migrate == 'I_UNDERSTAND' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DIRECT_URL }}
+      E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+      PRISMA_MIGRATIONS_PATH: prisma/migrations
+
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Apply versioned migrations
+        id: migrate_deploy
+        shell: bash
+        run: |
+          set +e
+          echo "executed=true" >> "$GITHUB_OUTPUT"
+          npx prisma migrate deploy \
+            --config scripts/prisma.bootstrap.ts \
+            > "$RUNNER_TEMP/prisma-migrate-deploy.log" 2>&1
+          exit_code=$?
+          set -e
+
+          if [[ $exit_code -eq 0 ]]; then
+            echo "status=PASS" >> "$GITHUB_OUTPUT"
+            echo "MIGRATE_DEPLOY=PASS"
+            exit 0
+          fi
+
+          classification="CONNECTION_FAILURE"
+          if grep -Eqi 'P3009|P3018|failed migration|migration failed|already failed|database schema is not empty|drift|diverg|checksum|modified migration' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="DATABASE_STATE_FAILURE"
+          elif grep -Eqi 'authentication failed|password authentication failed|permission denied|role .* does not exist|P1000' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="AUTHENTICATION_FAILURE"
+          elif grep -Eqi 'certificate|self-signed|unable to verify|tls|ssl|CERT_|DEPTH_ZERO_SELF_SIGNED_CERT' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="TLS_FAILURE"
+          elif grep -Eqi 'timeout|timed out|ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ETIMEDOUT|P1001' "$RUNNER_TEMP/prisma-migrate-deploy.log"; then
+            classification="NETWORK_FAILURE"
+          fi
+
+          migration="$(
+            grep -Eo '[0-9]{14}_[A-Za-z0-9_-]+' "$RUNNER_TEMP/prisma-migrate-deploy.log" \
+              | head -n 1 \
+              || true
+          )"
+          if [[ -z "$migration" ]]; then
+            migration="UNKNOWN"
+          fi
+
+          echo "status=FAIL" >> "$GITHUB_OUTPUT"
+          echo "classification=$classification" >> "$GITHUB_OUTPUT"
+          echo "migration=$migration" >> "$GITHUB_OUTPUT"
+          echo "MIGRATE_DEPLOY=FAIL"
+          echo "MIGRATE_DEPLOY_FAILURE_CLASSIFICATION=$classification"
+          echo "MIGRATE_DEPLOY_AFFECTED_MIGRATION=$migration"
+          exit "$exit_code"
+
+      - name: Audit migration state read-only
+        if: success()
+        id: migration_audit
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { Client } = require('pg');
+
+          const required = ['DATABASE_URL', 'DIRECT_URL', 'E2E_CA_CERT', 'PRISMA_MIGRATIONS_PATH'];
+          for (const key of required) {
+            if (!process.env[key]) {
+              console.error(`READ_ONLY_AUDIT=FAIL missing=${key}`);
+              process.exit(1);
+            }
+          }
+
+          const migrationsPath = process.env.PRISMA_MIGRATIONS_PATH;
+          const expectedMigrations = fs.readdirSync(migrationsPath, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .filter((name) => fs.existsSync(path.join(migrationsPath, name, 'migration.sql')))
+            .sort();
+
+          const client = new Client({
+            connectionString: process.env.DIRECT_URL,
+            ssl: {
+              ca: process.env.E2E_CA_CERT,
+              rejectUnauthorized: true,
+            },
+          });
+
+          const fail = (message) => {
+            console.error(message);
+            process.exitCode = 1;
+          };
+
+          (async () => {
+            try {
+              await client.connect();
+              await client.query('BEGIN READ ONLY');
+
+              const migrations = await client.query(`
+                SELECT migration_name, finished_at, rolled_back_at, logs
+                FROM public."_prisma_migrations"
+                ORDER BY migration_name
+              `);
+              const tables = await client.query(`
+                SELECT COUNT(*)::int AS count
+                FROM information_schema.tables
+                WHERE table_schema = 'public'
+                  AND table_type = 'BASE TABLE'
+              `);
+              const enums = await client.query(`
+                SELECT COUNT(*)::int AS count
+                FROM pg_type t
+                JOIN pg_namespace n ON n.oid = t.typnamespace
+                WHERE n.nspname = 'public'
+                  AND t.typtype = 'e'
+              `);
+              const indexes = await client.query(`
+                SELECT COUNT(*)::int AS count
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relkind = 'i'
+              `);
+              const foreignKeys = await client.query(`
+                SELECT COUNT(*)::int AS count
+                FROM pg_constraint c
+                JOIN pg_namespace n ON n.oid = c.connamespace
+                WHERE n.nspname = 'public'
+                  AND c.contype = 'f'
+              `);
+
+              const applied = migrations.rows.map((row) => row.migration_name);
+              const failed = migrations.rows.filter((row) => !row.finished_at || row.rolled_back_at || row.logs);
+              const missing = expectedMigrations.filter((name) => !applied.includes(name));
+              const unexpected = applied.filter((name) => !expectedMigrations.includes(name));
+
+              console.log(`READ_ONLY_AUDIT_MIGRATIONS_EXPECTED=${expectedMigrations.length}`);
+              console.log(`READ_ONLY_AUDIT_MIGRATIONS_APPLIED=${applied.length}`);
+              console.log(`READ_ONLY_AUDIT_MIGRATIONS_FAILED=${failed.length}`);
+              console.log(`READ_ONLY_AUDIT_MIGRATIONS_MISSING=${missing.length}`);
+              console.log(`READ_ONLY_AUDIT_MIGRATIONS_UNEXPECTED=${unexpected.length}`);
+              console.log(`READ_ONLY_AUDIT_PUBLIC_TABLES=${tables.rows[0].count}`);
+              console.log(`READ_ONLY_AUDIT_PUBLIC_ENUMS=${enums.rows[0].count}`);
+              console.log(`READ_ONLY_AUDIT_PUBLIC_INDEXES=${indexes.rows[0].count}`);
+              console.log(`READ_ONLY_AUDIT_PUBLIC_FOREIGN_KEYS=${foreignKeys.rows[0].count}`);
+
+              if (failed.length > 0 || missing.length > 0 || unexpected.length > 0) {
+                fail('READ_ONLY_AUDIT=FAIL');
+              } else {
+                console.log('READ_ONLY_AUDIT=PASS');
+              }
+
+              await client.query('COMMIT');
+            } catch {
+              fail('READ_ONLY_AUDIT=FAIL');
+              try {
+                await client.query('ROLLBACK');
+              } catch {}
+            } finally {
+              await client.end().catch(() => {});
+            }
+          })();
+          NODE
+
+      - name: Record migration summary
+        if: always()
+        env:
+          MIGRATE_DEPLOY_EXECUTED: ${{ steps.migrate_deploy.outputs.executed || 'false' }}
+          MIGRATE_DEPLOY_STATUS: ${{ steps.migrate_deploy.outputs.status || 'not_run' }}
+          MIGRATE_DEPLOY_FAILURE_CLASSIFICATION: ${{ steps.migrate_deploy.outputs.classification || 'not_applicable' }}
+          MIGRATE_DEPLOY_AFFECTED_MIGRATION: ${{ steps.migrate_deploy.outputs.migration || 'not_applicable' }}
+          MIGRATION_AUDIT_OUTCOME: ${{ steps.migration_audit.outcome || 'not_run' }}
+        run: |
+          {
+            echo '## Supabase E2E migrate deploy'
+            echo '- bootstrapExecuted=false'
+            echo '- seedExecuted=false'
+            echo "- migrateDeployExecuted=${MIGRATE_DEPLOY_EXECUTED}"
+            echo "- migrateDeployStatus=${MIGRATE_DEPLOY_STATUS}"
+            echo "- failureClassification=${MIGRATE_DEPLOY_FAILURE_CLASSIFICATION}"
+            echo "- affectedMigration=${MIGRATE_DEPLOY_AFFECTED_MIGRATION}"
+            echo "- readOnlyAudit=${MIGRATION_AUDIT_OUTCOME}"
+          } >> "$GITHUB_STEP_SUMMARY"
