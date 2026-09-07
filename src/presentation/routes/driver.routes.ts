@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { DriverController } from "../controllers/driver.controller";
-import { requireDriverAuth } from "../middleware/requireDriverAuth";
 import { requireDriverBearerAuth } from "../middleware/requireDriverBearerAuth";
 
 const router = Router();
@@ -16,6 +15,7 @@ router.get("/", (req, res) => controller.list(req, res));
 // Autenticação Bearer (Fase C): /drivers/me/* — sem x-driver-id
 router.get("/me", requireDriverBearerAuth, (req, res) => controller.getMe(req, res));
 router.get("/me/offers", requireDriverBearerAuth, (req, res) => controller.getMyOffers(req, res));
+router.get("/me/offers/history", requireDriverBearerAuth, (req, res) => controller.getMyOfferHistory(req, res));
 router.get("/me/rides", requireDriverBearerAuth, (req, res) => controller.getMyRides(req, res));
 // Fase E — base operacional (origem M fixa) em self-service, Bearer only.
 router.get("/me/operational-base", requireDriverBearerAuth, (req, res) => controller.getMyOperationalBase(req, res));
@@ -34,7 +34,7 @@ router.get("/:driverId/skills", (req, res) => controller.getDriverSkills(req, re
 router.get("/:driverId/network", (req, res) => controller.getNetwork(req, res));
 
 // Compat: offers (autenticação é recomendada; mantido para legado)
-router.get("/:driverId/offers", requireDriverAuth, (req, res) => controller.getOffers(req as any, res));
+router.get("/:driverId/offers", requireDriverBearerAuth, (req, res) => controller.getOffers(req, res));
 
 // Endpoint público canônico
 router.get("/r/:slug", (req, res) => controller.resolvePublicReferral(req, res));

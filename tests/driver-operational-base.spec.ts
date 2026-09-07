@@ -21,6 +21,20 @@ import { AuthSessionService } from "../src/domain/auth/AuthSessionService";
 import { useRevenuePolicyFixture } from "./fixtures/revenue-policy.fixture";
 import { matchingJobScheduler } from "../src/infra/async/MatchingJobScheduler";
 
+// Esta suíte valida o contrato local sem chave do Google: coordenadas válidas
+// devem seguir pelo CLIENT_FALLBACK e entradas sem geometria devem retornar
+// BASE_NOT_RESOLVABLE. O .env do desenvolvedor pode conter uma chave real;
+// isolamos somente a configuração de Places para impedir chamadas externas,
+// preservando os demais valores de configuração da aplicação.
+jest.mock("../src/config/places", () => {
+  const actual = jest.requireActual("../src/config/places") as typeof import("../src/config/places");
+  return {
+    ...actual,
+    loadPlacesConfig: (env: NodeJS.ProcessEnv = process.env) =>
+      actual.loadPlacesConfig({ ...env, GOOGLE_PLACES_API_KEY: undefined }),
+  };
+});
+
 jest.setTimeout(20000);
 
 const policyFixture = useRevenuePolicyFixture(prisma, cleanTestData);

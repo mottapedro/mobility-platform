@@ -53,7 +53,11 @@ export class OfferResponseError extends Error {
 
 export class RespondToRideOfferUseCase {
 
-  async execute(offerId: string, accept: boolean): Promise<{ accepted: boolean; paymentIntent?: { id: string; brCode: string; qrCodeUrl: string } | null }> {
+  async execute(
+    offerId: string,
+    accept: boolean,
+    authenticatedDriverId: string,
+  ): Promise<{ accepted: boolean; paymentIntent?: { id: string; brCode: string; qrCodeUrl: string } | null }> {
 
     const offer = await prisma.rideOffer.findUnique({
       where: { id: offerId },
@@ -63,7 +67,14 @@ export class RespondToRideOfferUseCase {
       throw new OfferResponseError("OFFER_NOT_FOUND", "Offer nao encontrada");
     }
 
+    if (offer.driverId !== authenticatedDriverId) {
+      throw new OfferResponseError("OFFER_NOT_FOUND", "Offer nao encontrada");
+    }
+
     if (offer.status !== "PENDING") {
+      if (offer.status === "EXPIRED") {
+        throw new OfferResponseError("OFFER_EXPIRED", "Offer ja expirou");
+      }
       throw new OfferResponseError(
         "OFFER_ALREADY_RESPONDED",
         "Offer ja foi respondida com status: " + offer.status
@@ -78,10 +89,42 @@ export class RespondToRideOfferUseCase {
 
     if (accept) {
       await prisma.$transaction(async (tx) => {
-        await tx.rideOffer.update({
-          where: { id: offerId },
-          data: { status: "ACCEPTED", respondedAt: now },
+        // Claim the ride first. PostgreSQL serializes concurrent updates on
+        // this row; only the transaction that still sees an unclaimed,
+        // matchable ride can proceed.
+        const rideClaim = await tx.rideRequest.updateMany({
+          where: {
+            id: offer.rideRequestId,
+            selectedDriverId: null,
+            status: { in: [...MATCHABLE_RIDE_STATUSES] },
+          },
+          data: {
+            status: "ACCEPTED",
+            selectedDriverId: offer.driverId,
+            currentCandidateDriverId: null,
+            queueSnapshot: Prisma.DbNull,
+          },
         });
+
+        if (rideClaim.count !== 1) {
+          throw new OfferResponseError("OFFER_CONFLICT", "A corrida já foi aceita por outro motorista");
+        }
+
+        // Re-read the clock after acquiring the ride claim so an offer that
+        // expires while waiting on a concurrent transaction cannot win.
+        const decisionNow = new Date();
+        const offerClaim = await tx.rideOffer.updateMany({
+          where: {
+            id: offerId,
+            status: "PENDING",
+            expiresAt: { gt: decisionNow },
+          },
+          data: { status: "ACCEPTED", respondedAt: decisionNow },
+        });
+
+        if (offerClaim.count !== 1) {
+          throw new OfferResponseError("OFFER_CONFLICT", "A oferta não está mais disponível");
+        }
 
         await tx.rideOffer.updateMany({
           where: {
@@ -90,17 +133,6 @@ export class RespondToRideOfferUseCase {
             status: "PENDING",
           },
           data: { status: "REJECTED" },
-        });
-
-        await tx.rideRequest.update({
-          where: { id: offer.rideRequestId },
-          data: {
-            status: "ACCEPTED",
-            selectedDriverId: offer.driverId,
-            // Phase 2: clear queue state on terminal accept.
-            currentCandidateDriverId: null,
-            queueSnapshot: Prisma.DbNull,
-          },
         });
       });
 
@@ -165,10 +197,25 @@ export class RespondToRideOfferUseCase {
         },
       });
 
-      await prisma.rideOffer.update({
-        where: { id: offerId },
+      const rejected = await prisma.rideOffer.updateMany({
+        where: {
+          id: offerId,
+          status: "PENDING",
+          expiresAt: { gt: now },
+        },
         data: { status: "REJECTED", respondedAt: now },
       });
+
+      if (rejected.count !== 1) {
+        const current = await prisma.rideOffer.findUnique({
+          where: { id: offerId },
+          select: { status: true, expiresAt: true },
+        });
+        if (current?.status === "PENDING" && current.expiresAt <= now) {
+          throw new OfferResponseError("OFFER_EXPIRED", "Offer ja expirou");
+        }
+        throw new OfferResponseError("OFFER_ALREADY_RESPONDED", "Offer ja foi respondida");
+      }
 
       // Phase 2: append rejecting driver to persisted exclusion list and clear
       // the current candidate pointer atomically so the next dispatchNextCandidate

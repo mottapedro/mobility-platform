@@ -8,6 +8,7 @@ import { getOwnershipMetrics } from "../../domain/referral-network/NetworkOwners
 import { DriverOperationalBaseService } from "../../domain/driver/DriverOperationalBaseService";
 import { ReferralFlowType } from "../../shared/enums";
 import type { RideStatus } from "../../shared/enums";
+import { OfferBookQueryError, offerBookReadService } from "../../application/services/OfferBookReadService";
 
 export class DriverController {
   private async findActivePublicDriver(referralCodeOrSlug: string) {
@@ -392,7 +393,7 @@ export class DriverController {
       }
 
       if (authDriverId !== driverId) {
-        return res.status(403).json({ error: "Driver cannot access another network" });
+        return res.status(404).json({ error: "Ofertas do driver não encontradas" });
       }
 
       const payload = await this.loadOffersForDriver(driverId);
@@ -502,6 +503,28 @@ export class DriverController {
         error: "Erro ao carregar ofertas",
         details: error instanceof Error ? error.message : error,
       });
+    }
+  }
+
+  // GET /drivers/me/offers/history — book histórico somente leitura.
+  async getMyOfferHistory(req: AuthenticatedDriverRequest, res: Response) {
+    const driverId = req.authDriverId;
+    if (!driverId) {
+      return res.status(401).json({ error: "Driver authentication required" });
+    }
+
+    try {
+      const page = await offerBookReadService.listForDriver(driverId, {
+        limit: req.query.limit,
+        cursor: typeof req.query.cursor === "string" ? req.query.cursor : undefined,
+      });
+      return res.status(200).json(page);
+    } catch (error) {
+      if (error instanceof OfferBookQueryError) {
+        return res.status(400).json({ error: error.message });
+      }
+      console.error("Erro ao carregar book histórico de ofertas:", error);
+      return res.status(500).json({ error: "Erro ao carregar book de ofertas" });
     }
   }
 

@@ -262,6 +262,7 @@ model RideOffer {
 
   @@unique([rideRequestId, driverId])
   @@index([driverId, status])
+  @@index([driverId, createdAt(sort: Desc)])
 }
 
 /// Contrato de precificação imutável — snapshot congelado antes da emissão de
@@ -330,7 +331,7 @@ model DriverOperationalBase {
   longitude          Float
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
-  driver             Driver   @relation(fields: [driverId], references: [id])
+  driver             Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId])
 }
@@ -350,7 +351,7 @@ model DriverCurrentLocation {
   speed     Float?
   recordedAt DateTime @default(now())
   updatedAt  DateTime @updatedAt
-  driver     Driver   @relation(fields: [driverId], references: [id])
+  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId])
 }

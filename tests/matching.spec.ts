@@ -4,6 +4,8 @@ import { app } from "../src/app";
 import { prisma } from "./setup";
 import { createDriverReferralChain } from "../src/domain/services/DriverReferralService";
 import { DriverOperationalBaseService } from "../src/domain/driver/DriverOperationalBaseService";
+import { AuthSessionService } from "../src/domain/auth/AuthSessionService";
+import { AuthTokenService } from "../src/domain/auth/AuthTokenService";
 
 jest.setTimeout(15000);
 
@@ -35,8 +37,20 @@ async function waitForOffers(
 }
 
 // Rejeita a oferta e dispara o re-match síncrono.
-function rejectOffer(offerId: string) {
-  return request(app).patch(`/offers/${offerId}/respond`).send({ accept: false });
+async function rejectOffer(offerId: string) {
+  const offer = await prisma.rideOffer.findUniqueOrThrow({
+    where: { id: offerId },
+    select: { driver: { select: { userId: true } } },
+  });
+  const session = await new AuthSessionService().createSession(offer.driver.userId);
+  const token = await new AuthTokenService().issueAccessToken({
+    userId: offer.driver.userId,
+    sessionId: session.session.id,
+  });
+  return request(app)
+    .patch(`/offers/${offerId}/respond`)
+    .set("Authorization", `Bearer ${token}`)
+    .send({ accept: false });
 }
 
 function saveBase(driverId: string) {
