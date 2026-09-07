@@ -22,7 +22,7 @@ function inspectTarget(value) {
 
   const directHost = url.hostname === `db.${PROJECT_REF}.supabase.co`;
   const sessionHost = /^aws-\d+-us-east-1\.pooler\.supabase\.com$/.test(url.hostname);
-  const directUser = user === 'postgres';
+  const directUser = user === 'postgres' || user === `postgres.${PROJECT_REF}`;
   const sessionUser = user === `postgres.${PROJECT_REF}`;
 
   checks.HOST = directHost || sessionHost;
@@ -55,7 +55,8 @@ function validateTarget(value) {
   try { url = new URL(value); } catch { return fail(); }
   let user;
   try { user = decodeURIComponent(url.username); } catch { return fail(); }
-  const direct = url.hostname === `db.${PROJECT_REF}.supabase.co` && user === 'postgres';
+  const direct = url.hostname === `db.${PROJECT_REF}.supabase.co`
+    && (user === 'postgres' || user === `postgres.${PROJECT_REF}`);
   const session = /^aws-\d+-us-east-1\.pooler\.supabase\.com$/.test(url.hostname)
     && user === `postgres.${PROJECT_REF}`;
   if (!['postgres:', 'postgresql:'].includes(url.protocol) || !(direct || session)

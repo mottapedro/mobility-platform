@@ -4,9 +4,11 @@ const assert = require('node:assert/strict');
 const { validateTarget, targetDiagnostics, PROJECT_REF } = require('../../scripts/e2e/supabase-target.cjs');
 const OLD_PROJECT_REF = 'azgzwflujgerrddrkmjh';
 const direct = `postgresql://postgres:fake-password@db.${PROJECT_REF}.supabase.co:5432/postgres`;
+const scopedDirect = `postgresql://postgres.${PROJECT_REF}:fake-password@db.${PROJECT_REF}.supabase.co:5432/postgres`;
 const session = `postgresql://postgres.${PROJECT_REF}:fake-password@aws-0-us-east-1.pooler.supabase.com:5432/postgres`;
 test('accepts exact E2E direct and session destinations with verified SSL', () => {
   assert.equal(validateTarget(direct).mode, 'direct');
+  assert.equal(validateTarget(scopedDirect).mode, 'direct');
   assert.equal(validateTarget(session + '?sslmode=verify-full&schema=public').mode, 'session');
 });
 
@@ -30,6 +32,7 @@ for (const [name, value] of Object.entries({
   missing: undefined,
   oldE2EDirect: direct.replace(PROJECT_REF, OLD_PROJECT_REF),
   oldE2ESession: session.replace(PROJECT_REF, OLD_PROJECT_REF),
+  unscopedSessionUser: session.replace(`postgres.${PROJECT_REF}`, 'postgres'),
   lookalikeHost: direct.replace('.supabase.co', '.supabase.co.attacker.invalid'),
   transactionPooler: session.replace(':5432/', ':6543/'),
   noExplicitPort: direct.replace(':5432/', '/'),
