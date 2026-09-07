@@ -1,5 +1,5 @@
 'use strict';
-const PROJECT_REF = 'fuojmuyggmnlsxfyvby';
+const PROJECT_REF = 'fjuojmuyggmnlsxfyvby';
 const TARGET_DIAGNOSTIC_KEYS = [
   'HOST',
   'USER',
