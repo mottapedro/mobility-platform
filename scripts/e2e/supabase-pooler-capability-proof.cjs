@@ -86,9 +86,17 @@ async function main() {
 
     const adapter = new PrismaPg(pool);
     prisma = new PrismaClient({ adapter });
-    const prismaRows = await prisma.$queryRaw`SELECT current_database() AS database, current_setting('transaction_read_only') AS read_only`;
+    const prismaRows = await prisma.$queryRaw`
+      SELECT
+        current_database() = 'postgres' AS database_ok,
+        current_setting('transaction_read_only') = 'on' AS read_only_ok
+    `;
     const prismaState = prismaRows[0];
-    const prismaPass = prismaState?.database === 'postgres' && prismaState?.read_only === 'on';
+    emit('POOLER_PRISMA_RESULT_SHAPE', Array.isArray(prismaRows) && prismaRows.length === 1
+      && prismaState && typeof prismaState === 'object' ? 'PASS' : 'FAIL');
+    emit('POOLER_PRISMA_DATABASE_ASSERTION', prismaState?.database_ok === true ? 'PASS' : 'FAIL');
+    emit('POOLER_PRISMA_READ_ONLY_ASSERTION', prismaState?.read_only_ok === true ? 'PASS' : 'FAIL');
+    const prismaPass = prismaState?.database_ok === true && prismaState?.read_only_ok === true;
     emit('POOLER_PRISMA_CONNECTIVITY', prismaPass ? 'PASS' : 'FAIL');
     if (!prismaPass) throw new Error('POOLER_PRISMA_CONNECTIVITY_FAILED');
     emit('POOLER_CAPABILITY_PROOF', 'PASS');
