@@ -144,9 +144,9 @@ async function main() {
     }
   }
   if (failures.length > 0) {
-    const failure = new Error(failures[0].classification);
-    failure.code = failures[0].code;
-    throw failure;
+    console.error('E2E_CONNECTION_PROOF=FAIL');
+    process.exitCode = 1;
+    return;
   }
   console.log(JSON.stringify({ result: 'PASS', commit: process.env.GITHUB_SHA, evidence, bootstrapExecuted: false }));
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
