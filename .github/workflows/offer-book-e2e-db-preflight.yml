@@ -17,6 +17,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  pooler-capability-proof:
+    name: Supabase E2E pooler capability proof (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout main revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --include=dev --ignore-scripts
+
+      - name: Run pooler capability proof (read-only)
+        env:
+          DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+          E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+        run: node scripts/e2e/supabase-pooler-capability-proof.cjs
+
   connection-proof:
     name: Supabase E2E connection proof (read-only)
     runs-on: ubuntu-latest
