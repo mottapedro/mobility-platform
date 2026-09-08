@@ -145,11 +145,15 @@ export function validateAuthorizedCatalogPath(catalogPath: string): void {
 export function calculateAuthorizedCatalogFingerprint(catalogPath: string): string {
   validateAuthorizedCatalogPath(catalogPath);
   const entries = [...AUTHORIZED_MIGRATIONS].sort().map((migration) => {
-    const sql = readFileSync(path.join(catalogPath, migration, "migration.sql"));
+    const sql = canonicalizeMigrationSql(readFileSync(path.join(catalogPath, migration, "migration.sql")));
     const digest = crypto.createHash("sha256").update(sql).digest("hex");
     return `${migration}\t${digest}`;
   }).join("\n");
   return crypto.createHash("sha256").update(`${entries}\n`).digest("hex");
+}
+
+export function canonicalizeMigrationSql(input: Buffer): Buffer {
+  return Buffer.from(input.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
 }
 
 function argumentValue(name: string): string | undefined {
