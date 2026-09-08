@@ -9,15 +9,47 @@ function classifyFailure(error) {
     return 'TARGET_REJECTED';
   }
   if (message === 'E2E_INITIAL_STATE_REJECTED') return 'DATABASE_STATE_FAILURE';
-  if (code === '28P01' || code === '28000') return 'AUTHENTICATION_FAILURE';
-  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET') {
-    return 'NETWORK_FAILURE';
+  if (/^(DNS_FAILURE|NETWORK_TIMEOUT|CONNECTION_REFUSED|NETWORK_UNREACHABLE|CONNECTION_RESET|TLS_FAILURE|AUTH_FAILURE|UNKNOWN_CONNECTION_FAILURE)$/.test(message)) {
+    return message;
   }
+  if (code === '28P01' || code === '28000' || /password authentication|authentication failed|invalid password/i.test(message)) {
+    return 'AUTHENTICATION_FAILURE';
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'DNS_FAILURE';
+  if (code === 'ETIMEDOUT' || /timeout/i.test(message)) return 'NETWORK_TIMEOUT';
+  if (code === 'ECONNREFUSED') return 'CONNECTION_REFUSED';
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') return 'NETWORK_UNREACHABLE';
+  if (code === 'ECONNRESET' || code === 'EPIPE') return 'CONNECTION_RESET';
+  if (code.startsWith('CERT_') || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'SELF_SIGNED_CERT_IN_CHAIN'
+    || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || code === 'ERR_TLS_CERT_ALTNAME_INVALID'
+    || /certificate|self[- ]signed|tls|ssl|unable to verify/i.test(message)) return 'TLS_FAILURE';
+  if (/network|could not connect/i.test(message)) return 'NETWORK_FAILURE';
+  return 'UNKNOWN_CONNECTION_FAILURE';
+}
+
+function safeErrorCode(error) {
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const safeCodes = new Set([
+    'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH',
+    'ECONNRESET', 'EPIPE', '28P01', '28000', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'ERR_TLS_CERT_ALTNAME_INVALID',
+  ]);
+  return safeCodes.has(code) ? code : 'NONE';
+}
+
+function classifyEndpointFailure(error, stage) {
+  const code = typeof error?.code === 'string' ? error.code : '';
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'DNS_FAILURE';
+  if (code === 'ETIMEDOUT') return 'NETWORK_TIMEOUT';
+  if (code === 'ECONNREFUSED') return 'CONNECTION_REFUSED';
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') return 'NETWORK_UNREACHABLE';
+  if (code === '28P01' || code === '28000') return 'AUTH_FAILURE';
   if (code.startsWith('CERT_') || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'SELF_SIGNED_CERT_IN_CHAIN'
     || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
     return 'TLS_FAILURE';
   }
-  return 'CONNECTION_FAILURE';
+  if (stage === 'connect' && (code === 'ECONNRESET' || code === 'EPIPE')) return 'NETWORK_UNREACHABLE';
+  return 'UNKNOWN_CONNECTION_FAILURE';
 }
 
 function databaseStateChecks(row) {
@@ -77,8 +109,10 @@ async function main() {
       options: '-c default_transaction_read_only=on',
       application_name: 'offer-book-e2e-connection-proof',
     });
+    let stage = 'connect';
     try {
       await client.connect();
+      stage = 'query';
       const tlsSocket = client.connection?.stream?.encrypted === true;
       await client.query('BEGIN READ ONLY');
       const { rows: [row] } = await client.query(`SELECT current_database() AS database,
@@ -101,20 +135,25 @@ async function main() {
       evidence.push({ variable: target.key, mode: target.mode, project: PROJECT_REF, ...row });
       console.error(`${target.key}_CONNECTION=PASS`);
     } catch (error) {
-      const classification = classifyFailure(error);
-      failures.push(classification);
-      console.error(`${target.key}_CONNECTION=${classification}`);
+      const classification = classifyEndpointFailure(error, stage);
+      const code = safeErrorCode(error);
+      failures.push({ classification, code });
+      console.error(`${target.key}_CONNECTION=${classification} code=${code}`);
     } finally {
       await client.end().catch(() => {});
     }
   }
-  if (failures.length > 0) throw new Error(failures[0]);
+  if (failures.length > 0) {
+    const failure = new Error(failures[0].classification);
+    failure.code = failures[0].code;
+    throw failure;
+  }
   console.log(JSON.stringify({ result: 'PASS', commit: process.env.GITHUB_SHA, evidence, bootstrapExecuted: false }));
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `\nConnection proof: PASS\n\nProject: ${PROJECT_REF}\n\nCommit: ${process.env.GITHUB_SHA}\n\nPG17, TLS and empty public scope verified for both URLs. No bootstrap executed.\n`);
 }
 main().catch((error) => {
   // Driver error messages can contain secrets: do not print raw errors or URLs.
-  console.error(`E2E_CONNECTION_PROOF=${classifyFailure(error)}`);
+  console.error(`E2E_CONNECTION_PROOF=FAIL category=${classifyFailure(error)} code=${safeErrorCode(error)}`);
   process.exitCode = 1;
 });
