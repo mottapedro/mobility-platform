@@ -49,6 +49,7 @@ async function main() {
     connectionString: target.connectionString,
     ssl: { ca, rejectUnauthorized: true },
     connectionTimeoutMillis: 10000,
+    options: '-c default_transaction_read_only=on',
     application_name: 'offer-book-e2e-pooler-capability-proof',
   });
   let prisma;
@@ -85,8 +86,9 @@ async function main() {
 
     const adapter = new PrismaPg(pool);
     prisma = new PrismaClient({ adapter });
-    const { rows: [prismaState] } = await prisma.$queryRawUnsafe(`SELECT current_database() AS database, current_setting('transaction_read_only') AS read_only`);
-    const prismaPass = prismaState.database === 'postgres' && prismaState.read_only === 'off';
+    const prismaRows = await prisma.$queryRaw`SELECT current_database() AS database, current_setting('transaction_read_only') AS read_only`;
+    const prismaState = prismaRows[0];
+    const prismaPass = prismaState?.database === 'postgres' && prismaState?.read_only === 'on';
     emit('POOLER_PRISMA_CONNECTIVITY', prismaPass ? 'PASS' : 'FAIL');
     if (!prismaPass) throw new Error('POOLER_PRISMA_CONNECTIVITY_FAILED');
     emit('POOLER_CAPABILITY_PROOF', 'PASS');
