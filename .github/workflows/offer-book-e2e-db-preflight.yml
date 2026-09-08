@@ -126,6 +126,23 @@ jobs:
             },
           });
 
+          const classifyStateAuditFailure = (error) => {
+            const code = typeof error?.code === 'string' ? error.code : '';
+            const message = error instanceof Error ? error.message : String(error ?? '');
+            if (code === '28P01' || code === '28000') return 'AUTHENTICATION_FAILURE';
+            if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'ECONNREFUSED' || code === 'ETIMEDOUT' || code === 'ECONNRESET') {
+              return 'NETWORK_FAILURE';
+            }
+            if (code.startsWith('CERT_') || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'SELF_SIGNED_CERT_IN_CHAIN'
+              || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || code === 'ERR_TLS_CERT_ALTNAME_INVALID') {
+              return 'TLS_FAILURE';
+            }
+            if (/does not exist|permission denied|relation .* does not exist|schema|database/i.test(message)) {
+              return 'DATABASE_STATE_FAILURE';
+            }
+            return 'CONNECTION_FAILURE';
+          };
+
           const names = (rows, key) => rows.map((row) => row[key]).sort();
 
           (async () => {
@@ -224,7 +241,8 @@ jobs:
 
               await client.query('COMMIT');
               console.log('STATE_AUDIT=PASS');
-            } catch {
+            } catch (error) {
+              console.log(`STATE_AUDIT_FAILURE_CLASSIFICATION=${classifyStateAuditFailure(error)}`);
               console.log('STATE_AUDIT=FAIL');
               try {
                 await client.query('ROLLBACK');
