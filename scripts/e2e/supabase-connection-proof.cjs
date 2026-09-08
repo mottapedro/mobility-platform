@@ -39,8 +39,8 @@ function printDatabaseStateChecks(checks) {
 }
 
 function printTargetDiagnostics(checks) {
-  for (const [name, passed] of Object.entries(checks)) {
-    console.error(`${name}=${passed ? 'PASS' : 'FAIL'}`);
+  for (const [name, value] of Object.entries(checks)) {
+    console.error(`${name}=${typeof value === 'boolean' ? (value ? 'PASS' : 'FAIL') : value}`);
   }
 }
 

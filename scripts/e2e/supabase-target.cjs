@@ -3,6 +3,7 @@ const PROJECT_REF = 'fjuojmuyggmnlsxfyvby';
 const TARGET_DIAGNOSTIC_KEYS = [
   'HOST',
   'USER',
+  'USER_CLASS',
   'PORT',
   'DATABASE',
 ];
@@ -11,6 +12,7 @@ function inspectTarget(value) {
   const checks = {
     HOST: false,
     USER: false,
+    USER_CLASS: 'MISSING',
     PORT: false,
     DATABASE: false,
     SSL_OPTIONS: false,
@@ -25,6 +27,13 @@ function inspectTarget(value) {
   const directUser = user === 'postgres' || user === `postgres.${PROJECT_REF}`;
   const sessionUser = user === `postgres.${PROJECT_REF}`;
 
+  checks.USER_CLASS = user === ''
+    ? 'MISSING'
+    : user === 'postgres'
+      ? 'POSTGRES_EXACT'
+      : user === `postgres.${PROJECT_REF}`
+        ? 'POSTGRES_PROJECT'
+        : 'OTHER';
   checks.HOST = directHost || sessionHost;
   checks.USER = directUser || sessionUser;
   checks.PORT = url.port === '5432';
@@ -41,7 +50,8 @@ function targetDiagnostics(entries) {
   for (const { key, value } of entries) {
     const checks = inspectTarget(value);
     for (const checkKey of TARGET_DIAGNOSTIC_KEYS) {
-      diagnostics[`TARGET_${key}_${checkKey}`] = checks[checkKey];
+      const diagnosticKey = `TARGET_${key}_${checkKey}`;
+      diagnostics[diagnosticKey] = checks[checkKey];
     }
   }
   const sslChecks = entries.map(({ value }) => inspectTarget(value).SSL_OPTIONS);
