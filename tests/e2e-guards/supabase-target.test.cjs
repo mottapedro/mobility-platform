@@ -19,10 +19,12 @@ test('reports sanitized target diagnostics by variable and field', () => {
   ]), {
     TARGET_DATABASE_URL_HOST: true,
     TARGET_DATABASE_URL_USER: true,
+    TARGET_DATABASE_URL_USER_CLASS: 'POSTGRES_EXACT',
     TARGET_DATABASE_URL_PORT: true,
     TARGET_DATABASE_URL_DATABASE: true,
     TARGET_DIRECT_URL_HOST: true,
     TARGET_DIRECT_URL_USER: true,
+    TARGET_DIRECT_URL_USER_CLASS: 'POSTGRES_PROJECT',
     TARGET_DIRECT_URL_PORT: true,
     TARGET_DIRECT_URL_DATABASE: true,
     TARGET_SSL_OPTIONS: true,
