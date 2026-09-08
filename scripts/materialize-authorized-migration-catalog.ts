@@ -1,4 +1,5 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import crypto from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,6 +75,7 @@ export const AUTHORIZED_MIGRATIONS = [
 ] as const;
 
 export const AUTHORIZED_CATALOG_COUNT = AUTHORIZED_MIGRATIONS.length;
+const EXPECTED_FINGERPRINT_PATH = path.resolve("governance/authorized-migration-catalog.sha256");
 const MIGRATION_DIRECTORY_PATTERN = /^\d{8,}_/;
 
 function migrationDirectories(root: string): string[] {
@@ -140,6 +142,37 @@ export function validateAuthorizedCatalogPath(catalogPath: string): void {
   }
 }
 
+export function calculateAuthorizedCatalogFingerprint(catalogPath: string): string {
+  validateAuthorizedCatalogPath(catalogPath);
+  const entries = [...AUTHORIZED_MIGRATIONS].sort().map((migration) => {
+    const sql = readFileSync(path.join(catalogPath, migration, "migration.sql"));
+    const digest = crypto.createHash("sha256").update(sql).digest("hex");
+    return `${migration}\t${digest}`;
+  }).join("\n");
+  return crypto.createHash("sha256").update(`${entries}\n`).digest("hex");
+}
+
+function argumentValue(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+function writeCatalogOutputs(catalogPath: string, outputDir: string, fingerprint: string): void {
+  mkdirSync(outputDir, { recursive: true });
+  const manifestPath = path.join(outputDir, "manifest");
+  writeFileSync(manifestPath, [
+    `commit_sha=${process.env.GITHUB_SHA ?? "UNSET"}`,
+    `catalog_count=${AUTHORIZED_CATALOG_COUNT}`,
+    `fingerprint=${fingerprint}`,
+    "",
+  ].join("\n"));
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `catalog_dir=${catalogPath}\n`);
+    appendFileSync(process.env.GITHUB_OUTPUT, `manifest=${manifestPath}\n`);
+    appendFileSync(process.env.GITHUB_OUTPUT, `fingerprint=${fingerprint}\n`);
+  }
+}
+
 export interface MaterializedCatalog {
   path: string;
   sourceMigrationCount: number;
@@ -202,13 +235,25 @@ export function materializeAuthorizedMigrationCatalog(options: {
 
 if (require.main === module) {
   try {
-    const result = materializeAuthorizedMigrationCatalog();
+    const outputDir = argumentValue("--output-dir");
+    const result = materializeAuthorizedMigrationCatalog({
+      targetPath: outputDir ? path.join(outputDir, "catalog") : undefined,
+    });
     console.log(`AUTHORIZED_CATALOG_PATH=${result.path}`);
     console.log(`AUTHORIZED_CATALOG_COUNT=${result.authorizedMigrationCount}`);
     console.log(`SOURCE_MIGRATION_COUNT=${result.sourceMigrationCount}`);
     console.log(`UNKNOWN_MIGRATION_COUNT=${result.unknownMigrationCount}`);
     console.log(`EXCLUDED_MIGRATION_COUNT=${result.excludedMigrationCount}`);
     console.log("EXCLUDED_SQL_EXECUTED=0");
+    if (process.argv.includes("--verify-fingerprint")) {
+      const actual = calculateAuthorizedCatalogFingerprint(result.path);
+      const expected = readFileSync(EXPECTED_FINGERPRINT_PATH, "utf8").trim();
+      if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error("FINGERPRINT_AUTHORITY_NOT_ESTABLISHED");
+      if (actual !== expected) throw new Error(`AUTHORIZED_CATALOG_FINGERPRINT_MISMATCH expected=${expected} actual=${actual}`);
+      console.log(`AUTHORIZED_CATALOG_FINGERPRINT=${actual}`);
+      console.log("AUTHORIZED_CATALOG_FINGERPRINT_STATUS=PASS");
+      if (outputDir) writeCatalogOutputs(result.path, outputDir, actual);
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

@@ -649,10 +649,94 @@ jobs:
             *) echo "Refusing to remove unexpected catalog path: $catalog_path" >&2; exit 1 ;;
           esac
 
+  post-write-state-audit:
+    name: Supabase E2E post-write state audit (read-only)
+    needs:
+      - migrate-deploy
+      - pre-write-migration-gate
+    if: >-
+      ${{
+        always() &&
+        github.event.inputs.authorize_migrate == 'I_UNDERSTAND' &&
+        needs.pre-write-migration-gate.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+      E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci --include=dev --ignore-scripts
+      - name: Audit post-write state
+        id: state_audit
+        run: node scripts/e2e/migration-safety-audit.cjs --post-write --execution-result '${{ needs.migrate-deploy.result }}'
+      - name: Require governed final
+        if: ${{ needs.migrate-deploy.result == 'success' }}
+        run: |
+          test "${{ steps.state_audit.outputs.state }}" = "FINAL"
+          test "${{ steps.state_audit.outputs.governed_final }}" = "YES"
+
+  pre-write-migration-gate:
+    name: Migration pre-write safety gate
+    needs: pooler-capability-proof
+    if: >-
+      ${{
+        github.event.inputs.authorize_migrate == 'I_UNDERSTAND' &&
+        needs.pooler-capability-proof.result == 'success'
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+      E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci --include=dev --ignore-scripts
+      - name: Verify pinned SHA, catalog and E0
+        id: authorized_catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          mkdir -p "$RUNNER_TEMP/authorized-migration-catalog"
+          npx tsx scripts/materialize-authorized-migration-catalog.ts \
+            --verify-fingerprint \
+            --output-dir "$RUNNER_TEMP/authorized-migration-catalog"
+          node scripts/e2e/migration-safety-audit.cjs --require-e0
+      - name: Upload exact authorized migration catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: authorized-migration-catalog-${{ github.sha }}
+          path: ${{ runner.temp }}/authorized-migration-catalog
+          if-no-files-found: error
+          retention-days: 1
+
   migrate-deploy:
     name: Supabase E2E migrate deploy (manual)
-    needs: connection-proof
-    if: ${{ github.event.inputs.authorize_migrate == 'I_UNDERSTAND' && needs.connection-proof.result == 'success' }}
+    needs:
+      - pooler-capability-proof
+      - pre-write-migration-gate
+    if: >-
+      ${{
+        github.event.inputs.authorize_migrate == 'I_UNDERSTAND' &&
+        needs.pooler-capability-proof.result == 'success' &&
+        needs.pre-write-migration-gate.result == 'success'
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -676,46 +760,16 @@ jobs:
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
 
-      - name: Materialize authorized migration catalog
-        id: authorized_catalog
-        shell: bash
+      - name: Download exact authorized migration catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: authorized-migration-catalog-${{ github.sha }}
+          path: ${{ runner.temp }}/authorized-migration-catalog
+
+      - name: Verify exact authorized migration artifact
         run: |
-          set -euo pipefail
-          output_file="$RUNNER_TEMP/authorized-migration-catalog.log"
-          npx tsx scripts/materialize-authorized-migration-catalog.ts > "$output_file"
-
-          catalog_path="$(sed -n 's/^AUTHORIZED_CATALOG_PATH=//p' "$output_file")"
-          catalog_count="$(sed -n 's/^AUTHORIZED_CATALOG_COUNT=//p' "$output_file")"
-          unknown_count="$(sed -n 's/^UNKNOWN_MIGRATION_COUNT=//p' "$output_file")"
-          source_excluded_count="$(sed -n 's/^EXCLUDED_MIGRATION_COUNT=//p' "$output_file")"
-          excluded_count=3
-
-          test -n "$catalog_path"
-          test "$catalog_count" = "51"
-          test "$unknown_count" = "0"
-          test "$excluded_count" = "3"
-          test -d "$catalog_path"
-          test -f "$catalog_path/20260101000000_init_baseline/migration.sql"
-          test -f "$catalog_path/20260824000000_add_ride_offer_history_index/migration.sql"
-
-          for excluded in \
-            20260518000000_passenger_codes_not_null_future \
-            20260706000000_trip_execution_boundary \
-            20260720000000_gps_tracking; do
-            test ! -e "$catalog_path/$excluded"
-          done
-
-          echo "PRISMA_MIGRATIONS_PATH=$catalog_path" >> "$GITHUB_ENV"
-          echo "catalog_path=$catalog_path" >> "$GITHUB_OUTPUT"
-          echo "catalog_count=$catalog_count" >> "$GITHUB_OUTPUT"
-          echo "unknown_count=$unknown_count" >> "$GITHUB_OUTPUT"
-          echo "excluded_count=$excluded_count" >> "$GITHUB_OUTPUT"
-          echo "source_excluded_count=$source_excluded_count" >> "$GITHUB_OUTPUT"
-          echo "AUTHORIZED_CATALOG_COUNT=$catalog_count"
-          echo "UNKNOWN_MIGRATION_COUNT=$unknown_count"
-          echo "EXCLUDED_MIGRATION_COUNT=$excluded_count"
-          echo "SOURCE_EXCLUDED_MIGRATION_COUNT=$source_excluded_count"
-          echo "PRISMA_MIGRATIONS_PATH_PRESENT=YES"
+          node scripts/e2e/verify-authorized-migration-artifact.cjs "$RUNNER_TEMP/authorized-migration-catalog"
+          echo "PRISMA_MIGRATIONS_PATH=$RUNNER_TEMP/authorized-migration-catalog/catalog" >> "$GITHUB_ENV"
 
       - name: Apply certified baseline SQL
         id: baseline_sql

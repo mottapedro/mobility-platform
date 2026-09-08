@@ -64,19 +64,14 @@ async function main() {
       const { rows: [state] } = await pgClient.query(`SELECT
         current_database() AS database,
         current_setting('server_version_num')::int AS version_num,
-        current_setting('transaction_read_only') AS read_only,
-        (SELECT count(*)::int FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-          WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','S','f','i','I')) AS relations,
-        (SELECT count(*)::int FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace
-          WHERE n.nspname='public' AND t.typtype='e') AS enums,
-        (SELECT count(*)::int FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-          WHERE n.nspname='public') AS routines,
-        to_regclass('public._prisma_migrations')::text AS migrations`);
+        current_setting('transaction_read_only') AS read_only`);
+      const runtimeOk = state.database === 'postgres'
+        && Math.floor(state.version_num / 10000) === 17
+        && state.read_only === 'on';
       emit('POOLER_PG_VERSION', Math.floor(state.version_num / 10000) === 17 ? '17' : 'FAIL');
       emit('POOLER_READ_ONLY', state.read_only === 'on' ? 'PASS' : 'FAIL');
-      const initialState = state.database === 'postgres' && state.relations === 0 && state.enums === 0
-        && state.routines === 0 && state.migrations === null;
-      emit('POOLER_INITIAL_STATE', initialState ? 'PASS' : 'FAIL');
+      emit('POOLER_DATABASE', state.database === 'postgres' ? 'PASS' : 'FAIL');
+      emit('POOLER_RUNTIME_CAPABILITY', runtimeOk ? 'PASS' : 'FAIL');
       await pgClient.query('ROLLBACK');
       transactionOpen = false;
     } finally {
@@ -106,7 +101,7 @@ async function main() {
     if (prismaState?.database_ok !== true || prismaState?.read_only_ok !== true) {
       throw new Error('POOLER_PRISMA_TRANSACTION_ASSERTION_FAILED');
     }
-    emit('POOLER_CAPABILITY_PROOF', 'PASS');
+    emit('POOLER_RUNTIME_CAPABILITY_PROOF', 'PASS');
   } catch (error) {
     emit('POOLER_CAPABILITY_PROOF', `FAIL category=${classifyFailure(error)} code=${safeCode(error)}`);
     process.exitCode = 1;
