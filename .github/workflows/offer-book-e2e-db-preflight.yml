@@ -61,6 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
       DIRECT_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DIRECT_URL }}
       E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
       PRISMA_MIGRATIONS_PATH: prisma/migrations
@@ -95,7 +96,7 @@ jobs:
             .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, '<REDACTED_CERTIFICATE>')
             .replace(/password\s*=\s*[^;\s]+/gi, 'password=<REDACTED>');
 
-          const required = ['DIRECT_URL', 'E2E_CA_CERT', 'PRISMA_MIGRATIONS_PATH'];
+          const required = ['DATABASE_URL', 'DIRECT_URL', 'E2E_CA_CERT', 'PRISMA_MIGRATIONS_PATH'];
           for (const key of required) {
             if (!process.env[key]) {
               console.log(`STATE_AUDIT=FAIL missing=${key}`);
@@ -119,7 +120,7 @@ jobs:
             .sort();
 
           const client = new Client({
-            connectionString: process.env.DIRECT_URL,
+            connectionString: process.env.DATABASE_URL,
             ssl: {
               ca: process.env.E2E_CA_CERT,
               rejectUnauthorized: true,
@@ -844,7 +845,7 @@ jobs:
             .sort();
 
           const client = new Client({
-            connectionString: process.env.DIRECT_URL,
+            connectionString: process.env.DATABASE_URL,
             ssl: {
               ca: process.env.E2E_CA_CERT,
               rejectUnauthorized: true,
