@@ -66,11 +66,12 @@ async function main() {
   }
   const { Client } = require('pg');
   const evidence = [];
+  const failures = [];
   for (const target of targets) {
     const client = new Client({
       connectionString: target.connectionString,
       ssl: { rejectUnauthorized: true, ...(process.env.E2E_CA_CERT ? { ca: process.env.E2E_CA_CERT } : {}) },
-      connectionTimeoutMillis: 15000,
+      connectionTimeoutMillis: 10000,
       query_timeout: 15000,
       statement_timeout: 10000,
       options: '-c default_transaction_read_only=on',
@@ -98,10 +99,16 @@ async function main() {
       }
       await client.query('ROLLBACK');
       evidence.push({ variable: target.key, mode: target.mode, project: PROJECT_REF, ...row });
+      console.error(`${target.key}_CONNECTION=PASS`);
+    } catch (error) {
+      const classification = classifyFailure(error);
+      failures.push(classification);
+      console.error(`${target.key}_CONNECTION=${classification}`);
     } finally {
       await client.end().catch(() => {});
     }
   }
+  if (failures.length > 0) throw new Error(failures[0]);
   console.log(JSON.stringify({ result: 'PASS', commit: process.env.GITHUB_SHA, evidence, bootstrapExecuted: false }));
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `\nConnection proof: PASS\n\nProject: ${PROJECT_REF}\n\nCommit: ${process.env.GITHUB_SHA}\n\nPG17, TLS and empty public scope verified for both URLs. No bootstrap executed.\n`);
