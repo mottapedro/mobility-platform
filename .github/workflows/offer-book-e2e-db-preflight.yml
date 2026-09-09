@@ -1048,7 +1048,12 @@ jobs:
             echo "No temporary migration catalog to clean"
             exit 0
           fi
+          allowed_catalog_root="$RUNNER_TEMP/authorized-migration-catalog"
+          allowed_catalog_path="$allowed_catalog_root/catalog"
           case "$catalog_path" in
-            /tmp/mobility-authorized-migrations-*) rm -rf -- "$catalog_path" ;;
+            "$allowed_catalog_path")
+              [[ -d "$catalog_path" ]] || { echo "Refusing to remove missing catalog path: $catalog_path" >&2; exit 1; }
+              rm -rf -- "$catalog_path"
+              ;;
             *) echo "Refusing to remove unexpected catalog path: $catalog_path" >&2; exit 1 ;;
           esac
