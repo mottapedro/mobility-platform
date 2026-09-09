@@ -675,6 +675,15 @@ jobs:
           node-version: '22.14.0'
           cache: npm
       - run: npm ci --include=dev --ignore-scripts
+      - name: Download exact authorized migration catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: authorized-migration-catalog-${{ github.sha }}
+          path: ${{ runner.temp }}/authorized-migration-catalog
+      - name: Verify exact authorized migration artifact
+        run: |
+          node scripts/e2e/verify-authorized-migration-artifact.cjs "$RUNNER_TEMP/authorized-migration-catalog"
+          echo "PRISMA_MIGRATIONS_PATH=$RUNNER_TEMP/authorized-migration-catalog/catalog" >> "$GITHUB_ENV"
       - name: Audit post-write state
         id: state_audit
         run: node scripts/e2e/migration-safety-audit.cjs --post-write --execution-result '${{ needs.migrate-deploy.result }}'

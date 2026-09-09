@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { Client } = require('pg');
 
 function output(name, value) {
@@ -13,6 +15,43 @@ function parseExecutionResult(argv) {
   const value = argv[index + 1];
   if (!value || value.startsWith('--')) throw new Error('EXECUTION_RESULT_VALUE_REQUIRED');
   return value;
+}
+
+function evaluateFinalState({ migrationsExists, expectedNames, appliedRows }) {
+  if (!migrationsExists || !Array.isArray(expectedNames) || !Array.isArray(appliedRows)) {
+    return { stateName: 'UNKNOWN', expectedCount: 0, appliedCount: 0, failedCount: 0, incompleteCount: 0, missingCount: 0, unexpectedCount: 0 };
+  }
+
+  const expected = new Set(expectedNames);
+  const appliedNames = appliedRows.map((row) => row.migration_name);
+  const failedRows = appliedRows.filter((row) => row.rolled_back_at || row.logs);
+  const incompleteRows = appliedRows.filter((row) => !row.finished_at && !row.rolled_back_at && !row.logs);
+  const missing = expectedNames.filter((name) => !appliedNames.includes(name));
+  const unexpected = appliedNames.filter((name) => !expected.has(name));
+  const result = {
+    stateName: 'UNKNOWN',
+    expectedCount: expectedNames.length,
+    appliedCount: appliedRows.length,
+    failedCount: failedRows.length,
+    incompleteCount: incompleteRows.length,
+    missingCount: missing.length,
+    unexpectedCount: unexpected.length,
+  };
+  if (result.failedCount === 0 && result.incompleteCount === 0 && result.missingCount === 0 && result.unexpectedCount === 0
+    && result.expectedCount === result.appliedCount) {
+    result.stateName = 'FINAL';
+  } else {
+    result.stateName = 'PARTIAL';
+  }
+  return result;
+}
+
+function readAuthorizedMigrationNames(catalogPath) {
+  if (!catalogPath) return undefined;
+  return fs.readdirSync(catalogPath, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(catalogPath, entry.name, 'migration.sql')))
+    .map((entry) => entry.name)
+    .sort();
 }
 
 function evaluateMode({ mode, executionResult, stateName }) {
@@ -42,7 +81,7 @@ function evaluateMode({ mode, executionResult, stateName }) {
   return { writeEligible: 'NO', humanInspectionRequired: 'YES', governedFinal: 'NO', exitCode: 1 };
 }
 
-module.exports = { evaluateMode, parseExecutionResult };
+module.exports = { evaluateFinalState, evaluateMode, parseExecutionResult, readAuthorizedMigrationNames };
 
 const mode = process.argv[2];
 let executionResult;
@@ -68,7 +107,17 @@ if (require.main === module && process.exitCode !== 1) (async () => {
       to_regclass('public._prisma_migrations')::text AS migrations`);
     const e0 = state.database === 'postgres' && Math.floor(state.version_num / 10000) === 17 && state.read_only === 'on'
       && state.relations === 0 && state.enums === 0 && state.routines === 0 && state.migrations === null;
-    const stateName = mode === '--require-e0' ? (e0 ? 'E0' : 'UNKNOWN') : (state.migrations ? 'FINAL' : 'UNKNOWN');
+    let stateName = mode === '--require-e0' ? (e0 ? 'E0' : 'UNKNOWN') : 'UNKNOWN';
+    if (mode !== '--require-e0' && state.migrations) {
+      const expectedNames = readAuthorizedMigrationNames(process.env.PRISMA_MIGRATIONS_PATH);
+      const { rows: appliedRows } = await client.query(`SELECT migration_name, finished_at, rolled_back_at, logs
+        FROM public."_prisma_migrations" ORDER BY migration_name`);
+      const finalState = evaluateFinalState({ migrationsExists: true, expectedNames, appliedRows });
+      stateName = finalState.stateName;
+      for (const [name, value] of Object.entries(finalState)) {
+        if (name !== 'stateName') output(`migration_${name}`, value);
+      }
+    }
     output('state', stateName);
     const decision = evaluateMode({ mode, executionResult, stateName });
     output('write_eligible', decision.writeEligible);
