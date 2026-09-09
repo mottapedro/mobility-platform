@@ -2,7 +2,15 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { evaluateMode, parseExecutionResult } = require('../../scripts/e2e/migration-safety-audit.cjs');
+const { evaluateFinalState, evaluateMode, parseExecutionResult } = require('../../scripts/e2e/migration-safety-audit.cjs');
+
+const row = (migration_name, overrides = {}) => ({
+  migration_name,
+  finished_at: new Date(),
+  rolled_back_at: null,
+  logs: null,
+  ...overrides,
+});
 
 test('require-e0 + E0 exits 0 without execution result', () => {
   assert.deepEqual(evaluateMode({ mode: '--require-e0', stateName: 'E0' }), {
@@ -39,4 +47,41 @@ test('UNKNOWN remains fail-closed', () => {
   const result = evaluateMode({ mode: '--post-write', executionResult: 'success', stateName: 'UNKNOWN' });
   assert.equal(result.exitCode, 1);
   assert.equal(result.humanInspectionRequired, 'YES');
+});
+
+test('complete authorized catalog is FINAL', () => {
+  assert.equal(evaluateFinalState({
+    migrationsExists: true,
+    expectedNames: ['001', '002'],
+    appliedRows: [row('001'), row('002')],
+  }).stateName, 'FINAL');
+});
+
+test('migration table exists but incomplete catalog is PARTIAL', () => {
+  const result = evaluateFinalState({
+    migrationsExists: true,
+    expectedNames: ['001', '002'],
+    appliedRows: [row('001')],
+  });
+  assert.equal(result.stateName, 'PARTIAL');
+  assert.equal(result.missingCount, 1);
+});
+
+test('unexpected, failed, and incomplete migrations are not FINAL', () => {
+  const result = evaluateFinalState({
+    migrationsExists: true,
+    expectedNames: ['001'],
+    appliedRows: [
+      row('001', { logs: 'failed' }),
+      row('002'),
+      row('001-incomplete', { finished_at: null }),
+    ],
+  });
+  assert.equal(result.stateName, 'PARTIAL');
+  assert.equal(result.failedCount, 1);
+  assert.equal(result.unexpectedCount, 2);
+});
+
+test('missing catalog evidence is UNKNOWN and fail-closed', () => {
+  assert.equal(evaluateFinalState({ migrationsExists: true }).stateName, 'UNKNOWN');
 });
