@@ -37,7 +37,8 @@ export interface DrainOptions {
 }
 
 export class MatchingJobScheduler {
-  private readonly pending = new Set<Promise<void>>();
+  private readonly pending = new Map<string, Set<Promise<void>>>();
+  private readonly quiescedRides = new Set<string>();
 
   /**
    * Schedule a fire-and-forget job. Returns synchronously; the job runs on
@@ -45,7 +46,10 @@ export class MatchingJobScheduler {
    * are already logged at the use-case layer) but the promise is tracked so
    * `drain` can await completion regardless of outcome.
    */
-  schedule(fn: JobFn): void {
+  schedule(rideId: string, fn: JobFn): void {
+    if (this.quiescedRides.has(rideId)) throw new Error(`MatchingJobScheduler ride is quiesced: ${rideId}`);
+    const jobs = this.pending.get(rideId) ?? new Set<Promise<void>>();
+    this.pending.set(rideId, jobs);
     const job = new Promise<void>((resolve) => {
       setImmediate(() => {
         fn()
@@ -55,18 +59,36 @@ export class MatchingJobScheduler {
             console.error("[MatchingJobScheduler] job failed:", error);
           })
           .finally(() => {
-            this.pending.delete(job);
+            jobs.delete(job);
+            if (jobs.size === 0) this.pending.delete(rideId);
             resolve();
           });
       });
     });
-    this.pending.add(job);
+    jobs.add(job);
     logRuntimeEvent({
       event: "job_scheduled",
       scheduler: SCHEDULER_NAME,
-      pendingCount: this.pending.size,
+      pendingCount: jobs.size,
     });
   }
+
+  async drainForRide(rideId: string, options: DrainOptions = {}): Promise<void> {
+    const jobs = this.pending.get(rideId);
+    if (!jobs || jobs.size === 0) return;
+    const timeoutMs = options.timeoutMs ?? 5000;
+    await Promise.race([
+      Promise.all(Array.from(jobs)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`MatchingJobScheduler.drainForRide(${rideId}) timed out`)), timeoutMs)),
+    ]);
+  }
+
+  async quiesceForRide(rideId: string, options: DrainOptions = {}): Promise<void> {
+    this.quiescedRides.add(rideId);
+    await this.drainForRide(rideId, options);
+  }
+
+  pendingCountForRide(rideId: string): number { return this.pending.get(rideId)?.size ?? 0; }
 
   /**
    * Await all in-flight jobs. Intended for test teardown / beforeEach.
@@ -74,10 +96,11 @@ export class MatchingJobScheduler {
    */
   async drain(options: DrainOptions = {}): Promise<void> {
     const timeoutMs = options.timeoutMs ?? 5000;
-    if (this.pending.size === 0) return;
+    const allPending = Array.from(this.pending.values()).flatMap((jobs) => Array.from(jobs));
+    if (allPending.length === 0) return;
 
     const startedAt = Date.now();
-    const jobsAwaited = this.pending.size;
+    const jobsAwaited = allPending.length;
     logRuntimeEvent({
       event: "drain_started",
       scheduler: SCHEDULER_NAME,
@@ -85,7 +108,7 @@ export class MatchingJobScheduler {
       timeoutMs,
     });
 
-    const snapshot = Array.from(this.pending);
+    const snapshot = allPending;
     let timeoutHandle: NodeJS.Timeout | undefined;
     let timedOut = false;
 
@@ -94,7 +117,7 @@ export class MatchingJobScheduler {
         timedOut = true;
         reject(
           new Error(
-            `MatchingJobScheduler.drain() timed out after ${timeoutMs}ms with ${this.pending.size} jobs in flight`,
+            `MatchingJobScheduler.drain() timed out after ${timeoutMs}ms with ${allPending.length} jobs in flight`,
           ),
         );
       }, timeoutMs);

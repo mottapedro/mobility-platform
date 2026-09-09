@@ -570,7 +570,7 @@ export class MatchRideUseCase {
         metadata: { expiresAt: expiresAt.toISOString() },
       });
 
-      if (dispatched) referralFallbackScheduler.schedule(referralWindowMs, async () => {
+      if (dispatched) referralFallbackScheduler.schedule(rideId, referralWindowMs, async () => {
         try {
           const updated = await prisma.rideRequest.updateMany({
             where: {

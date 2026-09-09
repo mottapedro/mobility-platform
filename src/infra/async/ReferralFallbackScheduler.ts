@@ -38,17 +38,24 @@ export interface ReferralFallbackDrainOptions {
 }
 
 export class ReferralFallbackScheduler {
-  private readonly timers = new Set<NodeJS.Timeout>();
-  private readonly inflight = new Set<Promise<void>>();
+  private readonly timers = new Map<string, Set<NodeJS.Timeout>>();
+  private readonly inflight = new Map<string, Set<Promise<void>>>();
+  private readonly quiescedRides = new Set<string>();
 
   /**
    * Arm a fallback to run after `delayMs`. The handle is tracked for
    * cancellation; `.unref?.()` is applied so a pending timer never blocks
    * process exit on its own.
    */
-  schedule(delayMs: number, fn: FallbackFn): void {
+  schedule(rideId: string, delayMs: number, fn: FallbackFn): void {
+    if (this.quiescedRides.has(rideId)) throw new Error(`ReferralFallbackScheduler ride is quiesced: ${rideId}`);
+    const timers = this.timers.get(rideId) ?? new Set<NodeJS.Timeout>();
+    this.timers.set(rideId, timers);
     const handle: NodeJS.Timeout = setTimeout(() => {
-      this.timers.delete(handle);
+      timers.delete(handle);
+      if (timers.size === 0) this.timers.delete(rideId);
+      const inflight = this.inflight.get(rideId) ?? new Set<Promise<void>>();
+      this.inflight.set(rideId, inflight);
       const promise = (async () => {
         try {
           await fn();
@@ -57,20 +64,47 @@ export class ReferralFallbackScheduler {
           console.error("[ReferralFallbackScheduler] job failed:", err);
         }
       })().finally(() => {
-        this.inflight.delete(promise);
+        inflight.delete(promise);
+        if (inflight.size === 0) this.inflight.delete(rideId);
       });
-      this.inflight.add(promise);
+      inflight.add(promise);
     }, delayMs);
 
     handle.unref?.();
-    this.timers.add(handle);
+    timers.add(handle);
     logRuntimeEvent({
       event: "job_scheduled",
       scheduler: SCHEDULER_NAME,
-      pendingCount: this.timers.size,
+      pendingCount: timers.size,
       delayMs,
     });
   }
+
+  cancelForRide(rideId: string): void {
+    const timers = this.timers.get(rideId);
+    if (!timers) return;
+    for (const handle of timers) clearTimeout(handle);
+    this.timers.delete(rideId);
+  }
+
+  async drainForRide(rideId: string, options: ReferralFallbackDrainOptions = {}): Promise<void> {
+    this.cancelForRide(rideId);
+    const inflight = this.inflight.get(rideId);
+    if (!inflight || inflight.size === 0) return;
+    const timeoutMs = options.timeoutMs ?? 5000;
+    await Promise.race([
+      Promise.all(Array.from(inflight)),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`ReferralFallbackScheduler.drainForRide(${rideId}) timed out`)), timeoutMs)),
+    ]);
+  }
+
+  async quiesceForRide(rideId: string, options: ReferralFallbackDrainOptions = {}): Promise<void> {
+    this.quiescedRides.add(rideId);
+    await this.drainForRide(rideId, options);
+  }
+
+  pendingTimerCountForRide(rideId: string): number { return this.timers.get(rideId)?.size ?? 0; }
+  inflightCountForRide(rideId: string): number { return this.inflight.get(rideId)?.size ?? 0; }
 
   /**
    * Cancel every armed timer that has not yet fired. Already-running
@@ -78,8 +112,9 @@ export class ReferralFallbackScheduler {
    * completion is observable via `drain`).
    */
   cancelAll(): void {
-    const cancelled = this.timers.size;
-    for (const handle of this.timers) clearTimeout(handle);
+    const timerSets = Array.from(this.timers.values());
+    const cancelled = timerSets.reduce((count, timers) => count + timers.size, 0);
+    for (const timers of timerSets) for (const handle of timers) clearTimeout(handle);
     this.timers.clear();
     if (cancelled > 0) {
       logRuntimeEvent({
@@ -97,11 +132,12 @@ export class ReferralFallbackScheduler {
   async drain(options: ReferralFallbackDrainOptions = {}): Promise<void> {
     this.cancelAll();
 
-    if (this.inflight.size === 0) return;
+    const allInflight = Array.from(this.inflight.values()).flatMap((promises) => Array.from(promises));
+    if (allInflight.length === 0) return;
 
     const timeoutMs = options.timeoutMs ?? 5000;
     const startedAt = Date.now();
-    const jobsAwaited = this.inflight.size;
+    const jobsAwaited = allInflight.length;
     logRuntimeEvent({
       event: "drain_started",
       scheduler: SCHEDULER_NAME,
@@ -109,7 +145,7 @@ export class ReferralFallbackScheduler {
       timeoutMs,
     });
 
-    const snapshot = Array.from(this.inflight);
+    const snapshot = allInflight;
     let timeoutHandle: NodeJS.Timeout | undefined;
     let timedOut = false;
 
@@ -118,7 +154,7 @@ export class ReferralFallbackScheduler {
         timedOut = true;
         reject(
           new Error(
-            `ReferralFallbackScheduler.drain() timed out after ${timeoutMs}ms with ${this.inflight.size} callbacks in flight`,
+            `ReferralFallbackScheduler.drain() timed out after ${timeoutMs}ms with ${allInflight.length} callbacks in flight`,
           ),
         );
       }, timeoutMs);
@@ -141,10 +177,10 @@ export class ReferralFallbackScheduler {
 
   /** Test-only helpers. */
   get pendingTimerCount(): number {
-    return this.timers.size;
+    return Array.from(this.timers.values()).reduce((count, timers) => count + timers.size, 0);
   }
   get inflightCount(): number {
-    return this.inflight.size;
+    return Array.from(this.inflight.values()).reduce((count, promises) => count + promises.size, 0);
   }
 }
 

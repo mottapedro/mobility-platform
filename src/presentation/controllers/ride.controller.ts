@@ -473,7 +473,7 @@ export class RideController {
       }
 
       if (!quoteIssued) {
-        matchingJobScheduler.schedule(async () => {
+        matchingJobScheduler.schedule(ride.id, async () => {
           try {
             console.log(`🚀 Iniciando matching para ride ${ride.id}`);
             const matchRideUseCase = new MatchRideUseCase();
@@ -670,7 +670,7 @@ export class RideController {
 
       console.log(`🔄 Fallback manual disparado para corrida ${id}`);
 
-      matchingJobScheduler.schedule(async () => {
+      matchingJobScheduler.schedule(id, async () => {
         try {
           const matchRideUseCase = new MatchRideUseCase();
           const { matched } = await matchRideUseCase.execute({
