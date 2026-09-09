@@ -17,6 +17,48 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  governed-final-read-only-certification:
+    name: Governed FINAL read-only certification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+      E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --include=dev --ignore-scripts
+      - name: Materialize authorized migration catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/authorized-migration-catalog"
+          npx tsx scripts/materialize-authorized-migration-catalog.ts \
+            --verify-fingerprint \
+            --output-dir "$RUNNER_TEMP/authorized-migration-catalog"
+      - name: Verify exact authorized migration artifact
+        run: |
+          node scripts/e2e/verify-authorized-migration-artifact.cjs "$RUNNER_TEMP/authorized-migration-catalog"
+          echo "PRISMA_MIGRATIONS_PATH=$RUNNER_TEMP/authorized-migration-catalog/catalog" >> "$GITHUB_ENV"
+      - name: Certify governed FINAL state read-only
+        id: final_certification
+        run: node scripts/e2e/migration-safety-audit.cjs --certify-final
+      - name: Require governed FINAL certification
+        if: ${{ always() }}
+        run: |
+          test "${{ steps.final_certification.outputs.state }}" = "FINAL"
+          test "${{ steps.final_certification.outputs.write_eligible }}" = "NO"
+          test "${{ steps.final_certification.outputs.governed_final }}" = "YES"
+          test "${{ steps.final_certification.outputs.human_inspection_required }}" = "NO"
+
   pooler-capability-proof:
     name: Supabase E2E pooler capability proof (read-only)
     runs-on: ubuntu-latest

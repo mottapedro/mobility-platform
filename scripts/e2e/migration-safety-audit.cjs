@@ -62,6 +62,13 @@ function evaluateMode({ mode, executionResult, stateName }) {
     return { writeEligible: 'NO', humanInspectionRequired: 'YES', governedFinal: 'NO', exitCode: 1 };
   }
 
+  if (mode === '--certify-final') {
+    if (stateName === 'FINAL') {
+      return { writeEligible: 'NO', humanInspectionRequired: 'NO', governedFinal: 'YES', exitCode: 0 };
+    }
+    return { writeEligible: 'NO', humanInspectionRequired: 'YES', governedFinal: 'NO', exitCode: 1 };
+  }
+
   if (mode === '--post-write' || mode === '--require-final') {
     if (executionResult === undefined) {
       return { writeEligible: 'NO', humanInspectionRequired: 'YES', governedFinal: 'NO', exitCode: 1 };

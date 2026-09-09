@@ -43,6 +43,20 @@ test('require-final success + FINAL is governed final', () => {
   assert.equal(result.exitCode, 0);
 });
 
+test('certify-final + FINAL is governed without execution result', () => {
+  const result = evaluateMode({ mode: '--certify-final', stateName: 'FINAL' });
+  assert.deepEqual(result, {
+    writeEligible: 'NO', humanInspectionRequired: 'NO', governedFinal: 'YES', exitCode: 0,
+  });
+});
+
+test('certify-final + incomplete state fails closed', () => {
+  const result = evaluateMode({ mode: '--certify-final', stateName: 'PARTIAL' });
+  assert.equal(result.governedFinal, 'NO');
+  assert.equal(result.humanInspectionRequired, 'YES');
+  assert.equal(result.exitCode, 1);
+});
+
 test('UNKNOWN remains fail-closed', () => {
   const result = evaluateMode({ mode: '--post-write', executionResult: 'success', stateName: 'UNKNOWN' });
   assert.equal(result.exitCode, 1);
