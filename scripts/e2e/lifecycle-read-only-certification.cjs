@@ -54,7 +54,7 @@ async function main() {
              current_setting('server_version_num') AS server_version_num,
              current_setting('transaction_read_only') AS transaction_read_only,
              ssl,
-             version
+             v.version
       FROM pg_stat_ssl
       CROSS JOIN (SELECT version()) AS v
       WHERE pid = pg_backend_pid()
