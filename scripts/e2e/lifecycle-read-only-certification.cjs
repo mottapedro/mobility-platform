@@ -49,6 +49,11 @@ async function main() {
     await client.connect();
     await client.query('BEGIN TRANSACTION READ ONLY');
 
+    const clientStream = client.connection?.stream;
+    const clientTlsEncrypted = clientStream?.encrypted === true;
+    const clientTlsAuthorized = clientStream?.authorized === true;
+    const clientTlsAuthorizationError = clientStream?.authorizationError;
+
     const connection = await client.query(`
       SELECT current_database() AS database_name,
              current_setting('server_version_num') AS server_version_num,
@@ -62,11 +67,20 @@ async function main() {
     const connectionRow = connection.rows[0];
     const pgMajor = String(connectionRow.server_version_num).slice(0, -2);
     emit('POOLER_CONNECTION', 'PASS');
-    emit('TLS', connectionRow.ssl === true ? 'PASS' : 'FAIL');
+    emit('CLIENT_TLS_ENCRYPTED', clientTlsEncrypted ? 'YES' : 'NO');
+    emit('CLIENT_TLS_AUTHORIZED', clientTlsAuthorized ? 'YES' : 'NO');
+    emit('BACKEND_PG_STAT_SSL', connectionRow.ssl === true ? 'true' : 'false');
+    const clientTlsPass = clientTlsEncrypted && clientTlsAuthorized && !clientTlsAuthorizationError;
+    emit('TLS', clientTlsPass ? 'PASS' : 'FAIL');
     emit('PG_VERSION', pgMajor);
     emit('DATABASE_NAME', connectionRow.database_name);
     emit('READ_ONLY_MODE', connectionRow.transaction_read_only === 'on' ? 'PASS' : 'FAIL');
-    if (connectionRow.ssl !== true || connectionRow.transaction_read_only !== 'on') throw new Error('READ_ONLY_CONNECTION_NOT_CONFIRMED');
+    if (!clientTlsPass) throw new Error('TLS_CERTIFICATION_FAILURE');
+    if (connectionRow.transaction_read_only !== 'on') {
+      emit('DATABASE_READ_ONLY_ENFORCEMENT', 'FAIL');
+      throw new Error('READ_ONLY_ENFORCEMENT_FAILURE');
+    }
+    emit('DATABASE_READ_ONLY_ENFORCEMENT', 'PASS');
 
     const enumRows = await client.query(`
       SELECT t.typname AS enum_name, e.enumlabel AS enum_value
