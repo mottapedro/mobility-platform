@@ -18,7 +18,7 @@ const expectedStatuses = {
   RideOfferStatus: ['PENDING', 'ACCEPTED', 'REJECTED', 'EXPIRED', 'CANCELLED'],
 };
 const expectedColumns = {
-  RideRequest: ['currentDispatchStage', 'rootDriverId', 'referredByDriverId', 'selectedDriverId', 'currentCandidateDriverId', 'excludedDriverIds'],
+  RideRequest: ['currentDispatchStage', 'rootDriverId', 'selectedDriverId', 'currentCandidateDriverId', 'excludedDriverIds'],
 };
 const expectedMigrations = [
   '20260910000000_add_waiting_owner_ride_status',
