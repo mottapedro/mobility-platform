@@ -144,6 +144,8 @@ model DriverOperationalZone {
 model RideRequest {
   id                  String      @id @default(uuid())
   passengerId         String
+  creationCorrelationId String?    @unique
+  creationIntentFingerprint String?
     origin              String
   destination         String
   /// null = IMMEDIATE; future date = SCHEDULED
@@ -389,6 +391,7 @@ enum RideStatus {
   WAITING_REFERRAL
   WAITING_PARTNER
   WAITING_GENERAL
+  WAITING_OWNER
   PAID
 }
 
@@ -397,6 +400,7 @@ enum RideOfferStatus {
   ACCEPTED
   REJECTED
   EXPIRED
+  CANCELLED
   PAID
 }
 

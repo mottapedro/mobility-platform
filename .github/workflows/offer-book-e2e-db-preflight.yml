@@ -409,7 +409,7 @@ jobs:
           excluded_count=3
 
           test -n "$catalog_path"
-          test "$catalog_count" = "51"
+          test "$catalog_count" = "56"
           test "$unknown_count" = "0"
           test "$excluded_count" = "3"
           test -d "$catalog_path"

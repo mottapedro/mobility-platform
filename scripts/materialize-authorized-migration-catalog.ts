@@ -60,6 +60,11 @@ export const POST_CUTOFF_MIGRATIONS = [
   "20260817000002_add_ride_quote_contract",
   "20260817000003_add_driver_base_current_location_offer_snapshot",
   "20260824000000_add_ride_offer_history_index",
+  "20260909000000_add_ride_creation_correlation",
+  "20260909000001_add_ride_creation_intent_fingerprint",
+  "20260910000000_add_waiting_owner_ride_status",
+  "20260910000001_add_cancelled_ride_offer_status",
+  "20260911000000_restore_one_pending_offer_per_ride",
 ] as const;
 
 export const EXCLUDED_SUPERSEDED_MIGRATIONS = [
@@ -100,14 +105,14 @@ function difference(left: readonly string[], right: readonly string[]): string[]
 
 function assertCatalogDefinition(): void {
   const expected = unique(AUTHORIZED_MIGRATIONS);
-  if (expected.length !== AUTHORIZED_CATALOG_COUNT || AUTHORIZED_CATALOG_COUNT !== 51) {
-    throw new Error(`Authorized migration catalog must contain 51 unique entries, got ${expected.length}`);
+  if (expected.length !== AUTHORIZED_CATALOG_COUNT || AUTHORIZED_CATALOG_COUNT !== 56) {
+    throw new Error(`Authorized migration catalog must contain 56 unique entries, got ${expected.length}`);
   }
   if (HISTORICAL_MIGRATIONS.length !== 43) {
     throw new Error(`Historical migration definition must contain 43 entries, got ${HISTORICAL_MIGRATIONS.length}`);
   }
-  if (POST_CUTOFF_MIGRATIONS.length !== 7) {
-    throw new Error(`Post-cutoff migration definition must contain 7 entries, got ${POST_CUTOFF_MIGRATIONS.length}`);
+  if (POST_CUTOFF_MIGRATIONS.length !== 12) {
+    throw new Error(`Post-cutoff migration definition must contain 12 entries, got ${POST_CUTOFF_MIGRATIONS.length}`);
   }
 }
 

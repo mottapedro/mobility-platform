@@ -21,7 +21,7 @@ const manifest = parseManifest(path.join(artifact, 'manifest'));
 const actual = fingerprint(path.join(artifact, 'catalog'));
 const expected = fs.readFileSync(path.resolve('governance/authorized-migration-catalog.sha256'), 'utf8').trim();
 if (manifest.commit_sha !== (process.env.GITHUB_SHA || 'UNSET')) throw new Error('CATALOG_COMMIT_MISMATCH');
-if (manifest.catalog_count !== '51') throw new Error('CATALOG_COUNT_MISMATCH');
+if (manifest.catalog_count !== '56') throw new Error('CATALOG_COUNT_MISMATCH');
 if (actual !== manifest.fingerprint || actual !== expected) throw new Error('CATALOG_FINGERPRINT_MISMATCH');
 console.log(`AUTHORIZED_CATALOG_FINGERPRINT=${actual}`);
 console.log('EXECUTED_CATALOG_ARTIFACT=VERIFIED');
