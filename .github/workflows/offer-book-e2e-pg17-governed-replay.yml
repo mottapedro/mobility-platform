@@ -1,0 +1,128 @@
+name: Offer Book E2E PG17 Governed Replay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  governed-pg17-replay:
+    name: Ephemeral PostgreSQL 17 governed replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mobility_replay
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mobility_replay"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mobility_replay?schema=public
+      EPHEMERAL_PG_HOST: postgres
+      EPHEMERAL_PG_PORT: '5432'
+      EPHEMERAL_PG_DATABASE: mobility_replay
+      EXPECTED_MIGRATION_NAMES: 20260101000000_init_baseline,20260813000000_add_auth_sessions,20260813010000_seed_skill_catalog_reference_data,20260817000000_ride_scheduled_at_nullable,20260817000001_add_ride_place_ids,20260817000002_add_ride_quote_contract,20260817000003_add_driver_base_current_location_offer_snapshot,20260824000000_add_ride_offer_history_index,20260909000000_add_ride_creation_correlation,20260909000001_add_ride_creation_intent_fingerprint,20260910000000_add_waiting_owner_ride_status,20260910000001_add_cancelled_ride_offer_status,20260911000000_restore_one_pending_offer_per_ride
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
+
+      - name: Wait for PostgreSQL 17
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if pg_isready -h postgres -p 5432 -U postgres -d mobility_replay; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Materialize and verify authorized catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/authorized-migration-catalog"
+          output_file="$RUNNER_TEMP/authorized-catalog.log"
+          npx tsx scripts/materialize-authorized-migration-catalog.ts \
+            --output-dir "$artifact_root" \
+            --verify-fingerprint \
+            > "$output_file"
+
+          catalog_path="$artifact_root/catalog"
+          test "$(sed -n 's/^AUTHORIZED_CATALOG_COUNT=//p' "$output_file")" = 56
+          test "$(sed -n 's/^UNKNOWN_MIGRATION_COUNT=//p' "$output_file")" = 0
+          test "$(sed -n 's/^EXCLUDED_MIGRATION_COUNT=//p' "$output_file")" = 1
+          test -d "$catalog_path"
+          test -f "$artifact_root/manifest"
+          test "$(sed -n 's/^AUTHORIZED_CATALOG_FINGERPRINT=//p' "$output_file")" = \
+            "061c8aa563bbb2023fa96a17f7ef4580e3303dfc6271427c77c369753f622d88"
+
+          node scripts/e2e/verify-authorized-migration-artifact.cjs "$artifact_root"
+
+          echo "PRISMA_MIGRATIONS_PATH=$catalog_path" >> "$GITHUB_ENV"
+          echo "AUTHORIZED_CATALOG_ARTIFACT_ROOT=$artifact_root" >> "$GITHUB_ENV"
+          echo "PRISMA_MIGRATIONS_PATH=$catalog_path"
+          echo "VERIFIED_ARTIFACT_EQUALS_PRISMA_EXECUTION_CATALOG=YES"
+
+      - name: Apply certified baseline
+        run: npx prisma db execute --config scripts/prisma.bootstrap.ts --file "$PRISMA_MIGRATIONS_PATH/20260101000000_init_baseline/migration.sql"
+
+      - name: Register baseline and resolve historical migrations
+        run: |
+          set -euo pipefail
+          npx prisma migrate resolve --config scripts/prisma.bootstrap.ts --applied 20260101000000_init_baseline
+          output_file="$RUNNER_TEMP/historical-resolve.log"
+          set +e
+          npx tsx scripts/baseline-resolve-historical.ts > "$output_file" 2>&1
+          exit_code=$?
+          set -e
+          grep -Fx 'Applied: 43/43' "$output_file"
+          grep -Fx 'Failed:  0/43' "$output_file"
+          test "$exit_code" -eq 0
+
+      - name: Verify pre-deploy history and exact pending set
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/e2e/ephemeral-replay-proof.cjs --pre-deploy
+
+      - name: Apply exactly the twelve post-resolve migrations
+        run: npx prisma migrate deploy --config scripts/prisma.bootstrap.ts
+
+      - name: Verify physical schema and one-pending index
+        run: node scripts/e2e/ephemeral-replay-proof.cjs --physical
+
+      - name: Audit final migration history read-only
+        run: node scripts/e2e/ephemeral-migration-safety-audit.cjs
+
+      - name: Cleanup authorized catalog
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          catalog_path="${PRISMA_MIGRATIONS_PATH:-}"
+          if [[ -z "$catalog_path" ]]; then exit 0; fi
+          case "$catalog_path" in
+            "$RUNNER_TEMP"/authorized-migration-catalog/*) rm -rf -- "$catalog_path" ;;
+            *) echo "Refusing unexpected catalog path" >&2; exit 1 ;;
+          esac
