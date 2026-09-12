@@ -26,7 +26,7 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/mobility_replay?schema=public
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mobility_replay?schema=public
       EPHEMERAL_PG_HOST: postgres
       EPHEMERAL_PG_PORT: '5432'
       EPHEMERAL_PG_DATABASE: mobility_replay
@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in {1..30}; do
-            if pg_isready -h postgres -p 5432 -U postgres -d mobility_replay; then exit 0; fi
+            if pg_isready -h localhost -p 5432 -U postgres -d mobility_replay; then exit 0; fi
             sleep 2
           done
           exit 1
