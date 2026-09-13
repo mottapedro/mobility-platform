@@ -27,7 +27,7 @@ jobs:
           --health-retries 12
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mobility_replay?schema=public
-      EPHEMERAL_PG_HOST: postgres
+      EPHEMERAL_PG_HOST: localhost
       EPHEMERAL_PG_PORT: '5432'
       EPHEMERAL_PG_DATABASE: mobility_replay
       EXPECTED_MIGRATION_NAMES: 20260101000000_init_baseline,20260813000000_add_auth_sessions,20260813010000_seed_skill_catalog_reference_data,20260817000000_ride_scheduled_at_nullable,20260817000001_add_ride_place_ids,20260817000002_add_ride_quote_contract,20260817000003_add_driver_base_current_location_offer_snapshot,20260824000000_add_ride_offer_history_index,20260909000000_add_ride_creation_correlation,20260909000001_add_ride_creation_intent_fingerprint,20260910000000_add_waiting_owner_ride_status,20260910000001_add_cancelled_ride_offer_status,20260911000000_restore_one_pending_offer_per_ride
