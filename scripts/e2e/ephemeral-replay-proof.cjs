@@ -61,32 +61,59 @@ async function preDeploy(client) {
     FROM public."_prisma_migrations"
     ORDER BY migration_name
   `);
-  const applied = rows.map((row) => row.migration_name).sort();
-  const expected = new Set(PENDING);
-  const pending = applied.filter((name) => !expected.has(name));
-  const unfinished = rows.filter((row) => !row.finished_at && !row.rolled_back_at && !row.logs);
-  const rolledBack = rows.filter((row) => row.rolled_back_at);
-  if (applied.length !== 44 || unfinished.length || rolledBack.length || pending.length !== 0) {
-    throw new Error(`PRE_DEPLOY_HISTORY_FAILED applied=${applied.length} unfinished=${unfinished.length} rolled_back=${rolledBack.length}`);
-  }
-
   const catalog = process.env.PRISMA_MIGRATIONS_PATH;
   if (!catalog) throw new Error('PRISMA_MIGRATIONS_PATH_REQUIRED');
   const fs = require('node:fs');
   const all = fs.readdirSync(catalog, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && fs.existsSync(`${catalog}/${entry.name}/migration.sql`))
     .map((entry) => entry.name).sort();
-  const expectedApplied = all.filter((name) => !PENDING.includes(name));
-  if (expectedApplied.length !== 44 || expectedApplied.some((name, index) => name !== applied[index])) {
-    throw new Error(`PRE_DEPLOY_APPLIED_SET_MISMATCH actual=${applied.join(',')}`);
-  }
-  const actualPending = all.filter((name) => !applied.includes(name));
-  if (actualPending.length !== PENDING.length || actualPending.some((name, index) => name !== PENDING[index])) {
-    throw new Error(`PENDING_SET_MISMATCH actual=${actualPending.join(',')}`);
+  const evidence = evaluatePreDeployHistory(rows, all);
+  for (const [key, value] of Object.entries(evidence)) console.log(`${key}=${value}`);
+  if (evidence.PRE_DEPLOY_HISTORY_VALID !== 'YES') {
+    throw new Error('PRE_DEPLOY_HISTORY_FAILED see PRE_DEPLOY evidence');
   }
   console.log('PRE_DEPLOY_APPLIED_MIGRATION_COUNT=44');
-  console.log('PRE_DEPLOY_PENDING_COUNT=12');
   console.log('PENDING_EXACT_SET_MATCH=YES');
+}
+
+function evaluatePreDeployHistory(rows, authorizedNames) {
+  const appliedSet = new Set(rows.map((row) => row.migration_name));
+  const authorizedSet = new Set(authorizedNames);
+  const expectedPendingSet = new Set(PENDING);
+  const expectedAppliedSet = new Set([...authorizedSet].filter((name) => !expectedPendingSet.has(name)));
+  const actualPendingSet = new Set([...authorizedSet].filter((name) => !appliedSet.has(name)));
+  const differenceCount = (left, right) => [...left].filter((name) => !right.has(name)).length;
+  const missingApplied = differenceCount(expectedAppliedSet, appliedSet);
+  const unexpectedApplied = differenceCount(appliedSet, expectedAppliedSet);
+  const missingPending = differenceCount(expectedPendingSet, actualPendingSet);
+  const unexpectedPending = differenceCount(actualPendingSet, expectedPendingSet);
+  // A failed row with logs is still unfinished; logs must not hide it.
+  const unfinished = rows.filter((row) => !row.finished_at).length;
+  const rolledBack = rows.filter((row) => row.rolled_back_at).length;
+  const superseded = '20260518000000_passenger_codes_not_null_future';
+  const supersededPresent = authorizedSet.has(superseded) || appliedSet.has(superseded);
+  const appliedExact = missingApplied === 0 && unexpectedApplied === 0 && rows.length === appliedSet.size;
+  const pendingExact = missingPending === 0 && unexpectedPending === 0;
+  const valid = authorizedNames.length === 56 && authorizedSet.size === 56
+    && expectedPendingSet.size === 12 && expectedAppliedSet.size === 44
+    && rows.length === 44 && appliedExact && actualPendingSet.size === 12 && pendingExact
+    && unfinished === 0 && rolledBack === 0 && !supersededPresent;
+  return {
+    PRE_DEPLOY_AUTHORIZED_COUNT: authorizedSet.size,
+    PRE_DEPLOY_EXPECTED_APPLIED_COUNT: expectedAppliedSet.size,
+    PRE_DEPLOY_APPLIED_COUNT: rows.length,
+    PRE_DEPLOY_APPLIED_EXACT_MATCH: appliedExact ? 'YES' : 'NO',
+    PRE_DEPLOY_MISSING_APPLIED_COUNT: missingApplied,
+    PRE_DEPLOY_UNEXPECTED_APPLIED_COUNT: unexpectedApplied,
+    PRE_DEPLOY_PENDING_COUNT: actualPendingSet.size,
+    PRE_DEPLOY_PENDING_EXACT_MATCH: pendingExact ? 'YES' : 'NO',
+    PRE_DEPLOY_MISSING_PENDING_COUNT: missingPending,
+    PRE_DEPLOY_UNEXPECTED_PENDING_COUNT: unexpectedPending,
+    PRE_DEPLOY_UNFINISHED_COUNT: unfinished,
+    PRE_DEPLOY_ROLLED_BACK_COUNT: rolledBack,
+    PRE_DEPLOY_PASSENGER_SUPERSEDED_PRESENT: supersededPresent ? 'YES' : 'NO',
+    PRE_DEPLOY_HISTORY_VALID: valid ? 'YES' : 'NO',
+  };
 }
 
 async function physical(client) {
@@ -140,4 +167,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { validateTarget, expectedTarget };
+module.exports = { validateTarget, expectedTarget, evaluatePreDeployHistory };
