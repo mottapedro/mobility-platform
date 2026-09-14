@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { Client } = require('pg');
 const { validateTarget, PROJECT_REF } = require('./supabase-target.cjs');
 
@@ -95,7 +96,202 @@ async function runEnumDependentChecks(client, availability) {
   return result;
 }
 
+const supersededPassenger = '20260518000000_passenger_codes_not_null_future';
+const pendingEffectContracts = [
+  { migration: '20260909000000_add_ride_creation_correlation', effects: ['RideRequest.creationCorrelationId', 'RideRequest_creationCorrelationId_key'], dependency: 'NONE_FOR_NULLABLE_COLUMN;UNIQUE_INDEX_EXISTING_DATA_COMPATIBILITY' },
+  { migration: '20260909000001_add_ride_creation_intent_fingerprint', effects: ['RideRequest.creationIntentFingerprint'], dependency: 'NONE_FOR_NULLABLE_COLUMN' },
+  { migration: '20260910000000_add_waiting_owner_ride_status', effects: ['RideStatus.WAITING_OWNER'], dependency: 'ADD_ONLY_ENUM' },
+  { migration: '20260910000001_add_cancelled_ride_offer_status', effects: ['RideOfferStatus.CANCELLED'], dependency: 'ADD_ONLY_ENUM' },
+  { migration: '20260911000000_restore_one_pending_offer_per_ride', effects: ['RideOffer_one_pending_per_ride'], dependency: 'UNIQUE_PARTIAL_INDEX' },
+];
+
+function verifyCertificationArtifact(catalogPath) {
+  try {
+    // Reuse the governed fingerprint/manifest verifier; never duplicate its algorithm.
+    execFileSync(process.execPath, [path.resolve('scripts/e2e/verify-authorized-migration-artifact.cjs'), path.dirname(catalogPath)], { stdio: 'pipe' });
+    const expression = `import { AUTHORIZED_MIGRATIONS, HISTORICAL_MIGRATIONS, POST_CUTOFF_MIGRATIONS, BASELINE_MIGRATION } from './scripts/materialize-authorized-migration-catalog.ts'; console.log(JSON.stringify({authorized:AUTHORIZED_MIGRATIONS,historical:HISTORICAL_MIGRATIONS,postCutoff:POST_CUTOFF_MIGRATIONS,baseline:BASELINE_MIGRATION}));`;
+    const model = JSON.parse(execFileSync(process.execPath, [path.resolve('node_modules/tsx/dist/cli.mjs'), '-e', expression], { encoding: 'utf8' }));
+    const actual = readAuthorizedMigrationNames(catalogPath);
+    const missing = model.authorized.filter((name) => !actual.includes(name));
+    const unexpected = actual.filter((name) => !model.authorized.includes(name));
+    emit('AUTHORIZED_ARTIFACT_EXPECTED_COUNT', model.authorized.length);
+    emit('AUTHORIZED_ARTIFACT_ACTUAL_COUNT', actual.length);
+    emit('AUTHORIZED_ARTIFACT_MISSING_COUNT', missing.length);
+    emit('AUTHORIZED_ARTIFACT_UNEXPECTED_COUNT', unexpected.length);
+    emit('PASSENGER_SUPERSEDED_PRESENT_IN_ARTIFACT', actual.includes(supersededPassenger) ? 'YES' : 'NO');
+    if (missing.length || unexpected.length || actual.includes(supersededPassenger)) throw new Error('ARTIFACT_SET_MISMATCH');
+    emit('AUTHORIZED_ARTIFACT_VERIFY', 'PASS');
+    return { verified: true, model };
+  } catch {
+    emit('AUTHORIZED_ARTIFACT_VERIFY', 'FAIL');
+    throw new Error('AUTHORIZED_ARTIFACT_VERIFICATION_FAILED');
+  }
+}
+
+function targetIdentity(target, connection) {
+  const major = Math.floor(Number(connection.server_version_num) / 10000);
+  const valid = target.mode === 'session' && target.projectRef === PROJECT_REF
+    && connection.database_name === 'postgres' && major === 17;
+  return { valid, outputs: {
+    TARGET_PROVIDER: 'Supabase', TARGET_PROJECT_ID: target.projectRef,
+    TARGET_DATABASE_NAME: connection.database_name, TARGET_HOST_CLASS: target.mode === 'session' ? 'SESSION_POOLER' : 'REJECTED',
+    TARGET_IS_SUPABASE_E2E: valid ? 'YES' : 'NO',
+    TARGET_IS_PRODUCTION: valid ? 'NO' : 'UNKNOWN', TARGET_IS_OTHER_HML: valid ? 'NO' : 'UNKNOWN',
+    POSTGRES_VERSION: major, DATABASE_URL_USED: 'YES', DIRECT_URL_USED: 'NO',
+  } };
+}
+
+function evaluatePromotionEvidence({ artifactVerified, identityValid, model, rows, effects, compatibility, unrelatedDrift = [], duplicatePending = null }) {
+  const history = new Set(rows.map((row) => row.migration_name));
+  const applied = new Set(rows.filter((row) => row.finished_at && !row.rolled_back_at && !row.logs).map((row) => row.migration_name));
+  const pending = model.authorized.filter((name) => !applied.has(name));
+  const unexpected = [...history].filter((name) => !model.authorized.includes(name));
+  const expectedFive = pendingEffectContracts.map((entry) => entry.migration);
+  const exactFive = JSON.stringify(pending) === JSON.stringify(expectedFive);
+  // Order comes from the governed catalog, and requires a fully applied prefix.
+  const prefix = model.authorized.slice(0, model.authorized.length - expectedFive.length);
+  const orderValid = exactFive && prefix.every((name) => applied.has(name))
+    && JSON.stringify(model.authorized.slice(-expectedFive.length)) === JSON.stringify(expectedFive);
+  const historyClean = unexpected.length === 0 && rows.every((row) => row.finished_at && !row.rolled_back_at && !row.logs)
+    && history.size === rows.length && !history.has(supersededPassenger);
+  const expectedMissing = [];
+  const unexplained = [...unrelatedDrift];
+  const matrix = pendingEffectContracts.map((entry) => {
+    const historyPresent = history.has(entry.migration);
+    const present = entry.effects.map((name) => effects[name]);
+    entry.effects.forEach((name) => {
+      if (effects[name] === false && !historyPresent) expectedMissing.push(name);
+      else if (effects[name] !== true) unexplained.push(name + (effects[name] === false ? ':HISTORY_PRESENT_EFFECT_MISSING' : ':UNPROVEN'));
+    });
+    const allPresent = present.every((value) => value === true);
+    const allAbsent = present.every((value) => value === false);
+    const classification = historyPresent
+      ? (allPresent ? 'ALREADY_APPLIED_AND_PRESENT' : 'HISTORY_PRESENT_EFFECT_MISSING')
+      : allPresent ? 'HISTORY_MISSING_EFFECT_ALREADY_PRESENT'
+        : allAbsent ? 'HISTORY_MISSING_EFFECT_MISSING' : 'INCONCLUSIVE';
+    const check = compatibility[entry.migration] || { compatible: 'UNKNOWN', blocker: 'EVIDENCE_MISSING' };
+    return { MIGRATION: entry.migration, HISTORY_PRESENT: historyPresent ? 'YES' : 'NO',
+      EXPECTED_EFFECTS: entry.effects, EFFECTS_PRESENT: Object.fromEntries(entry.effects.map((name) => [name, effects[name] ?? 'UNKNOWN'])),
+      ...(entry === pendingEffectContracts[0] ? { COLUMN_PRESENT: present[0], UNIQUE_INDEX_PRESENT: present[1] } : {}),
+      ...(entry === pendingEffectContracts[1] ? { COLUMN_PRESENT: present[0] } : {}),
+      ...(entry.dependency === 'ADD_ONLY_ENUM' ? { ENUM_VALUE_PRESENT: present[0] } : {}),
+      ...(entry === pendingEffectContracts[4] ? { INDEX_PRESENT: present[0], DUPLICATE_PENDING_RIDE_COUNT: duplicatePending } : {}),
+      DATA_DEPENDENCY: entry.dependency, TARGET_COMPATIBLE: check.compatible, BLOCKER: check.blocker, CLASSIFICATION: classification };
+  });
+  const compatible = exactFive && matrix.every((entry) => entry.TARGET_COMPATIBLE === 'YES');
+  const safe = artifactVerified === true && identityValid === true && historyClean && orderValid && compatible && unexplained.length === 0;
+  const attemptsHistorical = pending.some((name) => model.historical.includes(name));
+  return { safe, matrix, outputs: {
+    TARGET_POST_CUTOFF_EFFECT_MATRIX: JSON.stringify(matrix),
+    TARGET_PENDING_MIGRATION_COMPATIBILITY_MATRIX: JSON.stringify(matrix.filter((entry) => pending.includes(entry.MIGRATION)).map(({ MIGRATION, DATA_DEPENDENCY, TARGET_COMPATIBLE, BLOCKER }) => ({ MIGRATION, DATA_DEPENDENCY, TARGET_COMPATIBLE, BLOCKER }))),
+    TARGET_PENDING_MIGRATION_COMPATIBILITY_MATRIX_COMPLETE: exactFive && matrix.every((entry) => entry.TARGET_COMPATIBLE !== 'UNKNOWN') ? 'YES' : 'NO',
+    TARGET_EXPECTED_PENDING_PHYSICAL_EFFECTS: expectedMissing,
+    TARGET_UNEXPLAINED_PHYSICAL_DRIFT: unexplained.length ? unexplained : 'NONE',
+    PHYSICAL_DRIFT_ASSESSMENT_SCOPE: 'FIVE_PENDING_EFFECTS_AND_REQUIRED_LIFECYCLE_PASSENGER_CONTRACT',
+    TARGET_PENDING_ORDER_VALID: orderValid ? 'YES' : 'INCONCLUSIVE',
+    TARGET_HISTORY_CONFLICT_PRESENT: historyClean ? 'NO' : 'YES',
+    MIGRATE_DEPLOY_PROJECTION_CATALOG: 'VERIFIED_AUTHORIZED_ARTIFACT_ONLY',
+    MIGRATE_DEPLOY_EXPECTED_PENDING_COUNT: pending.length,
+    MIGRATE_DEPLOY_EXPECTED_PENDING_SET: pending,
+    MIGRATE_DEPLOY_WOULD_ATTEMPT_SUPERSEDED_PASSENGER: artifactVerified ? (pending.includes(supersededPassenger) ? 'YES' : 'NO') : 'INCONCLUSIVE',
+    MIGRATE_DEPLOY_WOULD_ATTEMPT_HISTORICAL_RESOLVED_SQL: artifactVerified ? (attemptsHistorical ? 'YES' : 'NO') : 'INCONCLUSIVE',
+    MIGRATE_DEPLOY_SEQUENCE_DETERMINISTIC: artifactVerified && historyClean && orderValid ? 'YES' : 'INCONCLUSIVE',
+    TARGET_MIGRATE_DEPLOY_READINESS_CLASS: safe ? 'SAFE_CANDIDATE_FOR_FUTURE_GOVERNED_DEPLOY' : 'BLOCKED',
+    MIGRATE_DEPLOY_AUTHORITY: 'DENIED',
+  } };
+}
+
+async function collectPromotionEvidence(client, facts) {
+  const { artifact, identityValid, migrationRows, columnRows, availability, snapshotPresent, duplicatePending } = facts;
+  const columns = new Map(columnRows.map((row) => [`${row.table_name}.${row.column_name}`, row]));
+  const unrelatedDrift = [];
+  for (const name of ['creationCorrelationId', 'creationIntentFingerprint']) {
+    const column = columns.get(`RideRequest.${name}`);
+    if (column && (column.udt_name !== 'text' || column.is_nullable !== 'YES')) unrelatedDrift.push(`RideRequest.${name}:TYPE_OR_NULLABILITY_MISMATCH`);
+  }
+  for (const [enumName, expected] of Object.entries(expectedStatuses)) {
+    for (const value of expected.filter((entry) => !(enumName === 'RideStatus' && entry === 'WAITING_OWNER') && !(enumName === 'RideOfferStatus' && entry === 'CANCELLED'))) {
+      if (!availability.values.get(enumName).includes(value)) unrelatedDrift.push(`${enumName}.${value}:MISSING`);
+    }
+  }
+  for (const name of expectedColumns.RideRequest.slice(0, 5)) {
+    if (!columns.has(`RideRequest.${name}`)) unrelatedDrift.push(`RideRequest.${name}:MISSING`);
+  }
+  if (!snapshotPresent) unrelatedDrift.push('OwnershipSnapshot:MISSING');
+  for (const name of expectedColumns.Passenger) {
+    if (columns.get(`Passenger.${name}`)?.is_nullable !== 'YES') unrelatedDrift.push(`Passenger.${name}:NULLABILITY_OR_COLUMN_MISMATCH`);
+  }
+  if (expectedColumns.Passenger.every((name) => columns.has(`Passenger.${name}`))) {
+    const counts = await client.query('SELECT count(*) AS total, count(*) FILTER (WHERE "referralCode" IS NULL) AS referral_null, count(*) FILTER (WHERE "publicSlug" IS NULL) AS slug_null FROM public."Passenger"');
+    emit('PASSENGER_ROW_COUNT', counts.rows[0].total);
+    emit('PASSENGER_REFERRAL_CODE_NULL_COUNT', counts.rows[0].referral_null);
+    emit('PASSENGER_PUBLIC_SLUG_NULL_COUNT', counts.rows[0].slug_null);
+  } else {
+    for (const key of ['PASSENGER_ROW_COUNT', 'PASSENGER_REFERRAL_CODE_NULL_COUNT', 'PASSENGER_PUBLIC_SLUG_NULL_COUNT']) emit(key, 'UNKNOWN');
+  }
+  // Resolve by object name even if it belongs to a wrong table or is not an index.
+  const indexRows = await client.query(`
+    SELECT c.relname, c.relkind, t.relname AS table_name, i.indisunique, i.indisvalid,
+           i.indisready, i.indislive, i.indimmediate, i.indnkeyatts, i.indnatts,
+           i.indexprs IS NULL AS plain_key, am.amname,
+           pg_get_expr(i.indpred, i.indrelid, false) AS predicate,
+           a.attname AS key_name, op.opcdefault,
+           op.opcintype = a.atttypid AS opclass_matches,
+           i.indcollation[0] = a.attcollation AS collation_matches
+    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    LEFT JOIN pg_index i ON i.indexrelid = c.oid
+    LEFT JOIN pg_class t ON t.oid = i.indrelid
+    LEFT JOIN pg_am am ON am.oid = c.relam
+    LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0] AND NOT a.attisdropped
+    LEFT JOIN pg_opclass op ON op.oid = i.indclass[0]
+    WHERE n.nspname = 'public' AND c.relname IN ('RideRequest_creationCorrelationId_key', 'RideOffer_one_pending_per_ride')
+  `);
+  const indexes = new Map(indexRows.rows.map((row) => [row.relname, row]));
+  const equivalent = (row, table, column, partial) => Boolean(row && row.relkind === 'i' && row.table_name === table
+    && row.indisunique && row.indisvalid && row.indisready && row.indislive && row.indimmediate
+    && row.indnkeyatts === 1 && row.indnatts === 1 && row.plain_key && row.key_name === column
+    && row.amname === 'btree' && row.opcdefault && row.opclass_matches && row.collation_matches
+    && (partial ? ['(status = \'PENDING\'::"RideOfferStatus")', '(\'PENDING\'::"RideOfferStatus" = status)'].includes(row.predicate) : row.predicate === null));
+  const correlationIndex = indexes.get('RideRequest_creationCorrelationId_key');
+  const pendingIndex = indexes.get('RideOffer_one_pending_per_ride');
+  const pendingEquivalent = equivalent(pendingIndex, 'RideOffer', 'rideRequestId', true);
+  if (correlationIndex && !equivalent(correlationIndex, 'RideRequest', 'creationCorrelationId', false)) unrelatedDrift.push('RideRequest_creationCorrelationId_key:INCOMPATIBLE');
+  if (pendingIndex && !pendingEquivalent) unrelatedDrift.push('RideOffer_one_pending_per_ride:INCOMPATIBLE');
+  const effects = {
+    'RideRequest.creationCorrelationId': columns.has('RideRequest.creationCorrelationId'),
+    RideRequest_creationCorrelationId_key: Boolean(correlationIndex),
+    'RideRequest.creationIntentFingerprint': columns.has('RideRequest.creationIntentFingerprint'),
+    'RideStatus.WAITING_OWNER': availability.waitingOwnerPresent,
+    'RideOfferStatus.CANCELLED': availability.cancelledPresent,
+    RideOffer_one_pending_per_ride: Boolean(pendingIndex),
+  };
+  let correlationDuplicates = 0;
+  if (effects['RideRequest.creationCorrelationId']) {
+    const result = await client.query('SELECT count(*) AS count FROM (SELECT "creationCorrelationId" FROM public."RideRequest" WHERE "creationCorrelationId" IS NOT NULL GROUP BY "creationCorrelationId" HAVING count(*) > 1) AS duplicates');
+    correlationDuplicates = Number(result.rows[0].count);
+  }
+  emit('CORRELATION_DUPLICATE_NON_NULL_GROUPS', correlationDuplicates);
+  emit('CORRELATION_EXISTING_DATA_BLOCKER', correlationDuplicates === 0 ? 'NO' : 'YES');
+  emit('WAITING_OWNER_EXISTING_DATA_BLOCKER', 'NO');
+  emit('CANCELLED_EXISTING_DATA_BLOCKER', 'NO');
+  emit('ONE_PENDING_EXISTING_DATA_COMPATIBLE', duplicatePending === 0 ? 'YES' : 'NO');
+  const checks = [
+    !effects['RideRequest.creationCorrelationId'] && !correlationIndex,
+    !effects['RideRequest.creationIntentFingerprint'],
+    availability.values.get('RideStatus').length > 0,
+    availability.values.get('RideOfferStatus').length > 0,
+    duplicatePending === 0 && (!pendingIndex || pendingEquivalent),
+  ];
+  const compatibility = Object.fromEntries(pendingEffectContracts.map((entry, i) => [entry.migration, {
+    compatible: checks[i] ? 'YES' : 'NO',
+    blocker: checks[i] ? 'NONE' : i < 2 ? 'ADD_COLUMN_OR_INDEX_ALREADY_EXISTS' : i === 4 ? 'DUPLICATES_OR_INCOMPATIBLE_INDEX' : 'ENUM_TYPE_MISSING',
+  }]));
+  return evaluatePromotionEvidence({ artifactVerified: artifact.verified, identityValid,
+    model: artifact.model, rows: migrationRows, effects, compatibility, unrelatedDrift, duplicatePending });
+}
+
 async function main() {
+  const artifact = verifyCertificationArtifact(required('PRISMA_MIGRATIONS_PATH'));
   const target = validateTarget(required('DATABASE_URL'));
   if (target.mode !== 'session') throw new Error('SESSION_POOLER_REQUIRED');
   required('E2E_CA_CERT');
@@ -125,7 +321,7 @@ async function main() {
       WHERE pid = pg_backend_pid()
     `);
     const connectionRow = connection.rows[0];
-    const pgMajor = String(connectionRow.server_version_num).slice(0, -2);
+    const pgMajor = Math.floor(Number(connectionRow.server_version_num) / 10000);
     emit('POOLER_CONNECTION', 'PASS');
     emit('CLIENT_TLS_ENCRYPTED', clientTlsEncrypted ? 'YES' : 'NO');
     emit('CLIENT_TLS_AUTHORIZED', clientTlsAuthorized ? 'YES' : 'NO');
@@ -141,6 +337,9 @@ async function main() {
       throw new Error('READ_ONLY_ENFORCEMENT_FAILURE');
     }
     emit('DATABASE_READ_ONLY_ENFORCEMENT', 'PASS');
+    const identity = targetIdentity(target, connectionRow);
+    for (const [key, value] of Object.entries(identity.outputs)) emit(key, value);
+    if (!identity.valid) throw new Error('TARGET_IDENTITY_FAILURE');
 
     const enumRows = await client.query(`
       SELECT t.typname AS enum_name, e.enumlabel AS enum_value
@@ -187,7 +386,7 @@ async function main() {
       FROM public."_prisma_migrations"
       ORDER BY migration_name
     `);
-    const authorizedNames = readAuthorizedMigrationNames(required('PRISMA_MIGRATIONS_PATH'));
+    const authorizedNames = artifact.model.authorized;
     const inventory = evaluateMigrationInventory(migrationRows.rows, authorizedNames);
     const applied = new Map(migrationRows.rows.map((row) => [row.migration_name, row]));
     for (const migration of expectedMigrations) {
@@ -254,6 +453,13 @@ async function main() {
     emit('DUPLICATE_PENDING_RIDE_COUNT', duplicates.rows.length);
     emit('DUPLICATE_PENDING_OFFERS_PRESENT', duplicates.rows.length > 0 ? 'YES' : 'NO');
 
+    const completion = await collectPromotionEvidence(client, {
+      artifact, identityValid: identity.valid, migrationRows: migrationRows.rows,
+      columnRows: columnRows.rows, availability, snapshotPresent,
+      duplicatePending: duplicates.rows.length,
+    });
+    for (const [key, value] of Object.entries(completion.outputs)) emit(key, value);
+
     const enumChecks = await runEnumDependentChecks(client, availability);
     emit('WAITING_OWNER_ROW_CHECK', availability.waitingOwnerPresent ? 'EXECUTED' : enumChecks.waitingOwner);
     emit('TARGET_WAITING_OWNER_ROW_COUNT', enumChecks.waitingOwner);
@@ -290,6 +496,11 @@ if (require.main === module) main().catch((error) => {
 });
 
 module.exports = {
+  collectPromotionEvidence,
+  targetIdentity,
+  verifyCertificationArtifact,
+  evaluatePromotionEvidence,
+  pendingEffectContracts,
   enumAvailability,
   enumDependentChecks,
   evaluateMigrationInventory,
