@@ -30,5 +30,15 @@ jobs:
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --include=dev --ignore-scripts
 
+      - name: Materialize verified authorized catalog
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_root="$RUNNER_TEMP/authorized-migration-catalog"
+          npx tsx scripts/materialize-authorized-migration-catalog.ts \
+            --output-dir "$artifact_root" \
+            --verify-fingerprint
+          echo "PRISMA_MIGRATIONS_PATH=$artifact_root/catalog" >> "$GITHUB_ENV"
+
       - name: Run read-only schema and migration certification
         run: node scripts/e2e/lifecycle-read-only-certification.cjs
