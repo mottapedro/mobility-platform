@@ -41,10 +41,45 @@ function validateTarget(rawUrl) {
   return url;
 }
 
+function catalogNames(catalog) {
+  const fs = require('node:fs');
+  if (!catalog || !fs.existsSync(catalog)) throw new Error('AUTHORIZED_CATALOG_PATH_REQUIRED');
+  const names = fs.readdirSync(catalog, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fs.existsSync(`${catalog}/${entry.name}/migration.sql`))
+    .map((entry) => entry.name).sort();
+  if (!names.length) throw new Error('AUTHORIZED_CATALOG_EMPTY');
+  return names;
+}
+
 function expectedNames() {
+  if (process.env.PRISMA_MIGRATIONS_PATH) return catalogNames(process.env.PRISMA_MIGRATIONS_PATH);
   const value = process.env.EXPECTED_MIGRATION_NAMES;
   if (!value) throw new Error('EXPECTED_MIGRATION_NAMES_REQUIRED');
   return value.split(',').map((name) => name.trim()).filter(Boolean).sort();
+}
+
+function evaluateMigrationHistory(rows, names) {
+  const applied = rows.map((row) => row.migration_name).sort();
+  const expected = new Set(names);
+  const appliedSet = new Set(applied);
+  const missing = names.filter((name) => !appliedSet.has(name));
+  const unexpected = applied.filter((name) => !expected.has(name));
+  const unfinished = rows.filter((row) => !row.finished_at && !row.rolled_back_at && !row.logs);
+  const rolledBack = rows.filter((row) => row.rolled_back_at);
+  const failed = rows.filter((row) => row.logs);
+  const passengerPresent = appliedSet.has(PASSENGER_SUPERSEDED);
+  return {
+    expectedCount: names.length,
+    actualCount: applied.length,
+    missing,
+    unexpected,
+    unfinished,
+    rolledBack,
+    failed,
+    passengerPresent,
+    valid: missing.length === 0 && unexpected.length === 0 && unfinished.length === 0
+      && rolledBack.length === 0 && failed.length === 0 && !passengerPresent,
+  };
 }
 
 async function main() {
@@ -59,28 +94,20 @@ async function main() {
       FROM public."_prisma_migrations"
       ORDER BY migration_name
     `);
-    const applied = rows.map((row) => row.migration_name).sort();
-    const expected = new Set(names);
-    const appliedSet = new Set(applied);
-    const missing = names.filter((name) => !appliedSet.has(name));
-    const unexpected = applied.filter((name) => !expected.has(name));
-    const unfinished = rows.filter((row) => !row.finished_at && !row.rolled_back_at && !row.logs);
-    const rolledBack = rows.filter((row) => row.rolled_back_at);
-    const failed = rows.filter((row) => row.logs);
-    const passengerPresent = appliedSet.has(PASSENGER_SUPERSEDED);
+    const evidence = evaluateMigrationHistory(rows, names);
 
-    output('expected_count', names.length);
-    output('actual_count', applied.length);
-    output('missing_count', missing.length);
-    output('unexpected_count', unexpected.length);
-    output('unfinished_count', unfinished.length);
-    output('rolled_back_count', rolledBack.length);
-    output('failed_count', failed.length);
-    output('passenger_superseded_present', passengerPresent ? 'YES' : 'NO');
-    output('missing_migrations', missing.join(',') || 'NONE');
-    output('unexpected_migrations', unexpected.join(',') || 'NONE');
+    output('expected_count', evidence.expectedCount);
+    output('actual_count', evidence.actualCount);
+    output('missing_count', evidence.missing.length);
+    output('unexpected_count', evidence.unexpected.length);
+    output('unfinished_count', evidence.unfinished.length);
+    output('rolled_back_count', evidence.rolledBack.length);
+    output('failed_count', evidence.failed.length);
+    output('passenger_superseded_present', evidence.passengerPresent ? 'YES' : 'NO');
+    output('missing_migrations', evidence.missing.join(',') || 'NONE');
+    output('unexpected_migrations', evidence.unexpected.join(',') || 'NONE');
 
-    if (missing.length || unexpected.length || unfinished.length || rolledBack.length || failed.length || passengerPresent) {
+    if (!evidence.valid) {
       fail('EXACT_HISTORY_CONTRACT_FAILED');
       await client.query('ROLLBACK');
       return;
@@ -97,4 +124,4 @@ async function main() {
 
 if (require.main === module) main().catch((error) => fail(error.message));
 
-module.exports = { validateTarget, expectedTarget };
+module.exports = { validateTarget, expectedTarget, expectedNames, evaluateMigrationHistory };
