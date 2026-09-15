@@ -1,0 +1,54 @@
+name: Supabase E2E Incremental Migration Promotion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-e2e-persistent-migration-jfuojmuyggmnlsxfyvby
+  cancel-in-progress: false
+
+jobs:
+  incremental-promotion:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: supabase-e2e-migration
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --include=dev --ignore-scripts
+
+      - name: Materialize and verify governed artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          artifact_root="$RUNNER_TEMP/authorized-migration-catalog"
+          node node_modules/tsx/dist/cli.mjs scripts/materialize-authorized-migration-catalog.ts \
+            --output-dir "$artifact_root" --verify-fingerprint
+          node scripts/e2e/verify-authorized-migration-artifact.cjs "$artifact_root"
+          echo "PRISMA_MIGRATIONS_PATH=$artifact_root/catalog" >> "$GITHUB_ENV"
+
+      - name: Certify pre-state, revalidate, deploy once, certify post-state
+        env:
+          DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+          E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+        run: node scripts/e2e/supabase-e2e-incremental-migrate-deploy.cjs
+
+      - name: Remove temporary CA even after interruption
+        if: always()
+        run: node scripts/e2e/supabase-e2e-incremental-migrate-deploy.cjs --cleanup-ca

@@ -15,6 +15,9 @@ const {
   targetIdentity,
   verifyCertificationArtifact,
   collectPromotionEvidence,
+  evaluateIncrementalMode,
+  parseCertificationMode,
+  incrementalFingerprint,
 } = require('../../scripts/e2e/lifecycle-read-only-certification.cjs');
 
 const absentEnums = [
@@ -32,6 +35,158 @@ test('A: WAITING_OWNER absent skips its dependent SQL', async () => {
   assert.equal(checks.waitingOwner.sql, undefined);
   const result = await runEnumDependentChecks({ query: async () => assert.fail('query must not run') }, enumAvailability(absentEnums));
   assert.equal(result.waitingOwner, 'NOT_APPLICABLE_ENUM_ABSENT');
+});
+
+function incrementalFixture(post = false) {
+  const input = evidenceFixture();
+  input.fingerprint = incrementalFingerprint;
+  input.duplicatePending = 0;
+  input.physical = { correlationIndexEquivalent: post, pendingIndexEquivalent: post, correlationDuplicates: 0 };
+  if (post) {
+    input.rows = input.model.authorized.map((migration_name) => ({ migration_name,
+      finished_at: '2026-09-14', rolled_back_at: null, logs: null }));
+    for (const name of Object.keys(input.effects)) input.effects[name] = true;
+  }
+  return input;
+}
+
+test('incremental mode parsing is explicit; default inventory remains available', () => {
+  assert.equal(parseCertificationMode([]), 'INVENTORY');
+  for (const mode of ['PRE_INCREMENTAL_DEPLOY', 'POST_INCREMENTAL_DEPLOY']) {
+    assert.equal(parseCertificationMode(['--mode', mode]), mode);
+  }
+  for (const args of [['--mode'], ['--mode', 'UNKNOWN'], ['--mode', 'PRE_INCREMENTAL_DEPLOY', 'extra']]) {
+    assert.throws(() => parseCertificationMode(args), /INVALID_CERTIFICATION_MODE/);
+  }
+});
+
+test('PRE 51/5 passes all strict conditions without certifying completed promotion', () => {
+  const result = evaluateIncrementalMode('PRE_INCREMENTAL_DEPLOY', incrementalFixture());
+  assert.equal(result.pass, true);
+  assert.equal(result.outputs.TARGET_APPLIED_MIGRATION_COUNT, 51);
+  assert.equal(result.outputs.TARGET_PENDING_SET_EXACT, 'YES');
+  assert.equal(result.outputs.MIGRATE_DEPLOY_PROJECTED_SAFE, 'YES');
+  assert.equal(result.outputs.PROMOTION_CERTIFIED, 'NO');
+});
+
+const preFailures = {
+  '50/6': (input) => input.rows.pop(),
+  'wrong pending name': (input) => { input.rows[0].migration_name = pendingEffectContracts[0].migration; },
+  'unexpected migration': (input) => input.rows.push({ migration_name: 'unexpected', finished_at: 'done' }),
+  'unfinished migration': (input) => { input.rows[0].finished_at = null; },
+  'rolled back migration': (input) => { input.rows[0].rolled_back_at = 'done'; },
+  'failed migration': (input) => { input.rows[0].logs = 'failed'; },
+  'duplicate history': (input) => input.rows.push(input.rows[0]),
+  'unexplained drift': (input) => input.unrelatedDrift.push('OwnershipSnapshot:MISSING'),
+  'missing evidence': (input) => { delete input.rows[0].logs; },
+  'missing compatibility': (input) => { delete input.compatibility[pendingEffectContracts[0].migration]; },
+  'unproven physical effect': (input) => { delete input.effects['RideStatus.WAITING_OWNER']; },
+  'pending duplicates': (input) => { input.duplicatePending = 1; },
+  'missing duplicate count': (input) => { delete input.duplicatePending; },
+  'artifact mismatch': (input) => { input.artifactVerified = false; },
+  'fingerprint mismatch': (input) => { input.fingerprint = 'wrong'; },
+  'identity mismatch': (input) => { input.identityValid = false; },
+};
+for (const [name, mutate] of Object.entries(preFailures)) {
+  test(`PRE rejects ${name}`, () => {
+    const input = incrementalFixture();
+    mutate(input);
+    assert.equal(evaluateIncrementalMode('PRE_INCREMENTAL_DEPLOY', input).pass, false);
+  });
+}
+
+test('POST 56/0 certifies the complete physical contract and exact history', () => {
+  const result = evaluateIncrementalMode('POST_INCREMENTAL_DEPLOY', incrementalFixture(true));
+  assert.equal(result.pass, true);
+  assert.equal(result.outputs.PROMOTION_CERTIFIED, 'YES');
+  assert.equal(result.outputs.FINAL_HISTORY_EXACT_SET_MATCH, 'YES');
+});
+
+const postFailures = {
+  '55/1': (input) => input.rows.pop(),
+  'unexpected history': (input) => { input.rows[0].migration_name = 'unexpected'; },
+  'superseded Passenger': (input) => { input.rows[0].migration_name = '20260518000000_passenger_codes_not_null_future'; },
+  'unfinished': (input) => { input.rows[0].finished_at = null; },
+  'rolled back': (input) => { input.rows[0].rolled_back_at = 'done'; },
+  'failed': (input) => { input.rows[0].logs = 'failed'; },
+  'duplicate pending': (input) => { input.duplicatePending = 1; },
+  'unexplained drift': (input) => input.unrelatedDrift.push('TYPE_MISMATCH'),
+  'incompatible correlation index': (input) => { input.physical.correlationIndexEquivalent = false; },
+  'invalid pending index': (input) => { input.physical.pendingIndexEquivalent = false; },
+  'correlation duplicates': (input) => { input.physical.correlationDuplicates = 1; },
+  'missing physical evidence': (input) => { delete input.physical; },
+  'missing fingerprint': (input) => { delete input.fingerprint; },
+};
+for (const effect of pendingEffectContracts.flatMap((entry) => entry.effects)) {
+  postFailures[`missing ${effect}`] = (input) => { input.effects[effect] = false; };
+}
+for (const [name, mutate] of Object.entries(postFailures)) {
+  test(`POST rejects ${name}`, () => {
+    const input = incrementalFixture(true);
+    mutate(input);
+    const result = evaluateIncrementalMode('POST_INCREMENTAL_DEPLOY', input);
+    assert.equal(result.pass, false);
+    assert.equal(result.outputs.PROMOTION_CERTIFIED, 'NO');
+  });
+}
+
+test('success token is emitted only after rollback and disconnect', () => {
+  const source = fs.readFileSync('scripts/e2e/lifecycle-read-only-certification.cjs', 'utf8');
+  assert.ok(source.indexOf('await client.end()') < source.indexOf("emit('INCREMENTAL_CERTIFICATION_RESULT'"));
+  assert.match(source, /if \(!modeResult.pass\) throw new Error\('INCREMENTAL_CERTIFICATION_FAILED'\)/);
+  assert.match(source, /process.exitCode = 1/);
+});
+
+test('POST collector verifies physical index definition and column types, not just object names', async () => {
+  const input = incrementalFixture(true);
+  const baseIndex = { relkind: 'i', indisunique: true, indisvalid: true, indisready: true,
+    indislive: true, indimmediate: true, indnkeyatts: 1, indnatts: 1, plain_key: true,
+    amname: 'btree', opcdefault: true, opclass_matches: true, collation_matches: true };
+  const indexes = [
+    { ...baseIndex, relname: 'RideRequest_creationCorrelationId_key', table_name: 'RideRequest',
+      key_name: 'creationCorrelationId', predicate: null },
+    { ...baseIndex, relname: 'RideOffer_one_pending_per_ride', table_name: 'RideOffer',
+      key_name: 'rideRequestId', predicate: '(status = \'PENDING\'::"RideOfferStatus")' },
+  ];
+  const facts = {
+    artifact: { verified: true, fingerprint: incrementalFingerprint, model: input.model },
+    identityValid: true, migrationRows: input.rows, snapshotPresent: true, duplicatePending: 0,
+    columnRows: [
+      ...['currentDispatchStage', 'rootDriverId', 'selectedDriverId', 'currentCandidateDriverId',
+        'excludedDriverIds', 'creationCorrelationId', 'creationIntentFingerprint'].map((column_name) =>
+        ({ table_name: 'RideRequest', column_name, udt_name: 'text', is_nullable: 'YES' })),
+      ...['referralCode', 'publicSlug'].map((column_name) => ({ table_name: 'Passenger', column_name, is_nullable: 'YES' })),
+    ],
+    availability: enumAvailability([
+      ...['PENDING', 'MATCHING', 'WAITING_DRIVER', 'WAITING_REFERRAL', 'WAITING_PARTNER', 'WAITING_GENERAL',
+        'ACCEPTED', 'REJECTED', 'EXPIRED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', 'PAID', 'WAITING_OWNER']
+        .map((enum_value) => ({ enum_name: 'RideStatus', enum_value })),
+      ...['PENDING', 'ACCEPTED', 'REJECTED', 'EXPIRED', 'CANCELLED']
+        .map((enum_value) => ({ enum_name: 'RideOfferStatus', enum_value })),
+    ]),
+  };
+  const evaluate = async (indexRows, nextFacts = facts) => {
+    const client = { query: async (sql) => {
+      assert.ok(sql.trimStart().startsWith('SELECT'));
+      if (sql.includes('FROM pg_class')) return { rows: indexRows };
+      if (sql.includes('GROUP BY "creationCorrelationId"')) return { rows: [{ count: '0' }] };
+      if (sql.includes('FROM public."Passenger"')) return { rows: [{ total: '0', referral_null: '0', slug_null: '0' }] };
+      throw new Error('UNEXPECTED_QUERY');
+    } };
+    const result = await collectPromotionEvidence(client, nextFacts);
+    return evaluateIncrementalMode('POST_INCREMENTAL_DEPLOY', result.facts).pass;
+  };
+  assert.equal(await evaluate(indexes), true);
+  for (const change of [{ indisunique: false }, { indisvalid: false }, { indisready: false },
+    { indislive: false }, { indimmediate: false }, { indnkeyatts: 2 }, { indnatts: 2 },
+    { key_name: 'other' }, { predicate: null }, { predicate: '(status IS NOT NULL)' },
+    { amname: 'hash' }, { opclass_matches: false }, { collation_matches: false }]) {
+    assert.equal(await evaluate([indexes[0], { ...indexes[1], ...change }]), false, JSON.stringify(change));
+  }
+  assert.equal(await evaluate([{ ...indexes[0], indisunique: false }, indexes[1]]), false);
+  const badColumn = structuredClone(facts);
+  badColumn.columnRows.find((row) => row.column_name === 'creationCorrelationId').udt_name = 'int4';
+  assert.equal(await evaluate(indexes, badColumn), false);
 });
 
 test('B: WAITING_OWNER present executes its dependent SQL', async () => {

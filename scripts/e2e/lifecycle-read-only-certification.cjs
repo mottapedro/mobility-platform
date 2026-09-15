@@ -97,6 +97,8 @@ async function runEnumDependentChecks(client, availability) {
 }
 
 const supersededPassenger = '20260518000000_passenger_codes_not_null_future';
+const incrementalFingerprint = '061c8aa563bbb2023fa96a17f7ef4580e3303dfc6271427c77c369753f622d88';
+const incrementalModes = ['PRE_INCREMENTAL_DEPLOY', 'POST_INCREMENTAL_DEPLOY'];
 const pendingEffectContracts = [
   { migration: '20260909000000_add_ride_creation_correlation', effects: ['RideRequest.creationCorrelationId', 'RideRequest_creationCorrelationId_key'], dependency: 'NONE_FOR_NULLABLE_COLUMN;UNIQUE_INDEX_EXISTING_DATA_COMPATIBILITY' },
   { migration: '20260909000001_add_ride_creation_intent_fingerprint', effects: ['RideRequest.creationIntentFingerprint'], dependency: 'NONE_FOR_NULLABLE_COLUMN' },
@@ -201,6 +203,51 @@ function evaluatePromotionEvidence({ artifactVerified, identityValid, model, row
   } };
 }
 
+function parseCertificationMode(args) {
+  if (args.length === 0) return 'INVENTORY';
+  if (args.length === 2 && args[0] === '--mode' && incrementalModes.includes(args[1])) return args[1];
+  throw new Error('INVALID_CERTIFICATION_MODE');
+}
+
+function evaluateIncrementalMode(mode, facts) {
+  if (!incrementalModes.includes(mode)) throw new Error('INVALID_CERTIFICATION_MODE');
+  const { artifactVerified, fingerprint, identityValid, model, rows, effects, compatibility,
+    unrelatedDrift, duplicatePending, physical } = facts;
+  const promotion = evaluatePromotionEvidence(facts);
+  const inventory = evaluateMigrationInventory(rows, model.authorized);
+  const applied = rows.filter((row) => row.finished_at && !row.rolled_back_at && !row.logs);
+  const exactCatalog = model.authorized.length === 56 && new Set(model.authorized).size === 56
+    && !model.authorized.includes(supersededPassenger);
+  const historyClean = rows.every((row) => Object.hasOwn(row, 'finished_at')
+    && Object.hasOwn(row, 'rolled_back_at') && Object.hasOwn(row, 'logs'))
+    && promotion.outputs.TARGET_HISTORY_CONFLICT_PRESENT === 'NO';
+  const common = artifactVerified === true && fingerprint === incrementalFingerprint && identityValid === true
+    && exactCatalog && historyClean && Array.isArray(unrelatedDrift)
+    && promotion.outputs.TARGET_UNEXPLAINED_PHYSICAL_DRIFT === 'NONE'
+    && duplicatePending === 0;
+  const finalExact = rows.length === 56 && applied.length === 56 && inventory.missing.length === 0
+    && inventory.unexpected.length === 0 && historyClean;
+  const allEffects = pendingEffectContracts.every((entry) => entry.effects.every((name) => effects[name] === true));
+  const physicalComplete = physical?.correlationIndexEquivalent === true && physical?.pendingIndexEquivalent === true
+    && physical?.correlationDuplicates === 0;
+  const pre = mode === 'PRE_INCREMENTAL_DEPLOY';
+  const pass = common && (pre
+    ? applied.length === 51 && inventory.missing.length === 5 && promotion.safe
+      && promotion.outputs.TARGET_PENDING_MIGRATION_COMPATIBILITY_MATRIX_COMPLETE === 'YES'
+      && pendingEffectContracts.every((entry) => compatibility[entry.migration]?.compatible === 'YES')
+    : finalExact && allEffects && physicalComplete);
+  return { pass, outputs: {
+    INCREMENTAL_CERTIFICATION_MODE: mode,
+    TARGET_APPLIED_MIGRATION_COUNT: applied.length,
+    TARGET_PENDING_MIGRATION_COUNT: inventory.missing.length,
+    TARGET_PENDING_SET_EXACT: promotion.outputs.TARGET_PENDING_ORDER_VALID === 'YES' ? 'YES' : 'NO',
+    FINAL_HISTORY_EXACT_SET_MATCH: finalExact ? 'YES' : 'NO',
+    MIGRATE_DEPLOY_PROJECTED_SAFE: pre && pass ? 'YES' : 'NO',
+    PROMOTION_CERTIFIED: !pre && pass ? 'YES' : 'NO',
+    HUMAN_INSPECTION_REQUIRED: pass ? 'NO' : 'YES',
+  } };
+}
+
 async function collectPromotionEvidence(client, facts) {
   const { artifact, identityValid, migrationRows, columnRows, availability, snapshotPresent, duplicatePending } = facts;
   const columns = new Map(columnRows.map((row) => [`${row.table_name}.${row.column_name}`, row]));
@@ -271,6 +318,7 @@ async function collectPromotionEvidence(client, facts) {
     correlationDuplicates = Number(result.rows[0].count);
   }
   emit('CORRELATION_DUPLICATE_NON_NULL_GROUPS', correlationDuplicates);
+  if (correlationDuplicates !== 0) unrelatedDrift.push('RideRequest.creationCorrelationId:DUPLICATES_OR_UNKNOWN');
   emit('CORRELATION_EXISTING_DATA_BLOCKER', correlationDuplicates === 0 ? 'NO' : 'YES');
   emit('WAITING_OWNER_EXISTING_DATA_BLOCKER', 'NO');
   emit('CANCELLED_EXISTING_DATA_BLOCKER', 'NO');
@@ -286,12 +334,20 @@ async function collectPromotionEvidence(client, facts) {
     compatible: checks[i] ? 'YES' : 'NO',
     blocker: checks[i] ? 'NONE' : i < 2 ? 'ADD_COLUMN_OR_INDEX_ALREADY_EXISTS' : i === 4 ? 'DUPLICATES_OR_INCOMPATIBLE_INDEX' : 'ENUM_TYPE_MISSING',
   }]));
-  return evaluatePromotionEvidence({ artifactVerified: artifact.verified, identityValid,
-    model: artifact.model, rows: migrationRows, effects, compatibility, unrelatedDrift, duplicatePending });
+  const collected = { artifactVerified: artifact.verified, fingerprint: artifact.fingerprint, identityValid,
+    model: artifact.model, rows: migrationRows, effects, compatibility, unrelatedDrift, duplicatePending,
+    physical: { correlationIndexEquivalent: equivalent(correlationIndex, 'RideRequest', 'creationCorrelationId', false),
+      pendingIndexEquivalent: pendingEquivalent, correlationDuplicates } };
+  return { ...evaluatePromotionEvidence(collected), facts: collected };
 }
 
 async function main() {
+  const mode = parseCertificationMode(process.argv.slice(2));
   const artifact = verifyCertificationArtifact(required('PRISMA_MIGRATIONS_PATH'));
+  if (mode !== 'INVENTORY') {
+    artifact.fingerprint = fs.readFileSync(path.resolve('governance/authorized-migration-catalog.sha256'), 'utf8').trim();
+    if (artifact.fingerprint !== incrementalFingerprint) throw new Error('INCREMENTAL_FINGERPRINT_MISMATCH');
+  }
   const target = validateTarget(required('DATABASE_URL'));
   if (target.mode !== 'session') throw new Error('SESSION_POOLER_REQUIRED');
   required('E2E_CA_CERT');
@@ -300,6 +356,7 @@ async function main() {
     connectionString: target.connectionString,
     ssl: { ca: process.env.E2E_CA_CERT, rejectUnauthorized: true },
   });
+  let modeResult;
 
   try {
     await client.connect();
@@ -460,6 +517,11 @@ async function main() {
     });
     for (const [key, value] of Object.entries(completion.outputs)) emit(key, value);
 
+    if (mode !== 'INVENTORY') {
+      modeResult = evaluateIncrementalMode(mode, completion.facts);
+      if (!modeResult.pass) throw new Error('INCREMENTAL_CERTIFICATION_FAILED');
+    }
+
     const enumChecks = await runEnumDependentChecks(client, availability);
     emit('WAITING_OWNER_ROW_CHECK', availability.waitingOwnerPresent ? 'EXECUTED' : enumChecks.waitingOwner);
     emit('TARGET_WAITING_OWNER_ROW_COUNT', enumChecks.waitingOwner);
@@ -485,17 +547,27 @@ async function main() {
     emit('DATABASE_ACCESS_MODE', 'READ_ONLY');
     await client.query('ROLLBACK');
   } finally {
-    await client.end().catch(() => undefined);
+    await client.end();
+  }
+  // The success token is emitted only after all queries, rollback and disconnect complete.
+  if (modeResult) {
+    for (const [key, value] of Object.entries(modeResult.outputs)) emit(key, value);
+    emit('INCREMENTAL_CERTIFICATION_RESULT', `${mode}:PASS`);
   }
 }
 
 if (require.main === module) main().catch((error) => {
-  const code = error && error.message ? error.message.replace(/^.*?(MISSING_|SESSION_|READ_ONLY_)/, '$1') : 'CERTIFICATION_FAILED';
+  const code = /^[A-Z_]+$/.test(error?.message || '') ? error.message : 'CERTIFICATION_FAILED';
+  emit('PROMOTION_CERTIFIED', 'NO');
+  emit('HUMAN_INSPECTION_REQUIRED', 'YES');
   console.error(`R11_1_CERTIFICATION=FAIL code=${code}`);
   process.exitCode = 1;
 });
 
 module.exports = {
+  parseCertificationMode,
+  evaluateIncrementalMode,
+  incrementalFingerprint,
   collectPromotionEvidence,
   targetIdentity,
   verifyCertificationArtifact,
