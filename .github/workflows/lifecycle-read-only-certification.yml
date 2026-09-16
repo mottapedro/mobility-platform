@@ -9,6 +9,7 @@ permissions:
 jobs:
   lifecycle-read-only-certification:
     name: Lifecycle read-only certification
+    environment: supabase-e2e-migration
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
