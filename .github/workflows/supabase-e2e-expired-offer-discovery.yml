@@ -1,0 +1,35 @@
+name: Supabase E2E Expired Offer Discovery
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  expired-offer-discovery:
+    name: Read-only expired offer discovery
+    environment: supabase-e2e-migration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_DATABASE_URL }}
+      E2E_CA_CERT: ${{ secrets.OFFER_BOOK_SUPABASE_E2E_CA_CERT }}
+    steps:
+      - name: Checkout workflow revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --include=dev --ignore-scripts
+
+      - name: Run read-only expired offer discovery
+        run: node scripts/e2e/supabase-e2e-expired-offer-discovery.cjs
