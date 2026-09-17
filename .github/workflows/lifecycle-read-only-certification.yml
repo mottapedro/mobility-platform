@@ -42,4 +42,4 @@ jobs:
           echo "PRISMA_MIGRATIONS_PATH=$artifact_root/catalog" >> "$GITHUB_ENV"
 
       - name: Run read-only schema and migration certification
-        run: node scripts/e2e/lifecycle-read-only-certification.cjs
+        run: node scripts/e2e/lifecycle-read-only-certification.cjs --mode PRE_INCREMENTAL_DEPLOY
