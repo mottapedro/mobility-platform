@@ -699,16 +699,9 @@ export class MatchRideUseCase {
       const candidates = finalDrivers.length > 0 ? finalDrivers : drivers;
 
       if (candidates.length === 0) {
-        // ── Stage 3: OWNER_RECOVERY ────────────────────────────────────────
-        await prisma.rideRequest.updateMany({
-          where: {
-            id: rideId,
-            status: { in: [...MATCHABLE_RIDE_STATUSES] },
-            currentCandidateDriverId: null,
-          },
-          data: { currentDispatchStage: "OWNER_RECOVERY" },
-        });
-
+        // E6.2K.2A: authority separation — candidate-empty carries no
+        // OWNER_RECOVERY authority (NO_MATCH_AVAILABLE => no owner transfer).
+        // No lifecycle mutation here; E6.2K.1 will classify the outcome.
         logMatchingEvent({
           rideId,
           event: "matching_finished",
@@ -771,14 +764,7 @@ export class MatchRideUseCase {
     );
 
     if (generalDrivers.length === 0) {
-      await prisma.rideRequest.updateMany({
-        where: {
-          id: rideId,
-          status: { in: [...MATCHABLE_RIDE_STATUSES] },
-          currentCandidateDriverId: null,
-        },
-        data: { currentDispatchStage: "OWNER_RECOVERY" },
-      });
+      // E6.2K.2A: authority separation — see NETWORK candidate-empty above.
       logMatchingEvent({
         rideId,
         event: "matching_finished",
