@@ -19,6 +19,7 @@ jest.mock("../src/infra/prisma/client", () => ({
     },
     rideOffer: {
       findMany: jest.fn(),
+      findFirst: jest.fn(),
       create: jest.fn(),
       count: jest.fn(),
       updateMany: jest.fn(),
@@ -60,6 +61,7 @@ describe("MatchRideUseCase regional matching", () => {
   const rideRequestUpdateMock = jest.mocked(prisma.rideRequest.update);
   const rideRequestUpdateManyMock = jest.mocked(prisma.rideRequest.updateMany);
   const rideOfferFindManyMock = jest.mocked(prisma.rideOffer.findMany);
+  const rideOfferFindFirstMock = jest.mocked(prisma.rideOffer.findFirst);
   const rideOfferCreateMock = jest.mocked(prisma.rideOffer.create);
   const rideOfferCountMock = jest.mocked(prisma.rideOffer.count);
   const rideOfferUpdateManyMock = jest.mocked(prisma.rideOffer.updateMany);
@@ -71,6 +73,8 @@ describe("MatchRideUseCase regional matching", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     getDriverNetworkMock.mockReset();
+    driverFindManyMock.mockReset();
+    rideOfferFindFirstMock.mockReset();
     rideState = {
       id: "ride-1",
       passengerId: "passenger-1",
@@ -87,6 +91,7 @@ describe("MatchRideUseCase regional matching", () => {
     );
     passengerFindUniqueMock.mockResolvedValue({ referredByDriverId: null } as never);
     rideOfferFindManyMock.mockResolvedValue([] as never);
+    rideOfferFindFirstMock.mockResolvedValue(undefined as never);
     rideRequestUpdateMock.mockImplementation(
       (async ({ data }: RideStateUpdate) => {
         if (typeof data.currentDispatchStage === "string" || data.currentDispatchStage === null) {
@@ -171,6 +176,74 @@ describe("MatchRideUseCase regional matching", () => {
         driverId: expect.any(String),
       })
     );
+  });
+
+  it("returns the active referral offer identity when a duplicate dispatch is attempted", async () => {
+    rideState.rootDriverId = "driver-attempted";
+    passengerFindUniqueMock.mockResolvedValue({ referredByDriverId: null, rootDriverId: null } as never);
+    const driverFindFirstMock = jest.mocked(prisma.driver.findFirst);
+    driverFindFirstMock.mockResolvedValue({ id: "driver-attempted", isActive: true } as never);
+    rideOfferFindManyMock.mockResolvedValue([{ driverId: "driver-active" }] as never);
+    rideOfferCountMock.mockResolvedValue(1 as never);
+    rideOfferFindFirstMock.mockResolvedValue({ id: "offer-active", driverId: "driver-active" } as never);
+
+    const result = await new MatchRideUseCase(
+      { resolve: jest.fn().mockReturnValue("Zona Sul") } as never,
+      { execute: jest.fn().mockResolvedValue([]) } as never,
+    ).execute({ rideId: "ride-1", level: "REFERRED" });
+
+    expect(result).toEqual(expect.objectContaining({
+      outcome: "MATCHED",
+      offerId: "offer-active",
+      driverId: "driver-active",
+    }));
+    expect(result.driverId).not.toBe("driver-attempted");
+  });
+
+  it("returns the active network offer identity instead of the attempted candidate", async () => {
+    passengerFindUniqueMock.mockResolvedValue({ referredByDriverId: null, rootDriverId: "driver-owner" } as never);
+    getDriverNetworkMock.mockResolvedValue({ level1: ["driver-network"], level2: [], level3: [] });
+    driverFindManyMock
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([{ id: "driver-network", experienceLevel: "INTERMEDIARIO", vehicles: [] }] as never)
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([] as never);
+    rideOfferFindManyMock.mockResolvedValue([{ driverId: "driver-history" }] as never);
+    rideOfferCountMock.mockResolvedValue(1 as never);
+    rideOfferFindFirstMock.mockResolvedValue({ id: "offer-owner", driverId: "driver-owner" } as never);
+
+    const result = await new MatchRideUseCase(
+      { resolve: jest.fn().mockReturnValue("Zona Sul") } as never,
+      { execute: jest.fn().mockResolvedValue([]) } as never,
+    ).execute({ rideId: "ride-1", level: "NETWORK_L1" });
+
+    expect(result).toEqual(expect.objectContaining({
+      outcome: "MATCHED",
+      offerId: "offer-owner",
+      driverId: "driver-owner",
+    }));
+    expect(result.driverId).not.toBe("driver-network");
+  });
+
+  it("returns the active general offer identity instead of the attempted candidate", async () => {
+    driverFindManyMock.mockResolvedValueOnce([{ id: "driver-general" }] as never);
+    driverFindManyMock.mockResolvedValueOnce([
+      { id: "driver-general", experienceLevel: "INTERMEDIARIO", vehicles: [] },
+    ] as never);
+    rideOfferCountMock.mockResolvedValue(1 as never);
+    rideOfferFindFirstMock.mockResolvedValue({ id: "offer-owner", driverId: "driver-owner" } as never);
+
+    const result = await new MatchRideUseCase(
+      { resolve: jest.fn().mockReturnValue("Centro") } as never,
+      { execute: jest.fn().mockResolvedValue([]) } as never,
+    ).execute({ rideId: "ride-1", level: "GENERAL" });
+
+    expect(result).toEqual(expect.objectContaining({
+      outcome: "MATCHED",
+      offerId: "offer-owner",
+      driverId: "driver-owner",
+    }));
+    expect(result.driverId).not.toBe("driver-general");
   });
 
   it("falls back to the general pool when the regional matcher returns no candidates", async () => {

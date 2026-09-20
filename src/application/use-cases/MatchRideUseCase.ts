@@ -365,6 +365,7 @@ export class MatchRideUseCase {
     offerId?: string;
     activeOfferExists: boolean;
     activeOfferId?: string;
+    activeOfferDriverId?: string;
   }> {
     const pendingCount = await prisma.rideOffer.count({
       where: { rideRequestId: rideId, status: "PENDING" },
@@ -373,7 +374,7 @@ export class MatchRideUseCase {
     if (pendingCount >= 1) {
       const activeOffer = await prisma.rideOffer.findFirst({
         where: { rideRequestId: rideId, status: "PENDING" },
-        select: { id: true },
+        select: { id: true, driverId: true },
       });
       logMatchingEvent({
         rideId,
@@ -381,7 +382,12 @@ export class MatchRideUseCase {
         stage,
         metadata: { attemptedDriverId: driverId, pendingCount },
       });
-      return { dispatched: false, activeOfferExists: true, activeOfferId: activeOffer?.id };
+      return {
+        dispatched: false,
+        activeOfferExists: true,
+        activeOfferId: activeOffer?.id,
+        activeOfferDriverId: activeOffer?.driverId,
+      };
     }
 
     try {
@@ -420,7 +426,13 @@ export class MatchRideUseCase {
           },
         });
       }
-      return { dispatched: result.created, offerId: result.offer.id, activeOfferExists: true, activeOfferId: result.offer.id };
+      return {
+        dispatched: result.created,
+        offerId: result.offer.id,
+        activeOfferExists: true,
+        activeOfferId: result.offer.id,
+        activeOfferDriverId: driverId,
+      };
     } catch (err: unknown) {
       // Partial unique index races: another dispatcher beat us to PENDING.
       // Treat as enforced (same outcome) and surface telemetry.
@@ -428,7 +440,7 @@ export class MatchRideUseCase {
       if (message.includes("RideOffer_one_pending_per_ride") || message.includes("Unique constraint")) {
         const activeOffer = await prisma.rideOffer.findFirst({
           where: { rideRequestId: rideId, status: "PENDING" },
-          select: { id: true },
+          select: { id: true, driverId: true },
         });
         logMatchingEvent({
           rideId,
@@ -436,7 +448,12 @@ export class MatchRideUseCase {
           stage,
           metadata: { attemptedDriverId: driverId, racedOnIndex: true },
         });
-        return { dispatched: false, activeOfferExists: true, activeOfferId: activeOffer?.id };
+        return {
+          dispatched: false,
+          activeOfferExists: true,
+          activeOfferId: activeOffer?.id,
+          activeOfferDriverId: activeOffer?.driverId,
+        };
       }
       throw err;
     }
@@ -639,7 +656,10 @@ export class MatchRideUseCase {
       });
 
       if (dispatchSingleResult.activeOfferExists) {
-        return this.toResult("MATCHED", "REFERRED", { offerId: dispatchSingleResult.activeOfferId, driverId: dispatchRootDriverId });
+        return this.toResult("MATCHED", "REFERRED", {
+          offerId: dispatchSingleResult.activeOfferId,
+          driverId: dispatchSingleResult.activeOfferDriverId,
+        });
       }
       if (dispatchSingleResult.dispatched) {
         return this.toResult("MATCHED", "REFERRED", { offerId: dispatchSingleResult.offerId, driverId: dispatchRootDriverId });
@@ -773,7 +793,7 @@ export class MatchRideUseCase {
       if (dispatchSingleResult.activeOfferExists) {
         return this.toResult("MATCHED", networkDispatchStage === "REFERRAL_NETWORK" ? resultLevel : "GENERAL", {
           offerId: dispatchSingleResult.activeOfferId,
-          driverId: dispatchSingleResult.activeOfferId ? networkPick.id : undefined,
+          driverId: dispatchSingleResult.activeOfferDriverId,
         });
       }
 
@@ -843,7 +863,7 @@ export class MatchRideUseCase {
     if (dispatchSingleResult.activeOfferExists) {
       return this.toResult("MATCHED", "GENERAL", {
         offerId: dispatchSingleResult.activeOfferId,
-        driverId: generalPick.id,
+        driverId: dispatchSingleResult.activeOfferDriverId,
       });
     }
 
