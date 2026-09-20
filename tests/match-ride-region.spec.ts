@@ -162,7 +162,15 @@ describe("MatchRideUseCase regional matching", () => {
     // Governed sequential dispatch: only the first priority candidate receives an offer.
     expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-2"]);
     expect(rideState.status).toBe("WAITING_GENERAL");
-    expect(result).toEqual({ matched: true, level: "GENERAL" });
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: "MATCHED",
+        matched: true,
+        level: "GENERAL",
+        offerId: expect.any(String),
+        driverId: expect.any(String),
+      })
+    );
   });
 
   it("falls back to the general pool when the regional matcher returns no candidates", async () => {
@@ -197,7 +205,15 @@ describe("MatchRideUseCase regional matching", () => {
     });
     expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-general"]);
     expect(rideState.status).toBe("WAITING_GENERAL");
-    expect(result).toEqual({ matched: true, level: "GENERAL" });
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: "MATCHED",
+        matched: true,
+        level: "GENERAL",
+        offerId: expect.any(String),
+        driverId: expect.any(String),
+      })
+    );
   });
 
   it("falls back to region matches only after all referral-network candidates were already offered", async () => {
@@ -245,7 +261,15 @@ describe("MatchRideUseCase regional matching", () => {
     // Sequential dispatch: only the first region candidate is offered initially.
     expect(rideOfferCreateMock.mock.calls.map((call) => call[0].data.driverId)).toEqual(["driver-region"]);
     expect(rideState.status).toBe("WAITING_GENERAL");
-    expect(result).toEqual({ matched: true, level: "GENERAL" });
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: "MATCHED",
+        matched: true,
+        level: "GENERAL",
+        offerId: expect.any(String),
+        driverId: expect.any(String),
+      })
+    );
   });
 
   it.each([
@@ -281,9 +305,16 @@ describe("MatchRideUseCase regional matching", () => {
         driverRegionMatcher as never,
       ).execute({ rideId: "ride-1", level: "GENERAL" });
 
-      expect(result).toEqual({ matched: false, level: "GENERAL" });
-      expect(driverRegionMatcher.execute).not.toHaveBeenCalled();
-      expect(rideOfferCreateMock).not.toHaveBeenCalled();
+      expect(result).toEqual(
+      expect.objectContaining({
+        outcome: "STALE_LIFECYCLE",
+        matched: false,
+        level: "GENERAL",
+        reason: expect.stringContaining("ride_status_not_matchable"),
+      })
+    );
+    expect(driverRegionMatcher.execute).not.toHaveBeenCalled();
+    expect(rideOfferCreateMock).not.toHaveBeenCalled();
     },
   );
 });

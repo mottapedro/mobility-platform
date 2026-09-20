@@ -25,6 +25,22 @@ export function isMatchableRideStatus(status: RideStatus): boolean {
   return MATCHABLE_RIDE_STATUSES.some((matchableStatus) => matchableStatus === status);
 }
 
+export type MatchRideOutcome =
+  | "MATCHED"
+  | "NETWORK_EXHAUSTED"
+  | "OPERATIONAL_CUTOFF"
+  | "NO_MATCH_AVAILABLE"
+  | "STALE_LIFECYCLE";
+
+export interface MatchRideResult {
+  outcome: MatchRideOutcome;
+  offerId?: string;
+  matched: boolean;
+  level?: MatchLevel;
+  reason?: string;
+  driverId?: string;
+}
+
 type CandidateDispatchStage = "REFERRAL_DIRECT" | "REFERRAL_NETWORK" | "REGION" | "GLOBAL";
 
 function rideStatusForDispatchStage(stage: CandidateDispatchStage): RideStatus {
@@ -344,19 +360,28 @@ export class MatchRideUseCase {
     expiresAt: Date,
     stage: CandidateDispatchStage,
     queueRemaining: number
-  ): Promise<{ dispatched: boolean }> {
+  ): Promise<{
+    dispatched: boolean;
+    offerId?: string;
+    activeOfferExists: boolean;
+    activeOfferId?: string;
+  }> {
     const pendingCount = await prisma.rideOffer.count({
       where: { rideRequestId: rideId, status: "PENDING" },
     });
 
     if (pendingCount >= 1) {
+      const activeOffer = await prisma.rideOffer.findFirst({
+        where: { rideRequestId: rideId, status: "PENDING" },
+        select: { id: true },
+      });
       logMatchingEvent({
         rideId,
         event: "single_active_offer_enforced",
         stage,
         metadata: { attemptedDriverId: driverId, pendingCount },
       });
-      return { dispatched: false };
+      return { dispatched: false, activeOfferExists: true, activeOfferId: activeOffer?.id };
     }
 
     try {
@@ -381,7 +406,7 @@ export class MatchRideUseCase {
             where: { id: result.offer.id, status: "PENDING" },
             data: { status: "EXPIRED" },
           });
-          return { dispatched: false };
+          return { dispatched: false, activeOfferExists: false };
         }
         logMatchingEvent({
           rideId,
@@ -395,19 +420,23 @@ export class MatchRideUseCase {
           },
         });
       }
-      return { dispatched: result.created };
+      return { dispatched: result.created, offerId: result.offer.id, activeOfferExists: true, activeOfferId: result.offer.id };
     } catch (err: unknown) {
       // Partial unique index races: another dispatcher beat us to PENDING.
       // Treat as enforced (same outcome) and surface telemetry.
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes("RideOffer_one_pending_per_ride") || message.includes("Unique constraint")) {
+        const activeOffer = await prisma.rideOffer.findFirst({
+          where: { rideRequestId: rideId, status: "PENDING" },
+          select: { id: true },
+        });
         logMatchingEvent({
           rideId,
           event: "single_active_offer_enforced",
           stage,
           metadata: { attemptedDriverId: driverId, racedOnIndex: true },
         });
-        return { dispatched: false };
+        return { dispatched: false, activeOfferExists: true, activeOfferId: activeOffer?.id };
       }
       throw err;
     }
@@ -419,7 +448,7 @@ export class MatchRideUseCase {
    * persisted offer history and dispatches a single next candidate.
    * Replaces the previous recursive `execute({ level })` calls that broadcasted.
    */
-  async dispatchNextCandidate(input: { rideId: string }): Promise<{ matched: boolean; level: MatchLevel }> {
+  async dispatchNextCandidate(input: { rideId: string }): Promise<MatchRideResult> {
     logMatchingEvent({
       rideId: input.rideId,
       event: "queue_advanced",
@@ -433,7 +462,7 @@ export class MatchRideUseCase {
   // ─── Execução principal ─────────────────────────────────────────────────────
   async execute(
     input: MatchInput
-  ): Promise<{ matched: boolean; level: MatchLevel }> {
+  ): Promise<MatchRideResult> {
     const { rideId, candidateDriverIds } = input;
 
     console.log("🔥 BUSCANDO RIDE:", rideId);
@@ -461,7 +490,7 @@ export class MatchRideUseCase {
     // Guard: só faz matching em corridas que ainda podem ser matchadas
     if (!isMatchableRideStatus(ride.status)) {
       console.log(`⚠️ Corrida ${rideId} ignorada — status: ${ride.status}`);
-      return { matched: false, level: "GENERAL" };
+      return this.toResult("STALE_LIFECYCLE", "GENERAL", { reason: `ride_status_not_matchable: ${ride.status}` });
     }
 
     const referredDriverId = passenger?.referredByDriverId ?? null;
@@ -496,7 +525,7 @@ export class MatchRideUseCase {
         where: { id: rideId },
         data: { status: "CANCELLED" },
       });
-      return { matched: false, level: "GENERAL" };
+      return this.toResult("OPERATIONAL_CUTOFF", "GENERAL", { reason: "operational_cutoff_reached" });
     }
 
     const expiresAt = AcceptancePolicyEngine.computeOfferExpiry(now, policy);
@@ -555,7 +584,7 @@ export class MatchRideUseCase {
         return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds, candidateDriverIds });
       }
 
-      const { dispatched } = await this.dispatchSingle(
+      const dispatchSingleResult = await this.dispatchSingle(
         rideId,
         dispatchRootDriverId,
         expiresAt,
@@ -570,7 +599,7 @@ export class MatchRideUseCase {
         metadata: { expiresAt: expiresAt.toISOString() },
       });
 
-      if (dispatched) referralFallbackScheduler.schedule(rideId, referralWindowMs, async () => {
+      if (dispatchSingleResult.dispatched) referralFallbackScheduler.schedule(rideId, referralWindowMs, async () => {
         try {
           const updated = await prisma.rideRequest.updateMany({
             where: {
@@ -609,7 +638,13 @@ export class MatchRideUseCase {
         }
       });
 
-      return { matched: true, level: "REFERRED" };
+      if (dispatchSingleResult.activeOfferExists) {
+        return this.toResult("MATCHED", "REFERRED", { offerId: dispatchSingleResult.activeOfferId, driverId: dispatchRootDriverId });
+      }
+      if (dispatchSingleResult.dispatched) {
+        return this.toResult("MATCHED", "REFERRED", { offerId: dispatchSingleResult.offerId, driverId: dispatchRootDriverId });
+      }
+      return this.toResult("NO_MATCH_AVAILABLE", "REFERRED", { reason: "dispatch_single_failed_no_active_offer" });
     }
 
     // ── Stage 2: NETWORK_DISPATCH ────────────────────────────────────────────
@@ -701,7 +736,6 @@ export class MatchRideUseCase {
       if (candidates.length === 0) {
         // E6.2K.2A: authority separation — candidate-empty carries no
         // OWNER_RECOVERY authority (NO_MATCH_AVAILABLE => no owner transfer).
-        // No lifecycle mutation here; E6.2K.1 will classify the outcome.
         logMatchingEvent({
           rideId,
           event: "matching_finished",
@@ -713,7 +747,7 @@ export class MatchRideUseCase {
 
         // TODO: Notify rootDriver
 
-        return { matched: false, level: resultLevel };
+        return this.toResult("NO_MATCH_AVAILABLE", resultLevel, { reason: "no_candidates_after_zone_filter" });
       }
 
       const networkPick = candidates[0];
@@ -728,7 +762,7 @@ export class MatchRideUseCase {
         resolvedRegion,
       });
 
-      await this.dispatchSingle(
+      const dispatchSingleResult = await this.dispatchSingle(
         rideId,
         networkPick.id,
         expiresAt,
@@ -736,10 +770,21 @@ export class MatchRideUseCase {
         candidates.length - 1
       );
 
-      return {
-        matched: true,
-        level: networkDispatchStage === "REFERRAL_NETWORK" ? resultLevel : "GENERAL",
-      };
+      if (dispatchSingleResult.activeOfferExists) {
+        return this.toResult("MATCHED", networkDispatchStage === "REFERRAL_NETWORK" ? resultLevel : "GENERAL", {
+          offerId: dispatchSingleResult.activeOfferId,
+          driverId: dispatchSingleResult.activeOfferId ? networkPick.id : undefined,
+        });
+      }
+
+      if (dispatchSingleResult.dispatched) {
+        return this.toResult("MATCHED", networkDispatchStage === "REFERRAL_NETWORK" ? resultLevel : "GENERAL", {
+          offerId: dispatchSingleResult.offerId,
+          driverId: networkPick.id,
+        });
+      }
+
+      return this.toResult("NO_MATCH_AVAILABLE", networkDispatchStage === "REFERRAL_NETWORK" ? resultLevel : "GENERAL", { reason: "dispatch_single_failed_no_active_offer" });
     }
 
     // Non-referred rides may expose MATCHING briefly while the initial search
@@ -773,7 +818,7 @@ export class MatchRideUseCase {
         resolvedRegion,
         metadata: { matched: false, startLevel: level },
       });
-      return { matched: false, level: "GENERAL" };
+      return this.toResult("NO_MATCH_AVAILABLE", "GENERAL", { reason: "no_candidates_in_general_pool" });
     }
 
     const generalPick = generalDrivers[0];
@@ -786,13 +831,46 @@ export class MatchRideUseCase {
       excludedDriverIds,
       resolvedRegion,
     });
-    await this.dispatchSingle(
+
+    const dispatchSingleResult = await this.dispatchSingle(
       rideId,
       generalPick.id,
       expiresAt,
       dispatchStage,
-      generalDrivers.length - 1,
+      generalDrivers.length - 1
     );
-    return { matched: true, level: "GENERAL" };
+
+    if (dispatchSingleResult.activeOfferExists) {
+      return this.toResult("MATCHED", "GENERAL", {
+        offerId: dispatchSingleResult.activeOfferId,
+        driverId: generalPick.id,
+      });
+    }
+
+    if (dispatchSingleResult.dispatched) {
+      return this.toResult("MATCHED", "GENERAL", {
+        offerId: dispatchSingleResult.offerId,
+        driverId: generalPick.id,
+      });
+    }
+
+    return this.toResult("NO_MATCH_AVAILABLE", "GENERAL", { reason: "dispatch_single_failed_no_active_offer" });
+  }
+
+  private toResult(
+    outcome: MatchRideOutcome,
+    level: MatchLevel,
+    extra?: { offerId?: string; driverId?: string; reason?: string }
+  ): MatchRideResult {
+    const result: MatchRideResult = {
+      outcome,
+      level,
+      matched: outcome === "MATCHED",
+      ...extra,
+    };
+    if (outcome === "MATCHED" && !result.offerId) {
+      console.warn(`[MatchRideUseCase] MATCHED outcome without offerId — this indicates a logic gap`);
+    }
+    return result;
   }
 }
