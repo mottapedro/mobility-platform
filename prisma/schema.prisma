@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
 }
 
@@ -8,12 +8,12 @@ datasource db {
 }
 
 model User {
-  id           String     @id @default(uuid())
+  id           String        @id @default(uuid())
   name         String
-  email        String     @unique
+  email        String        @unique
   phone        String
   role         UserRole
-  createdAt    DateTime   @default(now())
+  createdAt    DateTime      @default(now())
   passwordHash String?
   driver       Driver?
   passenger    Passenger?
@@ -56,8 +56,9 @@ model Driver {
   referralsMade      DriverReferral[]     @relation("Referrer")
   referralsReceived  DriverReferral[]     @relation("Referred")
 
-  referredPassengers Passenger[]   @relation("DriverReferral")
+  referredPassengers Passenger[]              @relation("DriverReferral")
   offers             RideOffer[]
+  roundCandidates    DispatchRoundCandidate[]
   selectedRides      RideRequest[]
   rideQuotes         RideQuote[]
   vehicles           Vehicle[]
@@ -66,8 +67,8 @@ model Driver {
   metadata           Json?
 
   // V2 — Aliado Nacional relational network
-  invitedByRelationships ReferralRelationship[] @relation("InviterDriver")
-  rootRelationships      ReferralRelationship[] @relation("RootDriver")
+  invitedByRelationships ReferralRelationship[]  @relation("InviterDriver")
+  rootRelationships      ReferralRelationship[]  @relation("RootDriver")
   skills                 DriverSkill[]
   operationalZones       DriverOperationalZone[]
   locationPings          DriverLocationPing[]
@@ -118,12 +119,12 @@ model DriverAvailability {
 }
 
 model OperationalZone {
-  id          String   @id @default(uuid())
-  name        String   @unique
-  description String?
-  isActive    Boolean  @default(true)
-  peso_esforco Float?  @default(1.0)
-  createdAt   DateTime @default(now())
+  id           String   @id @default(uuid())
+  name         String   @unique
+  description  String?
+  isActive     Boolean  @default(true)
+  peso_esforco Float?   @default(1.0)
+  createdAt    DateTime @default(now())
 
   drivers DriverOperationalZone[]
 }
@@ -134,7 +135,7 @@ model DriverOperationalZone {
   zoneId    String
   createdAt DateTime @default(now())
 
-  driver Driver @relation(fields: [driverId], references: [id])
+  driver Driver          @relation(fields: [driverId], references: [id])
   zone   OperationalZone @relation(fields: [zoneId], references: [id])
 
   @@unique([driverId, zoneId])
@@ -142,35 +143,36 @@ model DriverOperationalZone {
 }
 
 model RideRequest {
-  id                  String      @id @default(uuid())
-  passengerId         String
-  creationCorrelationId String?    @unique
+  id                        String           @id @default(uuid())
+  passengerId               String
+  creationCorrelationId     String?          @unique
   creationIntentFingerprint String?
-    origin              String
-  destination         String
+  origin                    String
+  destination               String
   /// null = IMMEDIATE; future date = SCHEDULED
-  scheduledAt         DateTime?
-  operationalCutoffAt DateTime?
+  scheduledAt               DateTime?
+  operationalCutoffAt       DateTime?
   /// Google Place Details (New) — providerPlaceId validated server-side.
   /// Never trust client lat/lng as the source of truth (Decision B).
-  originPlaceId       String?
-  destinationPlaceId  String?
-  status              RideStatus  @default(PENDING)
-  selectedDriverId    String?
-  createdAt           DateTime    @default(now())
-  destinationLat      Float?
-  destinationLng      Float?
-  distanceKm          Float?
-  durationMin         Int?
-  originLat           Float?
-  originLng           Float?
-  priceEstimated      Float?   // alias for Pricing Snapshot totalPassengerPrice (ADR-001 §5)
-  priceOffered        Float?   // final accepted price (may differ from estimate)
-  context             Json?
-  offers              RideOffer[]
-  quotes              RideQuote[]
-  passenger           Passenger   @relation(fields: [passengerId], references: [id])
-  selectedDriver      Driver?     @relation(fields: [selectedDriverId], references: [id])
+  originPlaceId             String?
+  destinationPlaceId        String?
+  status                    RideStatus       @default(PENDING)
+  selectedDriverId          String?
+  createdAt                 DateTime         @default(now())
+  destinationLat            Float?
+  destinationLng            Float?
+  distanceKm                Float?
+  durationMin               Int?
+  originLat                 Float?
+  originLng                 Float?
+  priceEstimated            Float? // alias for Pricing Snapshot totalPassengerPrice (ADR-001 §5)
+  priceOffered              Float? // final accepted price (may differ from estimate)
+  context                   Json?
+  offers                    RideOffer[]
+  quotes                    RideQuote[]
+  demandRevisions           DemandRevision[]
+  passenger                 Passenger        @relation(fields: [passengerId], references: [id])
+  selectedDriver            Driver?          @relation(fields: [selectedDriverId], references: [id])
 
   // V2 — operational root in the driver network (nullable during rollout)
   rootDriverId String?
@@ -182,32 +184,31 @@ model RideRequest {
   // currentCandidateDriverId: driver whose offer is currently PENDING (null between candidates)
   // lastOfferExpiredAt: most recent PENDING→EXPIRED transition (audit)
   currentDispatchStage     DispatchStage?
-  excludedDriverIds        String[]    @default([])
+  excludedDriverIds        String[]       @default([])
   queueSnapshot            Json?
   currentCandidateDriverId String?
   lastOfferExpiredAt       DateTime?
 
   // Pricing Snapshot — ADR-001 §5 — immutable, persisted at ride creation
   // ADD ONLY — never recalculate after persisted.
-  baseCOE         Float?   // distanceKm × R$1,20/km
-  zoneMultiplier  Float?   // peso_esforco from OperationalZone
-  liquidityMargin Float?   // 0.20 (normal) or 0.55 (scarcity)
-  liquidityAmount Float?   // baseFare × liquidityMargin
-  baseFare        Float?   // baseCOE × zoneMultiplier
-  driverNetAmount Float?   // baseFare + liquidityAmount
-  platformFee     Float?   // R$2,50 — Taxa Operacional Cyborg
+  baseCOE         Float? // distanceKm × R$1,20/km
+  zoneMultiplier  Float? // peso_esforco from OperationalZone
+  liquidityMargin Float? // 0.20 (normal) or 0.55 (scarcity)
+  liquidityAmount Float? // baseFare × liquidityMargin
+  baseFare        Float? // baseCOE × zoneMultiplier
+  driverNetAmount Float? // baseFare + liquidityAmount
+  platformFee     Float? // R$2,50 — Taxa Operacional Cyborg
   pricingVersion  String?
-
 
   // Trip Execution Domain — timestamps de micro-estados (Fase 4)
   // ADD ONLY — nunca remover após persistido.
   // Corridas anteriores ficam com todos os campos NULL (sem efeito).
-  navigationStartedAt  DateTime?  // driver iniciou navegação ao passageiro
-  pickupArrivedAt      DateTime?  // driver chegou ao local de embarque
-  boardingAt           DateTime?  // passageiro confirmou embarque
-  tripStartedAt        DateTime?  // viagem iniciada (driver → destino)
-  destinationArrivedAt DateTime?  // driver chegou ao destino
-  completedAt          DateTime?  // viagem encerrada
+  navigationStartedAt  DateTime? // driver iniciou navegação ao passageiro
+  pickupArrivedAt      DateTime? // driver chegou ao local de embarque
+  boardingAt           DateTime? // passageiro confirmou embarque
+  tripStartedAt        DateTime? // viagem iniciada (driver → destino)
+  destinationArrivedAt DateTime? // driver chegou ao destino
+  completedAt          DateTime? // viagem encerrada
 
   // V2 — payment domain (PR-2)
   paymentIntent     PaymentIntent?
@@ -217,6 +218,88 @@ model RideRequest {
   ownershipSnapshot OwnershipSnapshot?
 
   @@index([scheduledAt])
+}
+
+model DemandRevision {
+  id                 String              @id @default(uuid())
+  rideRequestId      String
+  sequence           Int
+  state              DemandRevisionState @default(CURRENT)
+  origin             String
+  destination        String
+  scheduledAt        DateTime?
+  originPlaceId      String?
+  destinationPlaceId String?
+  createdAt          DateTime            @default(now())
+  supersededAt       DateTime?
+
+  rideRequest RideRequest     @relation(fields: [rideRequestId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  rounds      DispatchRound[]
+
+  @@unique([rideRequestId, sequence])
+  @@index([rideRequestId, state])
+}
+
+model DispatchRound {
+  id                          String                       @id @default(uuid())
+  demandRevisionId            String
+  sequence                    Int
+  state                       DispatchRoundState           @default(ACTIVE)
+  candidateUniverseBoundaryAt DateTime
+  startedAt                   DateTime                     @default(now())
+  completedAt                 DateTime?
+  terminalReason              DispatchRoundTerminalReason?
+  fenceVersion                Int                          @default(0)
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+
+  demandRevision    DemandRevision                  @relation(fields: [demandRevisionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  offers            RideOffer[]
+  candidates        DispatchRoundCandidate[]
+  exhaustionSummary DispatchRoundExhaustionSummary?
+
+  @@unique([demandRevisionId, sequence])
+  @@index([demandRevisionId, state])
+}
+
+model DispatchRoundCandidate {
+  id                    String                                 @id @default(uuid())
+  dispatchRoundId       String
+  driverId              String
+  scopeKey              String
+  eligibleAtBoundary    DateTime
+  boundarySource        String
+  accountingDisposition DispatchCandidateAccountingDisposition @default(OPEN)
+  consumptionReason     DispatchCandidateConsumptionReason?
+  exclusionReason       String?
+  offerObservation      DispatchCandidateOfferObservation      @default(NONE)
+  dispositionAt         DateTime?
+  evidenceVersion       Int                                    @default(1)
+  createdAt             DateTime                               @default(now())
+
+  dispatchRound DispatchRound @relation(fields: [dispatchRoundId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  driver        Driver        @relation(fields: [driverId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([dispatchRoundId, driverId])
+  @@index([dispatchRoundId, accountingDisposition])
+  @@index([driverId])
+}
+
+model DispatchRoundExhaustionSummary {
+  id              String   @id @default(uuid())
+  dispatchRoundId String   @unique
+  evidenceVersion Int
+  scopeKey        String
+  boundaryAt      DateTime
+  eligibleCount   Int
+  consumedCount   Int
+  excludedCount   Int
+  remainingCount  Int
+  evidenceHash    String?
+  derivedSnapshot Json?
+  createdAt       DateTime @default(now())
+
+  dispatchRound DispatchRound @relation(fields: [dispatchRoundId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 }
 
 /// @deprecated
@@ -246,23 +329,26 @@ model DriverReferral {
 }
 
 model RideOffer {
-  id            String          @id @default(uuid())
-  rideRequestId String
-  driverId      String
-  status        RideOfferStatus @default(PENDING)
-  expiresAt     DateTime
-  respondedAt   DateTime?
-  createdAt     DateTime        @default(now())
+  id                          String          @id @default(uuid())
+  rideRequestId               String
+  dispatchRoundId             String?
+  driverId                    String
+  status                      RideOfferStatus @default(PENDING)
+  expiresAt                   DateTime
+  respondedAt                 DateTime?
+  createdAt                   DateTime        @default(now())
   // Fase E — snapshot da oferta. Primeira oferta: copiado da RideQuote.
   // Redispatch (M2/M3): M do novo candidato recalculado, sem reprifcar o
   // passageiro (RideQuote/gross/preço do passageiro permanecem intactos).
   driverToPickupDistanceKm    Float?
   rideDistanceKm              Float?
   driverReceivableAmountCents Int?
-  driver        Driver          @relation(fields: [driverId], references: [id])
-  rideRequest   RideRequest     @relation(fields: [rideRequestId], references: [id])
+  driver                      Driver          @relation(fields: [driverId], references: [id])
+  rideRequest                 RideRequest     @relation(fields: [rideRequestId], references: [id])
+  dispatchRound               DispatchRound?  @relation(fields: [dispatchRoundId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([rideRequestId, driverId])
+  @@unique([dispatchRoundId, driverId])
   @@index([driverId, status])
   @@index([driverId, createdAt(sort: Desc)])
 }
@@ -272,38 +358,38 @@ model RideOffer {
 /// valores; a quote é a fonte canônica do recebível do motorista no momento
 /// da precificação. Campos monetários em centavos (padrão Settlement).
 model RideQuote {
-  id              String           @id @default(uuid())
-  rideRequestId   String
+  id                          String  @id @default(uuid())
+  rideRequestId               String
   /// Driver para quem a quote foi precificada (decisão M1/REGISTERED_BASE).
-  pricingDriverId String
+  pricingDriverId             String
   /// Origem M — posição do driver no momento da precificação (perna M→A).
-  originMLat      Float
-  originMLng      Float
+  originMLat                  Float
+  originMLng                  Float
   /// Fonte de M: REGISTERED_BASE | CURRENT_LOCATION (integração na Fase E).
-  originMSource   String
+  originMSource               String
   /// Distância M→A em km (deslocamento do motorista até a origem da corrida).
-  distanceMtoAKm  Float
+  distanceMtoAKm              Float
   /// Distância A→B em km (a corrida em si).
-  distanceAtoBKm  Float
+  distanceAtoBKm              Float
   /// Custo da perna M→A em centavos (R$1,20/km na decisão aprovada).
-  legCostMtoACents   Int
+  legCostMtoACents            Int
   /// Precificação da perna A→B em centavos.
-  legPriceAtoBCents  Int
+  legPriceAtoBCents           Int
   /// Total bruto final (gross) em centavos.
-  grossFinalCents    Int
+  grossFinalCents             Int
   /// Política de distribuição vigente (snapshot — mesmo padrão do Settlement).
-  revenuePolicyId      String?
-  revenuePolicyVersion Int?
+  revenuePolicyId             String?
+  revenuePolicyVersion        Int?
   /// Recebível contratual do driver em centavos (snapshot imutável).
   driverReceivableAmountCents Int
 
-  status   RideQuoteStatus @default(QUOTED)
+  status    RideQuoteStatus @default(QUOTED)
   /// Lock otimista (CAS) — cada transição QUOTED→AGREED incrementa.
-  version  Int             @default(1)
+  version   Int             @default(1)
   /// createdAt + RIDE_QUOTE_TTL (15min). Quote expirada não confirma.
   expiresAt DateTime
   agreedAt  DateTime?
-  createdAt DateTime       @default(now())
+  createdAt DateTime        @default(now())
 
   rideRequest   RideRequest    @relation(fields: [rideRequestId], references: [id])
   pricingDriver Driver         @relation(fields: [pricingDriverId], references: [id])
@@ -324,16 +410,16 @@ enum UserRole {
 /// Base operacional do motorista (endereço M fixo — ponto de origem da
 /// perna M→A na precificação). Preenchida no onboarding (Fase E).
 model DriverOperationalBase {
-  id                 String   @id @default(uuid())
-  driverId           String   @unique
-  formattedAddress   String
+  id               String   @id @default(uuid())
+  driverId         String   @unique
+  formattedAddress String
   /// Place ID do Google Places (quando o endereço veio do autocomplete).
-  providerPlaceId    String?
-  latitude           Float
-  longitude          Float
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  driver             Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  providerPlaceId  String?
+  latitude         Float
+  longitude        Float
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  driver           Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
 
   @@index([driverId])
 }
@@ -342,15 +428,15 @@ model DriverOperationalBase {
 /// Uma única linha por driver (upsert). Não é histórico: para histórico de
 /// trilha, usar DriverLocationPing.
 model DriverCurrentLocation {
-  id        String   @id @default(uuid())
-  driverId  String   @unique
-  latitude  Float
-  longitude Float
+  id         String   @id @default(uuid())
+  driverId   String   @unique
+  latitude   Float
+  longitude  Float
   /// Precisão horizontal estimada em metros.
-  accuracy  Float?
+  accuracy   Float?
   /// Quilometragem do odômetro no momento da amostra.
-  odometer  Int?
-  speed     Float?
+  odometer   Int?
+  speed      Float?
   recordedAt DateTime @default(now())
   updatedAt  DateTime @updatedAt
   driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
@@ -427,6 +513,48 @@ enum DispatchStage {
   OWNER_DISPATCH
   NETWORK_DISPATCH
   OWNER_RECOVERY
+}
+
+enum DemandRevisionState {
+  CURRENT
+  SUPERSEDED
+}
+
+enum DispatchRoundState {
+  ACTIVE
+  MATCHED
+  EXHAUSTED
+  SUPERSEDED
+  ABORTED
+}
+
+enum DispatchRoundTerminalReason {
+  ACCEPTED
+  NETWORK_EXHAUSTED
+  OPERATIONAL_CUTOFF
+  SUPERSEDED
+  ABORTED
+}
+
+enum DispatchCandidateAccountingDisposition {
+  OPEN
+  CONSUMED
+  VALID_EXCLUSION
+  UNAVAILABLE_UNDER_CONTRACT
+  FULFILLED
+}
+
+enum DispatchCandidateConsumptionReason {
+  REJECTED
+  EXPIRED
+}
+
+enum DispatchCandidateOfferObservation {
+  NONE
+  PENDING
+  ACCEPTED
+  REJECTED
+  EXPIRED
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -554,24 +682,24 @@ enum DomainEventType {
 /// é referenciado via esta entidade para suportar campanhas e tiers
 /// sem deploy de código (dados, não código).
 model RevenuePolicy {
-  id             String    @id @default(uuid())
+  id             String                @id @default(uuid())
   /// Identificador único de negócio — imutável após criação.
   /// Múltiplas versões do mesmo code são permitidas; a unicidade é por (code, version).
   code           String
   name           String
   /// Incrementado a cada nova vigência do mesmo code (ROOT_DRIVER_STANDARD v1, v2…).
-  version        Int       @default(1)
+  version        Int                   @default(1)
   /// Base de cálculo: OPERATIONAL_REVENUE = driverNetAmount.
   baseType       RevenuePolicyBaseType @default(OPERATIONAL_REVENUE)
   /// Basis points sobre baseType. Ex: 500 = 5%.
   rootDriverBps  Int
   effectiveFrom  DateTime?
   effectiveUntil DateTime?
-  isActive       Boolean   @default(true)
-  createdAt      DateTime  @default(now())
+  isActive       Boolean               @default(true)
+  createdAt      DateTime              @default(now())
 
-  settlements    Settlement[]
-  quotes         RideQuote[]
+  settlements Settlement[]
+  quotes      RideQuote[]
 
   @@unique([code, version])
   @@index([isActive, effectiveFrom, effectiveUntil])
@@ -641,18 +769,18 @@ model OwnershipPolicy {
 /// Criado no momento da corrida; nunca atualizado após criação.
 /// O Settlement lê ownerId daqui, nunca diretamente do Passenger.
 model OwnershipSnapshot {
-  id         String    @id @default(uuid())
-  rideId     String    @unique
+  id     String @id @default(uuid())
+  rideId String @unique
 
   /// Identificador do proprietário econômico resolvido.
   /// null = corrida orgânica (ownerType = NONE).
-  ownerId    String?
+  ownerId String?
 
   /// Tipo do proprietário econômico.
-  ownerType  OwnerType @default(NONE)
+  ownerType OwnerType @default(NONE)
 
   /// Código da política de resolução usada (ex: "PASSENGER_ROOTDRIVER_DIRECT").
-  ownershipPolicyCode    String  @default("PASSENGER_ROOTDRIVER_DIRECT")
+  ownershipPolicyCode String @default("PASSENGER_ROOTDRIVER_DIRECT")
 
   /// FK para a política de ownership vigente no momento da resolução.
   /// Auditabilidade: mesmo que a política evolua, o snapshot reflete a versão exata usada.
@@ -731,9 +859,9 @@ model Settlement {
   revenuePolicyId      String?
   revenuePolicyVersion Int?
 
-  paymentIntent PaymentIntent   @relation(fields: [paymentIntentId], references: [id])
-  rideRequest   RideRequest     @relation(fields: [rideRequestId], references: [id])
-  revenuePolicy RevenuePolicy?  @relation(fields: [revenuePolicyId], references: [id])
+  paymentIntent PaymentIntent  @relation(fields: [paymentIntentId], references: [id])
+  rideRequest   RideRequest    @relation(fields: [rideRequestId], references: [id])
+  revenuePolicy RevenuePolicy? @relation(fields: [revenuePolicyId], references: [id])
   splits        RevenueSplit[]
 
   @@index([rootDriverId])
@@ -758,17 +886,17 @@ model RevenueSplit {
 }
 
 model DriverLocationPing {
-  id            String      @id @default(uuid())
+  id            String   @id @default(uuid())
   rideRequestId String
   driverId      String
   lat           Float
   lng           Float
   recordedAt    DateTime
-  receivedAt    DateTime    @default(now())
-  source        String      @default("LIVE")
+  receivedAt    DateTime @default(now())
+  source        String   @default("LIVE")
 
-  rideRequest   RideRequest @relation(fields: [rideRequestId], references: [id])
-  driver        Driver      @relation(fields: [driverId], references: [id])
+  rideRequest RideRequest @relation(fields: [rideRequestId], references: [id])
+  driver      Driver      @relation(fields: [driverId], references: [id])
 
   @@index([rideRequestId, receivedAt(sort: Desc)])
 }
@@ -794,7 +922,7 @@ model Invite {
   id String @id @default(uuid())
 
   /// Public, URL-safe slug shared with the invitee.
-  slug String @unique
+  slug  String  @unique
   /// Optional opaque token (private deep-link). Unique when present.
   token String? @unique
 
@@ -814,4 +942,3 @@ model Invite {
   @@index([ownerActorType, ownerId])
   @@index([expectedFlowType])
 }
-
