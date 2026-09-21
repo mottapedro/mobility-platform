@@ -28,6 +28,8 @@ import type { EventBus } from "../../domain/shared/events/EventBus";
 import {
   MatchInput,
   MatchLevel,
+  MatchRideOutcome,
+  MatchRideResult,
   MatchRideUseCase,
 } from "../use-cases/MatchRideUseCase";
 
@@ -36,11 +38,6 @@ type Db = Pick<typeof prisma, "rideRequest" | "rideOffer" | "domainEvent">;
 export interface MatchRideDeps {
   db?: Db;
   bus?: EventBus;
-}
-
-export interface MatchRideResult {
-  matched: boolean;
-  level: MatchLevel;
 }
 
 export async function execute(

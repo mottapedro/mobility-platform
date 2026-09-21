@@ -81,6 +81,7 @@ describe("E6.2K.2A owner-recovery authority separation", () => {
     );
     const result = await useCase.execute({ rideId: "ride-1", level: "NETWORK_L1" });
     expect(result.matched).toBe(false);
+    expect(result.outcome).toBe("NO_MATCH_AVAILABLE");
     expect(ownerRecoveryWrites()).toHaveLength(0);
   });
 
@@ -90,7 +91,14 @@ describe("E6.2K.2A owner-recovery authority separation", () => {
       { execute: jest.fn().mockResolvedValue([]) } as never
     );
     const result = await useCase.execute({ rideId: "ride-1", level: "GENERAL" });
-    expect(result).toEqual({ matched: false, level: "GENERAL" });
+    expect(result).toEqual(
+      expect.objectContaining({
+        outcome: "NO_MATCH_AVAILABLE",
+        matched: false,
+        level: "GENERAL",
+        reason: "no_candidates_in_general_pool",
+      })
+    );
     expect(ownerRecoveryWrites()).toHaveLength(0);
   });
 
@@ -119,9 +127,17 @@ describe("E6.2K.2A owner-recovery authority separation", () => {
     );
     const network = await useCase.execute({ rideId: "ride-1", level: "NETWORK_L1" });
     expect(network.matched).toBe(false);
+    expect(network.outcome).toBe("NO_MATCH_AVAILABLE");
     expect(typeof network.level).toBe("string");
     const general = await useCase.execute({ rideId: "ride-1", level: "GENERAL" });
-    expect(general).toEqual({ matched: false, level: "GENERAL" });
+    expect(general).toEqual(
+      expect.objectContaining({
+        outcome: "NO_MATCH_AVAILABLE",
+        matched: false,
+        level: "GENERAL",
+        reason: "no_candidates_in_general_pool",
+      })
+    );
   });
 
   it("T5: caller-side writes untouched (RespondToRideOfferUseCase still owns its transition)", async () => {

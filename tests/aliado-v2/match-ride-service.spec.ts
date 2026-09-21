@@ -76,6 +76,7 @@ describe("MatchRideService (application shell)", () => {
 
     expect(result.matched).toBe(false);
     expect(result.level).toBe("GENERAL");
+    expect(result.outcome).toBe("NO_MATCH_AVAILABLE");
   });
 
   it("produces the same result as calling MatchRideUseCase directly (delegation parity)", async () => {
