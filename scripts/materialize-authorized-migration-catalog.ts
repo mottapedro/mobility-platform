@@ -65,6 +65,7 @@ export const POST_CUTOFF_MIGRATIONS = [
   "20260910000000_add_waiting_owner_ride_status",
   "20260910000001_add_cancelled_ride_offer_status",
   "20260911000000_restore_one_pending_offer_per_ride",
+  "20260920000000_dispatch_round_schema_materialization",
 ] as const;
 
 export const EXCLUDED_SUPERSEDED_MIGRATIONS = [
@@ -105,14 +106,14 @@ function difference(left: readonly string[], right: readonly string[]): string[]
 
 function assertCatalogDefinition(): void {
   const expected = unique(AUTHORIZED_MIGRATIONS);
-  if (expected.length !== AUTHORIZED_CATALOG_COUNT || AUTHORIZED_CATALOG_COUNT !== 56) {
-    throw new Error(`Authorized migration catalog must contain 56 unique entries, got ${expected.length}`);
+  if (expected.length !== AUTHORIZED_CATALOG_COUNT || AUTHORIZED_CATALOG_COUNT !== 57) {
+    throw new Error(`Authorized migration catalog must contain 57 unique entries, got ${expected.length}`);
   }
   if (HISTORICAL_MIGRATIONS.length !== 43) {
     throw new Error(`Historical migration definition must contain 43 entries, got ${HISTORICAL_MIGRATIONS.length}`);
   }
-  if (POST_CUTOFF_MIGRATIONS.length !== 12) {
-    throw new Error(`Post-cutoff migration definition must contain 12 entries, got ${POST_CUTOFF_MIGRATIONS.length}`);
+  if (POST_CUTOFF_MIGRATIONS.length !== 13) {
+    throw new Error(`Post-cutoff migration definition must contain 13 entries, got ${POST_CUTOFF_MIGRATIONS.length}`);
   }
 }
 
