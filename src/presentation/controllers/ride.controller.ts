@@ -396,6 +396,19 @@ export class RideController {
         });
 
         // ADR-004: OwnershipSnapshot persistido na mesma transação — imutável daqui em diante
+        await tx.demandRevision.create({
+          data: {
+            rideRequestId: created.id,
+            sequence: 1,
+            state: "CURRENT",
+            origin: created.origin,
+            destination: created.destination,
+            scheduledAt: created.scheduledAt,
+            originPlaceId: created.originPlaceId,
+            destinationPlaceId: created.destinationPlaceId,
+          },
+        });
+
         await tx.ownershipSnapshot.create({
           data: {
             rideId:                      created.id,
