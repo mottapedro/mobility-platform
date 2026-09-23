@@ -72,7 +72,7 @@ async function makePassenger(tag: string, rootDriverId: string | null = null) {
 const SCHEDULED_AT = () => new Date(Date.now() + 48 * 60 * 60 * 1000);
 
 async function makeRide(passengerId: string, rootDriverId: string | null = null) {
-  return prisma.rideRequest.create({
+  const ride = await prisma.rideRequest.create({
     data: {
       passengerId,
       origin: "Rua Teste, 1",
@@ -82,6 +82,21 @@ async function makeRide(passengerId: string, rootDriverId: string | null = null)
       rootDriverId,
     },
   });
+
+  await prisma.demandRevision.create({
+    data: {
+      rideRequestId: ride.id,
+      sequence: 1,
+      state: "CURRENT",
+      origin: ride.origin,
+      destination: ride.destination,
+      scheduledAt: ride.scheduledAt,
+      originPlaceId: ride.originPlaceId,
+      destinationPlaceId: ride.destinationPlaceId,
+    },
+  });
+
+  return ride;
 }
 
 // --- Unit tests: AcceptancePolicyEngine ---

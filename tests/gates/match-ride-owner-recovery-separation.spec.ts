@@ -11,6 +11,7 @@ jest.mock("../../src/domain/services/DriverReferralService", () => ({
 
 jest.mock("../../src/infra/prisma/client", () => ({
   prisma: {
+    $transaction: jest.fn(),
     rideRequest: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -41,6 +42,7 @@ describe("E6.2K.2A owner-recovery authority separation", () => {
   const rideOfferFindManyMock = jest.mocked(prisma.rideOffer.findMany);
   const driverFindManyMock = jest.mocked(prisma.driver.findMany);
   const passengerFindUniqueMock = jest.mocked(prisma.passenger.findUnique);
+  const transactionMock = jest.mocked(prisma.$transaction);
 
   const baseRide = {
     id: "ride-1",
@@ -72,6 +74,26 @@ describe("E6.2K.2A owner-recovery authority separation", () => {
     passengerFindUniqueMock.mockResolvedValue({ referredByDriverId: null } as never);
     rideOfferFindManyMock.mockResolvedValue([] as never);
     driverFindManyMock.mockResolvedValue([] as never);
+    transactionMock.mockImplementation(async (callback) => callback({
+      demandRevision: {
+        findMany: jest.fn().mockResolvedValue([{ id: "revision-1", state: "CURRENT" }]),
+        findUnique: jest.fn().mockResolvedValue({
+          id: "revision-1",
+          rideRequestId: "ride-1",
+          state: "CURRENT",
+        }),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      dispatchRound: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: "round-1",
+          sequence: 1,
+          candidateUniverseBoundaryAt: new Date(),
+        }),
+        aggregate: jest.fn(),
+        create: jest.fn(),
+      },
+    } as never));
   });
 
   it("T1: NETWORK candidate-empty does NOT write OWNER_RECOVERY", async () => {

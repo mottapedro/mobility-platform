@@ -27,7 +27,7 @@ async function makePassenger(email: string) {
 }
 
 async function makeRide(passengerId: string) {
-  return prisma.rideRequest.create({
+  const ride = await prisma.rideRequest.create({
     data: {
       passengerId,
       origin: "A",
@@ -36,6 +36,21 @@ async function makeRide(passengerId: string) {
       status: RideStatus.PENDING,
     },
   });
+
+  await prisma.demandRevision.create({
+    data: {
+      rideRequestId: ride.id,
+      sequence: 1,
+      state: "CURRENT",
+      origin: ride.origin,
+      destination: ride.destination,
+      scheduledAt: ride.scheduledAt,
+      originPlaceId: ride.originPlaceId,
+      destinationPlaceId: ride.destinationPlaceId,
+    },
+  });
+
+  return ride;
 }
 
 async function makeInactiveDriver(email: string) {

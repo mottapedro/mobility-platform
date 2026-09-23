@@ -9,6 +9,7 @@ import { AcceptancePolicyEngine } from "../../domain/services/AcceptancePolicyEn
 import { DriverOriginResolver } from "../../domain/pricing/DriverOriginResolver";
 import { execute as createOfferService } from "../services/CreateOfferService";
 import { referralFallbackScheduler } from "../../infra/async/ReferralFallbackScheduler";
+import { initializeDispatchRound } from "../services/InitializeDispatchRoundService";
 import type { RideStatus } from "../../shared/enums";
 
 export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
@@ -509,6 +510,8 @@ export class MatchRideUseCase {
       console.log(`⚠️ Corrida ${rideId} ignorada — status: ${ride.status}`);
       return this.toResult("STALE_LIFECYCLE", "GENERAL", { reason: `ride_status_not_matchable: ${ride.status}` });
     }
+
+    await initializeDispatchRound(rideId);
 
     const referredDriverId = passenger?.referredByDriverId ?? null;
     const dispatchRootDriverId = ride.rootDriverId ?? passenger?.rootDriverId ?? referredDriverId;
