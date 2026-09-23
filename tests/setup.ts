@@ -181,6 +181,40 @@ export async function cleanTestData(): Promise<void> {
       });
     }
 
+    // RI2B: remove dispatch-round dependents before their referenced rounds,
+    // revisions, and rides.
+    const testDemandRevisionIds = (
+      await prisma.demandRevision.findMany({
+        where: { rideRequestId: { in: testRideRequestIds } },
+        select: { id: true },
+      })
+    ).map((revision) => revision.id);
+
+    if (testDemandRevisionIds.length > 0) {
+      const testDispatchRoundIds = (
+        await prisma.dispatchRound.findMany({
+          where: { demandRevisionId: { in: testDemandRevisionIds } },
+          select: { id: true },
+        })
+      ).map((round) => round.id);
+
+      if (testDispatchRoundIds.length > 0) {
+        await prisma.dispatchRoundCandidate.deleteMany({
+          where: { dispatchRoundId: { in: testDispatchRoundIds } },
+        });
+        await prisma.dispatchRoundExhaustionSummary.deleteMany({
+          where: { dispatchRoundId: { in: testDispatchRoundIds } },
+        });
+        await prisma.dispatchRound.deleteMany({
+          where: { id: { in: testDispatchRoundIds } },
+        });
+      }
+
+      await prisma.demandRevision.deleteMany({
+        where: { id: { in: testDemandRevisionIds } },
+      });
+    }
+
     await prisma.rideRequest.deleteMany({ where: { id: { in: testRideRequestIds } } });
   }
   if (testPassengerIds.length > 0) {

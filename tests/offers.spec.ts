@@ -5,6 +5,28 @@ import { ExpireOffersService } from "../src/application/use-cases/ExpireOffersSe
 import { AuthSessionService } from "../src/domain/auth/AuthSessionService";
 import { AuthTokenService } from "../src/domain/auth/AuthTokenService";
 
+async function createCurrentDemandRevision(ride: {
+  id: string;
+  origin: string;
+  destination: string;
+  scheduledAt: Date | null;
+  originPlaceId: string | null;
+  destinationPlaceId: string | null;
+}) {
+  return prisma.demandRevision.create({
+    data: {
+      rideRequestId: ride.id,
+      sequence: 1,
+      state: "CURRENT",
+      origin: ride.origin,
+      destination: ride.destination,
+      scheduledAt: ride.scheduledAt,
+      originPlaceId: ride.originPlaceId,
+      destinationPlaceId: ride.destinationPlaceId,
+    },
+  });
+}
+
 async function tokenForDriver(driverId: string) {
   const driver = await prisma.driver.findUniqueOrThrow({ where: { id: driverId }, select: { userId: true } });
   const session = await new AuthSessionService().createSession(driver.userId);
@@ -54,6 +76,7 @@ describe("PATCH /offers/respond", () => {
         status: "MATCHING",
       },
     });
+    await createCurrentDemandRevision(ride);
 
     const offer = await prisma.rideOffer.create({
       data: {
@@ -121,6 +144,7 @@ describe("PATCH /offers/respond", () => {
         status: "MATCHING",
       },
     });
+    await createCurrentDemandRevision(ride);
 
     const offer = await prisma.rideOffer.create({
       data: {
@@ -206,6 +230,7 @@ describe("PATCH /offers/respond", () => {
         status: "WAITING_REFERRAL",
       },
     });
+    await createCurrentDemandRevision(ride);
 
     const offer = await prisma.rideOffer.create({
       data: {

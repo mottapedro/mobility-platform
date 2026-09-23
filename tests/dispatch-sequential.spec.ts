@@ -23,6 +23,28 @@ async function pendingCount(rideId: string): Promise<number> {
   });
 }
 
+async function createCurrentDemandRevision(ride: {
+  id: string;
+  origin: string;
+  destination: string;
+  scheduledAt: Date | null;
+  originPlaceId: string | null;
+  destinationPlaceId: string | null;
+}) {
+  return prisma.demandRevision.create({
+    data: {
+      rideRequestId: ride.id,
+      sequence: 1,
+      state: "CURRENT",
+      origin: ride.origin,
+      destination: ride.destination,
+      scheduledAt: ride.scheduledAt,
+      originPlaceId: ride.originPlaceId,
+      destinationPlaceId: ride.destinationPlaceId,
+    },
+  });
+}
+
 async function makeDriver(name: string, email: string, phone: string) {
   const u = await prisma.user.create({
     data: {
@@ -78,6 +100,7 @@ describe("Governed Sequential Dispatch — invariants", () => {
         status: "PENDING",
       },
     });
+    await createCurrentDemandRevision(ride);
 
     const match = new MatchRideUseCase();
     await match.execute({ rideId: ride.id });
@@ -152,6 +175,7 @@ describe("Governed Sequential Dispatch — invariants", () => {
         status: "PENDING",
       },
     });
+    await createCurrentDemandRevision(ride);
 
     const match = new MatchRideUseCase();
     await match.execute({ rideId: ride.id });
@@ -206,6 +230,7 @@ describe("Governed Sequential Dispatch — invariants", () => {
         status: "PENDING",
       },
     });
+    await createCurrentDemandRevision(ride);
 
     const match = new MatchRideUseCase();
     const respond = new RespondToRideOfferUseCase();

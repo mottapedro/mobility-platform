@@ -6,6 +6,28 @@ import { RespondToRideOfferUseCase } from "../src/application/use-cases/RespondT
 
 const PASSWORD = "123456";
 
+async function createCurrentDemandRevision(ride: {
+  id: string;
+  origin: string;
+  destination: string;
+  scheduledAt: Date | null;
+  originPlaceId: string | null;
+  destinationPlaceId: string | null;
+}) {
+  return prisma.demandRevision.create({
+    data: {
+      rideRequestId: ride.id,
+      sequence: 1,
+      state: "CURRENT",
+      origin: ride.origin,
+      destination: ride.destination,
+      scheduledAt: ride.scheduledAt,
+      originPlaceId: ride.originPlaceId,
+      destinationPlaceId: ride.destinationPlaceId,
+    },
+  });
+}
+
 async function createDriver(label: string) {
   const suffix = `${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const user = await prisma.user.create({
@@ -59,6 +81,7 @@ async function createOfferFixture() {
       status: "WAITING_GENERAL",
     },
   });
+  await createCurrentDemandRevision(ride);
   const offer = await prisma.rideOffer.create({
     data: {
       rideRequestId: ride.id,
@@ -125,7 +148,6 @@ describe("P0 RideOffer authorization", () => {
 describe("P0 RideOffer atomic acceptance", () => {
   it("permits exactly one winner when two drivers accept concurrently", async () => {
     const first = await createDriver("race-a");
-    const second = await createDriver("race-b");
     const passenger = await createPassenger("race");
     const ride = await prisma.rideRequest.create({
       data: {
@@ -136,17 +158,24 @@ describe("P0 RideOffer atomic acceptance", () => {
         status: "WAITING_GENERAL",
       },
     });
-    const offers = await prisma.rideOffer.createMany({
-      data: [
-        { rideRequestId: ride.id, driverId: first.driver.id, status: "PENDING", expiresAt: new Date(Date.now() + 60_000) },
-        { rideRequestId: ride.id, driverId: second.driver.id, status: "PENDING", expiresAt: new Date(Date.now() + 60_000) },
-      ],
+    await createCurrentDemandRevision(ride);
+    const offer = await prisma.rideOffer.create({
+      data: {
+        rideRequestId: ride.id,
+        driverId: first.driver.id,
+        status: "PENDING",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
     });
-    expect(offers.count).toBe(2);
-    const pending = await prisma.rideOffer.findMany({ where: { rideRequestId: ride.id }, select: { id: true, driverId: true } });
+    const pending = await prisma.rideOffer.findMany({
+      where: { rideRequestId: ride.id, status: "PENDING" },
+      select: { id: true, driverId: true },
+    });
+    expect(pending).toHaveLength(1);
+    expect(pending[0].id).toBe(offer.id);
 
     const results = await Promise.allSettled(
-      pending.map((offer) => new RespondToRideOfferUseCase().execute(offer.id, true, offer.driverId)),
+      [1, 2].map(() => new RespondToRideOfferUseCase().execute(offer.id, true, first.driver.id)),
     );
     const successes = results.filter((result) => result.status === "fulfilled");
     expect(successes).toHaveLength(1);
@@ -155,6 +184,6 @@ describe("P0 RideOffer atomic acceptance", () => {
     const acceptedOffers = await prisma.rideOffer.count({ where: { rideRequestId: ride.id, status: "ACCEPTED" } });
     expect(finalRide.selectedDriverId).not.toBeNull();
     expect(acceptedOffers).toBe(1);
-    expect(pending.map((offer) => offer.driverId)).toContain(finalRide.selectedDriverId);
+    expect(finalRide.selectedDriverId).toBe(first.driver.id);
   });
 });
