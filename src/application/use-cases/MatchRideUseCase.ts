@@ -10,6 +10,7 @@ import { DriverOriginResolver } from "../../domain/pricing/DriverOriginResolver"
 import { execute as createOfferService } from "../services/CreateOfferService";
 import { referralFallbackScheduler } from "../../infra/async/ReferralFallbackScheduler";
 import { initializeDispatchRound } from "../services/InitializeDispatchRoundService";
+import { materializeDispatchRoundCandidates } from "../services/MaterializeDispatchRoundCandidatesService";
 import type { RideStatus } from "../../shared/enums";
 
 export type MatchLevel = "REFERRED" | "NETWORK_L1" | "NETWORK_L2" | "NETWORK_L3" | "GENERAL";
@@ -511,7 +512,7 @@ export class MatchRideUseCase {
       return this.toResult("STALE_LIFECYCLE", "GENERAL", { reason: `ride_status_not_matchable: ${ride.status}` });
     }
 
-    await initializeDispatchRound(rideId);
+    const dispatchRound = await initializeDispatchRound(rideId);
 
     const referredDriverId = passenger?.referredByDriverId ?? null;
     const dispatchRootDriverId = ride.rootDriverId ?? passenger?.rootDriverId ?? referredDriverId;
@@ -603,6 +604,12 @@ export class MatchRideUseCase {
       if (!directDriver) {
         return this.execute({ rideId, level: "NETWORK_L1", excludedDriverIds, candidateDriverIds });
       }
+
+      await materializeDispatchRoundCandidates({
+        dispatchRoundId: dispatchRound.dispatchRoundId,
+        candidateUniverseBoundaryAt: dispatchRound.candidateUniverseBoundaryAt,
+        candidates: [{ driverId: directDriver.id, scopeKey: "REFERRAL" }],
+      }, { db: prisma });
 
       const dispatchSingleResult = await this.dispatchSingle(
         rideId,
@@ -775,6 +782,11 @@ export class MatchRideUseCase {
 
       const networkPick = candidates[0];
       const networkDispatchStage = stageByDriverId.get(networkPick.id) ?? dispatchStage;
+      await materializeDispatchRoundCandidates({
+        dispatchRoundId: dispatchRound.dispatchRoundId,
+        candidateUniverseBoundaryAt: dispatchRound.candidateUniverseBoundaryAt,
+        candidates: candidates.map((driver) => ({ driverId: driver.id, scopeKey: networkDispatchStage })),
+      }, { db: prisma });
       logMatchingEvent({
         rideId,
         event: "offers_prepared",
@@ -845,6 +857,11 @@ export class MatchRideUseCase {
     }
 
     const generalPick = generalDrivers[0];
+    await materializeDispatchRoundCandidates({
+      dispatchRoundId: dispatchRound.dispatchRoundId,
+      candidateUniverseBoundaryAt: dispatchRound.candidateUniverseBoundaryAt,
+      candidates: generalDrivers.map((driver) => ({ driverId: driver.id, scopeKey: dispatchStage })),
+    }, { db: prisma });
     logMatchingEvent({
       rideId,
       event: "offers_prepared",
