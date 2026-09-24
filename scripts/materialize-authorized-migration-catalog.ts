@@ -1,4 +1,5 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import crypto from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -59,6 +60,12 @@ export const POST_CUTOFF_MIGRATIONS = [
   "20260817000002_add_ride_quote_contract",
   "20260817000003_add_driver_base_current_location_offer_snapshot",
   "20260824000000_add_ride_offer_history_index",
+  "20260909000000_add_ride_creation_correlation",
+  "20260909000001_add_ride_creation_intent_fingerprint",
+  "20260910000000_add_waiting_owner_ride_status",
+  "20260910000001_add_cancelled_ride_offer_status",
+  "20260911000000_restore_one_pending_offer_per_ride",
+  "20260920000000_dispatch_round_schema_materialization",
 ] as const;
 
 export const EXCLUDED_SUPERSEDED_MIGRATIONS = [
@@ -74,6 +81,7 @@ export const AUTHORIZED_MIGRATIONS = [
 ] as const;
 
 export const AUTHORIZED_CATALOG_COUNT = AUTHORIZED_MIGRATIONS.length;
+const EXPECTED_FINGERPRINT_PATH = path.resolve("governance/authorized-migration-catalog.sha256");
 const MIGRATION_DIRECTORY_PATTERN = /^\d{8,}_/;
 
 function migrationDirectories(root: string): string[] {
@@ -98,14 +106,14 @@ function difference(left: readonly string[], right: readonly string[]): string[]
 
 function assertCatalogDefinition(): void {
   const expected = unique(AUTHORIZED_MIGRATIONS);
-  if (expected.length !== AUTHORIZED_CATALOG_COUNT || AUTHORIZED_CATALOG_COUNT !== 51) {
-    throw new Error(`Authorized migration catalog must contain 51 unique entries, got ${expected.length}`);
+  if (expected.length !== AUTHORIZED_CATALOG_COUNT || AUTHORIZED_CATALOG_COUNT !== 57) {
+    throw new Error(`Authorized migration catalog must contain 57 unique entries, got ${expected.length}`);
   }
   if (HISTORICAL_MIGRATIONS.length !== 43) {
     throw new Error(`Historical migration definition must contain 43 entries, got ${HISTORICAL_MIGRATIONS.length}`);
   }
-  if (POST_CUTOFF_MIGRATIONS.length !== 7) {
-    throw new Error(`Post-cutoff migration definition must contain 7 entries, got ${POST_CUTOFF_MIGRATIONS.length}`);
+  if (POST_CUTOFF_MIGRATIONS.length !== 13) {
+    throw new Error(`Post-cutoff migration definition must contain 13 entries, got ${POST_CUTOFF_MIGRATIONS.length}`);
   }
 }
 
@@ -137,6 +145,41 @@ export function validateAuthorizedCatalogPath(catalogPath: string): void {
   }
   if (!existsSync(path.join(catalogPath, "migration_lock.toml"))) {
     throw new Error("Authorized migration catalog is missing migration_lock.toml");
+  }
+}
+
+export function calculateAuthorizedCatalogFingerprint(catalogPath: string): string {
+  validateAuthorizedCatalogPath(catalogPath);
+  const entries = [...AUTHORIZED_MIGRATIONS].sort().map((migration) => {
+    const sql = canonicalizeMigrationSql(readFileSync(path.join(catalogPath, migration, "migration.sql")));
+    const digest = crypto.createHash("sha256").update(sql).digest("hex");
+    return `${migration}\t${digest}`;
+  }).join("\n");
+  return crypto.createHash("sha256").update(`${entries}\n`).digest("hex");
+}
+
+export function canonicalizeMigrationSql(input: Buffer): Buffer {
+  return Buffer.from(input.toString("utf8").replace(/\r\n/g, "\n"), "utf8");
+}
+
+function argumentValue(name: string): string | undefined {
+  const index = process.argv.indexOf(name);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+function writeCatalogOutputs(catalogPath: string, outputDir: string, fingerprint: string): void {
+  mkdirSync(outputDir, { recursive: true });
+  const manifestPath = path.join(outputDir, "manifest");
+  writeFileSync(manifestPath, [
+    `commit_sha=${process.env.GITHUB_SHA ?? "UNSET"}`,
+    `catalog_count=${AUTHORIZED_CATALOG_COUNT}`,
+    `fingerprint=${fingerprint}`,
+    "",
+  ].join("\n"));
+  if (process.env.GITHUB_OUTPUT) {
+    appendFileSync(process.env.GITHUB_OUTPUT, `catalog_dir=${catalogPath}\n`);
+    appendFileSync(process.env.GITHUB_OUTPUT, `manifest=${manifestPath}\n`);
+    appendFileSync(process.env.GITHUB_OUTPUT, `fingerprint=${fingerprint}\n`);
   }
 }
 
@@ -202,13 +245,25 @@ export function materializeAuthorizedMigrationCatalog(options: {
 
 if (require.main === module) {
   try {
-    const result = materializeAuthorizedMigrationCatalog();
+    const outputDir = argumentValue("--output-dir");
+    const result = materializeAuthorizedMigrationCatalog({
+      targetPath: outputDir ? path.join(outputDir, "catalog") : undefined,
+    });
     console.log(`AUTHORIZED_CATALOG_PATH=${result.path}`);
     console.log(`AUTHORIZED_CATALOG_COUNT=${result.authorizedMigrationCount}`);
     console.log(`SOURCE_MIGRATION_COUNT=${result.sourceMigrationCount}`);
     console.log(`UNKNOWN_MIGRATION_COUNT=${result.unknownMigrationCount}`);
     console.log(`EXCLUDED_MIGRATION_COUNT=${result.excludedMigrationCount}`);
     console.log("EXCLUDED_SQL_EXECUTED=0");
+    if (process.argv.includes("--verify-fingerprint")) {
+      const actual = calculateAuthorizedCatalogFingerprint(result.path);
+      const expected = readFileSync(EXPECTED_FINGERPRINT_PATH, "utf8").trim();
+      if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error("FINGERPRINT_AUTHORITY_NOT_ESTABLISHED");
+      if (actual !== expected) throw new Error(`AUTHORIZED_CATALOG_FINGERPRINT_MISMATCH expected=${expected} actual=${actual}`);
+      console.log(`AUTHORIZED_CATALOG_FINGERPRINT=${actual}`);
+      console.log("AUTHORIZED_CATALOG_FINGERPRINT_STATUS=PASS");
+      if (outputDir) writeCatalogOutputs(result.path, outputDir, actual);
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
