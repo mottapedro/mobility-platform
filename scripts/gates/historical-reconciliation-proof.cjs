@@ -136,6 +136,46 @@ function createOrchestrator(options) {
     return steps;
   }
 
+  function buildInspectionPlan(commands) {
+    if (!commands || typeof commands !== 'object') throw new TypeError('inspection commands are required');
+    const required = ['targetIdentity', 'emptyState', 'migrationTable'];
+    required.forEach((key) => {
+      if (!commands[key] || typeof commands[key].executable !== 'string' || !Array.isArray(commands[key].args)) {
+        throw new TypeError(`invalid inspection command: ${key}`);
+      }
+    });
+    return [
+      { sequence: 1, stepId: 'P01', commandId: 'target-identity', executable: commands.targetIdentity.executable, args: [...commands.targetIdentity.args] },
+      { sequence: 2, stepId: 'P02', commandId: 'empty-state', executable: commands.emptyState.executable, args: [...commands.emptyState.args] },
+      { sequence: 3, stepId: 'P03', commandId: 'migration-table-presence', executable: commands.migrationTable.executable, args: [...commands.migrationTable.args] },
+    ];
+  }
+
+  function deriveInspectionFact(result, commandId, parse) {
+    if (!result || result.exitCode !== 0 || typeof result.stdout !== 'string' || typeof result.stderr !== 'string') {
+      return { value: 'UNKNOWN', sourceCommandId: commandId };
+    }
+    return { value: parse(result.stdout), sourceCommandId: commandId };
+  }
+
+  function deriveEmptyDatabase(result) {
+    const fact = deriveInspectionFact(result, 'empty-state', (stdout) => {
+      const value = stdout.trim();
+      if (value !== '0' && value !== '1') return 'UNKNOWN';
+      return value === '0' ? 'YES' : 'NO';
+    });
+    if (fact.value === 'UNKNOWN') return fact;
+    return fact;
+  }
+
+  function deriveMigrationTablePresence(result) {
+    return deriveInspectionFact(result, 'migration-table-presence', (stdout) => {
+      const value = stdout.trim();
+      if (value !== '0' && value !== '1') return 'UNKNOWN';
+      return value === '1' ? 'YES' : 'NO';
+    });
+  }
+
   async function preflight(smoke) {
     ensureEvidenceDirectory();
     const repositoryHeadMatch = currentHead === expectedHead;
@@ -167,6 +207,9 @@ function createOrchestrator(options) {
 
   return {
     buildProofPlan,
+    buildInspectionPlan,
+    deriveEmptyDatabase,
+    deriveMigrationTablePresence,
     ensureEvidenceDirectory,
     invokeProofCommand,
     preflight,

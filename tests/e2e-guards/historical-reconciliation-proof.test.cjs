@@ -131,3 +131,46 @@ test('R4_R7_CALLER_CONTRACT_REGRESSION', async () => {
   assert.throws(() => orchestrator.invokeProofCommand(step(1)), /EVIDENCE_DIR_REQUIRED/);
   assert.equal(calls.length, 0);
 });
+
+test('R5_INSPECTION_PLAN_USES_GOVERNED_COMMAND_ADAPTER', async () => {
+  const { orchestrator, calls } = setup();
+  const plan = orchestrator.buildInspectionPlan({
+    targetIdentity: { executable: 'psql', args: ['identity'] },
+    emptyState: { executable: 'psql', args: ['empty'] },
+    migrationTable: { executable: 'psql', args: ['ledger'] },
+  });
+  await orchestrator.runPlan(plan);
+  assert.deepEqual(calls.map(({ request }) => request.commandId), [
+    'target-identity', 'empty-state', 'migration-table-presence',
+  ]);
+  assert.deepEqual(calls.map(({ request }) => request.executable), ['psql', 'psql', 'psql']);
+});
+
+test('R5_EMPTY_STATE_DERIVATION_REQUIRES_SUCCESSFUL_EVIDENCE', () => {
+  const { orchestrator } = setup();
+  assert.deepEqual(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: '0\n', stderr: '' }), {
+    value: 'YES', sourceCommandId: 'empty-state',
+  });
+  assert.deepEqual(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: '1\n', stderr: '' }), {
+    value: 'NO', sourceCommandId: 'empty-state',
+  });
+  assert.deepEqual(orchestrator.deriveEmptyDatabase({ exitCode: 7, stdout: '', stderr: 'failed' }), {
+    value: 'UNKNOWN', sourceCommandId: 'empty-state',
+  });
+});
+
+test('R5_MIGRATION_TABLE_FAILURE_IS_UNKNOWN', () => {
+  const { orchestrator } = setup();
+  assert.deepEqual(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: '0\n', stderr: '' }), {
+    value: 'NO', sourceCommandId: 'migration-table-presence',
+  });
+  assert.deepEqual(orchestrator.deriveMigrationTablePresence({ exitCode: 9, stdout: '', stderr: 'failed' }), {
+    value: 'UNKNOWN', sourceCommandId: 'migration-table-presence',
+  });
+});
+
+test('R5_INVALID_OUTPUT_IS_UNKNOWN', () => {
+  const { orchestrator } = setup();
+  assert.equal(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: 'unexpected', stderr: '' }).value, 'UNKNOWN');
+  assert.equal(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: 'unexpected', stderr: '' }).value, 'UNKNOWN');
+});
