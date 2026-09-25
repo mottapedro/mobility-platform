@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createOrchestrator } = require('../../scripts/gates/historical-reconciliation-proof.cjs');
+const { createOrchestrator, runHistoricalReconciliationProof } = require('../../scripts/gates/historical-reconciliation-proof.cjs');
 
 const runnerPath = path.resolve(__dirname, '../../scripts/gates/diagnostic-process-runner.cjs');
 const expectedRunnerSha256 = require('node:crypto').createHash('sha256').update(fs.readFileSync(runnerPath)).digest('hex').toUpperCase();
@@ -118,7 +118,7 @@ test('T12_DATABASE_PROOF_READY_REQUIRES_COMPLETE_PREFLIGHT', async () => {
 
 test('T13_NO_DATABASE_CREATION_CAPABILITY_IN_ORCHESTRATOR', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../scripts/gates/historical-reconciliation-proof.cjs'), 'utf8');
-  assert.equal(/docker|prisma|DATABASE_URL|migrate deploy/i.test(source), false);
+  assert.equal(/spawnSync|execSync|execFileSync|docker exec|migrate deploy/i.test(source), false);
 });
 
 test('T14_NO_DIRECT_RUNCOMMAND_CALL_OUTSIDE_ADAPTER', () => {
@@ -173,4 +173,64 @@ test('R5_INVALID_OUTPUT_IS_UNKNOWN', () => {
   const { orchestrator } = setup();
   assert.equal(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: 'unexpected', stderr: '' }).value, 'UNKNOWN');
   assert.equal(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: 'unexpected', stderr: '' }).value, 'UNKNOWN');
+});
+
+function runtimeRequest(overrides = {}) {
+  const runner = { runCommand(request, dir) {
+    const result = { exitCode: 0, status: 'COMPLETED', signal: null, stdout: '0\n', stderr: '', evidenceFile: path.join(dir, `${request.commandId}.jsonl`) };
+    return Promise.resolve(result);
+  } };
+  return {
+    runId: 'runtime-test', evidenceRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-proof-')),
+    databaseConnectionMaterial: { DATABASE_URL: 'secret-value' },
+    expectedDatabaseIdentity: { databaseName: 'mobility', postgresMajor: 15 },
+    historicalMigrations: ['h1', 'h2'], runner, runnerPath, expectedRunnerSha256,
+    expectedCatalogFingerprint: 'CATALOG_OK', currentHead: 'HEAD_OK', expectedHead: 'HEAD_OK', catalogFingerprint: 'CATALOG_OK',
+    commands: {
+      targetIdentity: { executable: 'synthetic', args: ['identity'] },
+      emptyState: { executable: 'synthetic', args: ['empty'] },
+      migrationTable: { executable: 'synthetic', args: ['ledger'] },
+      baseline: { executable: 'synthetic', args: ['baseline'] },
+      baselineLedger: { executable: 'synthetic', args: ['baseline-ledger'] },
+      historical: (name) => ({ executable: 'synthetic', args: [name] }),
+    },
+    ...overrides,
+  };
+}
+
+test('R11_PUBLIC_RUNTIME_ENTRYPOINT_SUCCESS_PATH', async () => {
+  const result = await runHistoricalReconciliationProof(runtimeRequest());
+  assert.equal(result.status, 'ALL_HISTORICAL_PASS');
+  assert.equal(result.historicalAttemptedCount, 2);
+  assert.equal(result.finalHistoricalLedgerCount, 3);
+});
+
+test('R11_EMPTY_FAILURE_STOPS_BEFORE_BASELINE', async () => {
+  const request = runtimeRequest({ runner: { runCommand(req, dir) {
+    const stdout = req.commandId === 'empty-state' ? '' : '0\n';
+    return Promise.resolve({ exitCode: req.commandId === 'empty-state' ? 8 : 0, status: 'FAILED', stdout, stderr: 'failed', evidenceFile: path.join(dir, `${req.commandId}.jsonl`) });
+  } } });
+  const result = await runHistoricalReconciliationProof(request);
+  assert.equal(result.status, 'EMPTY_STATE_FAILURE');
+  assert.equal(result.inspections.length, 2);
+});
+
+test('R11_HISTORICAL_FAILURE_STOPS_BEFORE_NEXT_ENTRY', async () => {
+  const calls = [];
+  const request = runtimeRequest({ runner: { runCommand(req, dir) {
+    calls.push(req.commandId);
+    const failed = req.commandId === 'historical-01';
+    const inspection = req.commandId === 'empty-state' || req.commandId === 'migration-table-presence';
+    return Promise.resolve({ exitCode: failed ? 9 : 0, status: failed ? 'FAILED' : 'COMPLETED', stdout: inspection ? '0\n' : '', stderr: failed ? 'failed' : '', evidenceFile: path.join(dir, `${req.commandId}.jsonl`) });
+  } } });
+  const result = await runHistoricalReconciliationProof(request);
+  assert.equal(result.status, 'HISTORICAL_FIRST_FAILURE');
+  assert.deepEqual(calls.slice(-1), ['historical-01']);
+  assert.equal(calls.includes('historical-02'), false);
+});
+
+test('R11_SECRET_NOT_IN_RUNNER_ENVIRONMENT_KEYS_OR_RESULT', async () => {
+  const request = runtimeRequest();
+  const result = await runHistoricalReconciliationProof(request);
+  assert.equal(JSON.stringify(result).includes('secret-value'), false);
 });

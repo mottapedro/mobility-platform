@@ -219,3 +219,69 @@ function createOrchestrator(options) {
 }
 
 module.exports = { createOrchestrator, sha256File };
+
+async function runHistoricalReconciliationProof(request) {
+  if (!request || typeof request !== 'object') throw new TypeError('runtime request is required');
+  const required = ['runId', 'evidenceRoot', 'databaseConnectionMaterial', 'expectedDatabaseIdentity', 'historicalMigrations'];
+  required.forEach((key) => {
+    if (request[key] === undefined || request[key] === null) throw new TypeError(`missing runtime field: ${key}`);
+  });
+  if (!Array.isArray(request.historicalMigrations)) throw new TypeError('historicalMigrations must be an array');
+  if (!request.commands || typeof request.commands !== 'object') throw new TypeError('runtime commands are required');
+  const commandKeys = ['targetIdentity', 'emptyState', 'migrationTable', 'baseline', 'baselineLedger'];
+  commandKeys.forEach((key) => {
+    if (!request.commands[key] || typeof request.commands[key].executable !== 'string' || !Array.isArray(request.commands[key].args)) {
+      throw new TypeError(`invalid runtime command: ${key}`);
+    }
+  });
+  if (typeof request.commands.historical !== 'function') throw new TypeError('historical command factory is required');
+  const orchestrator = createOrchestrator({
+    repositoryRoot: request.repositoryRoot,
+    evidenceDir: request.evidenceRoot,
+    runner: request.runner,
+    runnerPath: request.runnerPath,
+    expectedRunnerSha256: request.expectedRunnerSha256,
+    expectedCatalogFingerprint: request.expectedCatalogFingerprint,
+    currentHead: request.currentHead,
+    expectedHead: request.expectedHead,
+    catalogFingerprint: request.catalogFingerprint,
+    runId: request.runId,
+  });
+  const envAdditions = { ...request.databaseConnectionMaterial };
+  const terminal = (status, extra = {}) => ({ status, runId: request.runId, evidenceRoot: request.evidenceRoot, ...extra });
+  const preflight = await orchestrator.preflight(request.smoke || { executable: process.execPath, args: ['-e', "process.stdout.write('PROOF_SMOKE')"] });
+  if (!preflight.databaseProofReady) return terminal('PREFLIGHT_FAILURE', { preflight });
+  const inspectionSteps = orchestrator.buildInspectionPlan({
+    targetIdentity: request.commands.targetIdentity,
+    emptyState: request.commands.emptyState,
+    migrationTable: request.commands.migrationTable,
+  });
+  const inspections = await orchestrator.runPlan(inspectionSteps, { envAdditions });
+  const target = inspections[0]?.result;
+  const empty = inspections[1]?.result;
+  const migrationTable = inspections[2]?.result;
+  if (!target || target.exitCode !== 0) return terminal('TARGET_IDENTITY_FAILURE', { preflight, inspections });
+  const emptyDatabase = orchestrator.deriveEmptyDatabase(empty);
+  if (emptyDatabase.value === 'UNKNOWN') return terminal('EMPTY_STATE_FAILURE', { preflight, inspections, emptyDatabase });
+  if (emptyDatabase.value !== 'YES') return terminal('EMPTY_STATE_FAILURE', { preflight, inspections, emptyDatabase });
+  const prismaMigrationsTable = orchestrator.deriveMigrationTablePresence(migrationTable);
+  if (prismaMigrationsTable.value === 'UNKNOWN' || prismaMigrationsTable.value !== 'NO') {
+    return terminal('PRISMA_LEDGER_INSPECTION_FAILURE', { preflight, inspections, emptyDatabase, prismaMigrationsTable });
+  }
+  const baseline = (await orchestrator.runPlan([{ sequence: 4, stepId: 'P04', commandId: 'baseline-materialization', ...request.commands.baseline }], { envAdditions }))[0];
+  if (!baseline?.result || baseline.result.exitCode !== 0) return terminal('BASELINE_MATERIALIZATION_FAILURE', { preflight, inspections, emptyDatabase, prismaMigrationsTable, baseline });
+  const baselineLedger = (await orchestrator.runPlan([{ sequence: 5, stepId: 'P05', commandId: 'baseline-ledger-registration', ...request.commands.baselineLedger }], { envAdditions }))[0];
+  if (!baselineLedger?.result || baselineLedger.result.exitCode !== 0) return terminal('BASELINE_LEDGER_FAILURE', { preflight, inspections, emptyDatabase, prismaMigrationsTable, baseline, baselineLedger });
+  const historical = [];
+  for (let index = 0; index < request.historicalMigrations.length; index += 1) {
+    const migrationName = request.historicalMigrations[index];
+    const step = request.commands.historical(migrationName, index + 1);
+    const record = (await orchestrator.runPlan([{ sequence: index + 6, stepId: `P${String(index + 6).padStart(2, '0')}`, commandId: `historical-${String(index + 1).padStart(2, '0')}`, position: index + 1, migrationName, ...step }], { envAdditions }))[0];
+    const result = record?.result;
+    historical.push({ migrationName, position: index + 1, commandId: `historical-${String(index + 1).padStart(2, '0')}`, status: result?.status || 'FAILED', exitCode: result?.exitCode ?? null, signal: result?.signal ?? null, stdout: result?.stdout || '', stderr: result?.stderr || '' });
+    if (!result || result.exitCode !== 0) return terminal('HISTORICAL_FIRST_FAILURE', { preflight, inspections, emptyDatabase, prismaMigrationsTable, baseline, baselineLedger, historical, firstFailedHistoricalPosition: index + 1, firstFailedHistoricalMigration: migrationName, lastSuccessfulHistoricalPosition: index, historicalAttemptedCount: index + 1, historicalSucceededCount: index, ledgerCountAfterFailure: null });
+  }
+  return terminal('ALL_HISTORICAL_PASS', { preflight, inspections, emptyDatabase, prismaMigrationsTable, baseline, baselineLedger, historical, historicalAttemptedCount: historical.length, historicalSucceededCount: historical.length, historicalFailedCount: 0, finalHistoricalLedgerCount: historical.length + 1 });
+}
+
+module.exports.runHistoricalReconciliationProof = runHistoricalReconciliationProof;
