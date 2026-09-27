@@ -303,7 +303,9 @@ No commit may be created automatically after an isolated fix. Every commit requi
 ### Pre-commit checklist (all items required)
 
 1. Run tests related to the change.
-2. Validate lint and typecheck (`npx tsc --noEmit -p tsconfig.json`).
+2. Run all repository-defined mandatory static checks before commit.
+   - Typecheck: `npx tsc --noEmit -p tsconfig.json`
+   - Lint is a mandatory executable pre-commit check only when this repository defines a governed lint command and its required tooling and configuration. Do not invent or install a lint tool merely to satisfy this checklist.
 3. Confirm there are no unrelated changes in the workspace (`git diff --stat`).
 4. Confirm the current branch is the active PR branch.
 5. Confirm the commit represents a complete functional delivery, not just a point fix.
