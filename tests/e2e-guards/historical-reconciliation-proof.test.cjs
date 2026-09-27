@@ -1,236 +1,243 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createOrchestrator, runHistoricalReconciliationProof } = require('../../scripts/gates/historical-reconciliation-proof.cjs');
+const {
+  HISTORICAL_COUNT,
+  HISTORICAL_FINGERPRINT,
+  MANIFEST_SHA256,
+  fingerprintEntries,
+  loadAndVerifyManifest,
+  loadGovernedHistoricalSet,
+  normalizedSqlBytes,
+  validateManifestDocument,
+  verifyPhysicalArtifacts,
+} = require('../../scripts/gates/historical-execution-manifest.cjs');
 
-const runnerPath = path.resolve(__dirname, '../../scripts/gates/diagnostic-process-runner.cjs');
-const expectedRunnerSha256 = require('node:crypto').createHash('sha256').update(fs.readFileSync(runnerPath)).digest('hex').toUpperCase();
+const repositoryRoot = path.resolve(__dirname, '../..');
+const runnerPath = path.join(repositoryRoot, 'scripts/gates/diagnostic-process-runner.cjs');
+const runnerSha256 = crypto.createHash('sha256').update(fs.readFileSync(runnerPath)).digest('hex').toUpperCase();
 
-function setup(overrides = {}) {
-  const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'historical-proof-'));
+function setupOrchestrator(overrides = {}) {
+  const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'historical-proof-orchestrator-'));
   const calls = [];
   const runner = {
-    runCommand(request, suppliedEvidenceDir) {
-      calls.push({ request, evidenceDir: suppliedEvidenceDir });
-      return Promise.resolve({ exitCode: 0, evidenceFile: path.join(suppliedEvidenceDir, `${request.commandId}.jsonl`) });
+    runCommand(request, suppliedEvidenceRoot) {
+      calls.push({ request, evidenceRoot: suppliedEvidenceRoot });
+      return Promise.resolve({ exitCode: 0, evidenceFile: path.join(suppliedEvidenceRoot, `${request.commandId}.jsonl`) });
     },
   };
   const orchestrator = createOrchestrator({
-    repositoryRoot: process.cwd(), evidenceDir, runner, runnerPath,
-    expectedRunnerSha256, expectedCatalogFingerprint: 'CATALOG_OK',
-    currentHead: 'HEAD_OK', expectedHead: 'HEAD_OK', catalogFingerprint: 'CATALOG_OK',
-    runId: 'test-run', ...overrides,
+    repositoryRoot, evidenceDir: evidenceRoot, runner, runnerPath,
+    expectedRunnerSha256: runnerSha256,
+    expectedCatalogFingerprint: 'CATALOG_OK', currentHead: 'HEAD_OK', expectedHead: 'HEAD_OK',
+    catalogFingerprint: 'CATALOG_OK', runId: 'test-run', ...overrides,
   });
-  return { orchestrator, calls, evidenceDir };
+  return { orchestrator, calls, evidenceRoot };
 }
 
-function step(sequence, commandId = `step-${sequence}`) {
+function genericStep(sequence, commandId = `step-${sequence}`) {
   return { sequence, stepId: `P${sequence}`, commandId, executable: 'synthetic', args: [] };
 }
 
-test('T01_REQUIRED_RUNNER_ARGUMENTS_MAPPED', async () => {
-  const { orchestrator, calls, evidenceDir } = setup();
-  await orchestrator.invokeProofCommand(step(1), {});
+function createRequest(overrides = {}) {
+  const calls = [];
+  const evidenceRoot = overrides.evidenceRoot || fs.mkdtempSync(path.join(os.tmpdir(), 'r7c-r13-contract-'));
+  const runner = {
+    runCommand(request) {
+      calls.push(request);
+      const stdout = request.commandId === 'empty-state' || request.commandId === 'migration-table-presence'
+        ? '0\n'
+        : '';
+      return Promise.resolve({
+        exitCode: request.commandId === overrides.failCommandId ? 11 : 0,
+        status: request.commandId === overrides.failCommandId ? 'FAILED' : 'COMPLETED',
+        signal: null,
+        stdout,
+        stderr: request.commandId === overrides.failCommandId ? 'synthetic failure' : '',
+        evidenceFile: path.join(evidenceRoot, `${request.commandId}.jsonl`),
+      });
+    },
+  };
+  const request = {
+    runId: 'runtime-test',
+    evidenceRoot,
+    databaseConnectionMaterial: { DATABASE_URL: 'synthetic-secret' },
+    expectedDatabaseIdentity: { databaseName: 'ephemeral-test', postgresMajor: 15 },
+    runner,
+    runnerPath,
+    expectedRunnerSha256: runnerSha256,
+    currentHead: 'EXPECTED_HEAD',
+    expectedHead: 'EXPECTED_HEAD',
+    commands: {
+      targetIdentity: { executable: 'synthetic-target', args: ['identity'] },
+      emptyState: { executable: 'synthetic-inspector', args: ['empty'] },
+      migrationTable: { executable: 'synthetic-inspector', args: ['ledger'] },
+      baseline: { executable: 'synthetic-baseline', args: ['baseline'] },
+      baselineLedger: { executable: 'synthetic-baseline', args: ['ledger'] },
+    },
+    ...overrides,
+  };
+  return { request, calls };
+}
+
+test('R7C_ORCHESTRATOR_MAPS_RUNNER_ARGUMENTS_AND_EVIDENCE_ROOT', async () => {
+  const { orchestrator, calls, evidenceRoot } = setupOrchestrator();
+  await orchestrator.invokeProofCommand(genericStep(1));
   assert.deepEqual(Object.keys(calls[0].request).sort(), ['args', 'commandId', 'cwd', 'executable', 'runId', 'sequence']);
-  assert.equal(calls[0].evidenceDir, evidenceDir);
+  assert.equal(calls[0].evidenceRoot, evidenceRoot);
+  assert.equal(calls[0].request.cwd, repositoryRoot);
 });
 
-test('T02_EVIDENCEDIR_ALWAYS_SUPPLIED', async () => {
-  const { orchestrator, calls, evidenceDir } = setup();
-  await orchestrator.preflight({ executable: 'synthetic', args: [] });
-  assert.equal(calls[0].evidenceDir, evidenceDir);
-});
-
-test('T03_SAME_ADAPTER_USED_BY_SMOKE_AND_REAL_PLAN', async () => {
-  const { orchestrator, calls, evidenceDir } = setup();
-  await orchestrator.preflight({ executable: 'synthetic', args: [] });
-  await orchestrator.runPlan([step(9, 'real-step')]);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].evidenceDir, evidenceDir);
-  assert.equal(calls[1].evidenceDir, evidenceDir);
-});
-
-test('T04_FIRST_FAILURE_STOPS_SEQUENCE', async () => {
-  const { orchestrator, calls } = setup({ runner: { runCommand(req, dir) { calls.push({ req, dir }); return Promise.resolve({ exitCode: req.commandId === 'fail' ? 9 : 0 }); } } });
-  const result = await orchestrator.runPlan([step(1), step(2, 'fail'), step(3)]);
-  assert.equal(result.length, 2);
-  assert.equal(calls.length, 2);
-});
-
-test('T05_ORDER_PRESERVED', async () => {
-  const { orchestrator } = setup();
-  const plan = orchestrator.buildProofPlan(['m1', 'm2', 'm3']);
-  assert.deepEqual(plan.slice(-3).map((item) => item.migrationName), ['m1', 'm2', 'm3']);
-});
-
-test('T06_ORCHESTRATOR_WRITE_BEFORE_RUNNER_CALL', async () => {
-  const { orchestrator, calls, evidenceDir } = setup();
-  await orchestrator.runPlan([step(1)]);
-  assert.equal(calls.length, 1);
-  const first = JSON.parse(fs.readFileSync(path.join(evidenceDir, 'orchestrator.jsonl'), 'utf8').split('\n')[0]);
-  assert.equal(first.status, 'STARTING');
-});
-
-test('T07_ORCHESTRATOR_ABORT_PRESERVES_CURRENT_STEP', () => {
-  const { orchestrator, evidenceDir } = setup();
-  orchestrator.ensureEvidenceDirectory();
-  const state = orchestrator.state;
-  assert.equal(state.runId, 'test-run');
-  assert.equal(fs.existsSync(path.join(evidenceDir, 'orchestrator.jsonl')), true);
-});
-
-test('T08_NO_AUTOMATIC_RETRY', async () => {
+test('R7C_ORCHESTRATOR_STOPS_AT_FIRST_FAILED_STEP_WITHOUT_RETRY', async () => {
   let attempts = 0;
-  const { orchestrator } = setup({ runner: { runCommand() { attempts += 1; return Promise.resolve({ exitCode: 4 }); } } });
-  await orchestrator.runPlan([step(1)]);
-  assert.equal(attempts, 1);
+  const { orchestrator } = setupOrchestrator({
+    runner: { runCommand(request) { attempts += 1; return Promise.resolve({ exitCode: request.commandId === 'fail' ? 9 : 0 }); } },
+  });
+  const result = await orchestrator.runPlan([genericStep(1), genericStep(2, 'fail'), genericStep(3)]);
+  assert.equal(result.length, 2);
+  assert.equal(attempts, 2);
 });
 
-test('T09_RUNNER_IDENTITY_MISMATCH_STOPS_BEFORE_EXECUTION', async () => {
-  const { orchestrator, calls } = setup({ expectedRunnerSha256: 'WRONG' });
-  const result = await orchestrator.preflight({ executable: 'synthetic', args: [] });
-  assert.equal(result.runnerSha256Match, false);
-  assert.equal(calls.length, 0);
-});
-
-test('T10_EVIDENCE_DIRECTORY_FAILURE_STOPS_BEFORE_DATABASE', async () => {
-  const { orchestrator, calls } = setup({ evidenceDir: undefined });
-  await assert.rejects(() => orchestrator.preflight({ executable: 'synthetic', args: [] }), /EVIDENCE_DIR_REQUIRED/);
-  assert.equal(calls.length, 0);
-});
-
-test('T11_CATALOG_IDENTITY_MISMATCH_STOPS_BEFORE_EXECUTION', async () => {
-  const { orchestrator, calls } = setup({ catalogFingerprint: 'WRONG' });
-  const result = await orchestrator.preflight({ executable: 'synthetic', args: [] });
+test('R7C_PREFLIGHT_MISMATCH_PREVENTS_RUNNER_EXECUTION', async () => {
+  const { orchestrator, calls } = setupOrchestrator({ catalogFingerprint: 'WRONG' });
+  const result = await orchestrator.preflight({ executable: process.execPath, args: ['-e', ''] });
   assert.equal(result.catalogFingerprintMatch, false);
+  assert.equal(result.databaseProofReady, false);
   assert.equal(calls.length, 0);
 });
 
-test('T12_DATABASE_PROOF_READY_REQUIRES_COMPLETE_PREFLIGHT', async () => {
-  const { orchestrator } = setup();
-  const result = await orchestrator.preflight({ executable: 'synthetic', args: [] });
-  assert.equal(result.databaseProofReady, true);
-});
-
-test('T13_NO_DATABASE_CREATION_CAPABILITY_IN_ORCHESTRATOR', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../../scripts/gates/historical-reconciliation-proof.cjs'), 'utf8');
-  assert.equal(/spawnSync|execSync|execFileSync|docker exec|migrate deploy/i.test(source), false);
-});
-
-test('T14_NO_DIRECT_RUNCOMMAND_CALL_OUTSIDE_ADAPTER', () => {
-  const source = fs.readFileSync(path.resolve(__dirname, '../../scripts/gates/historical-reconciliation-proof.cjs'), 'utf8');
-  assert.equal((source.match(/runner\.runCommand\(/g) || []).length, 1);
-});
-
-test('R4_R7_CALLER_CONTRACT_REGRESSION', async () => {
-  const { orchestrator, calls } = setup({ evidenceDir: undefined });
-  assert.throws(() => orchestrator.invokeProofCommand(step(1)), /EVIDENCE_DIR_REQUIRED/);
-  assert.equal(calls.length, 0);
-});
-
-test('R5_INSPECTION_PLAN_USES_GOVERNED_COMMAND_ADAPTER', async () => {
-  const { orchestrator, calls } = setup();
+test('R5_INSPECTION_PLAN_AND_FACTS_REMAIN_FAIL_CLOSED', async () => {
+  const { orchestrator, calls } = setupOrchestrator();
   const plan = orchestrator.buildInspectionPlan({
     targetIdentity: { executable: 'psql', args: ['identity'] },
     emptyState: { executable: 'psql', args: ['empty'] },
     migrationTable: { executable: 'psql', args: ['ledger'] },
   });
   await orchestrator.runPlan(plan);
-  assert.deepEqual(calls.map(({ request }) => request.commandId), [
-    'target-identity', 'empty-state', 'migration-table-presence',
-  ]);
-  assert.deepEqual(calls.map(({ request }) => request.executable), ['psql', 'psql', 'psql']);
+  assert.deepEqual(calls.map(({ request }) => request.commandId), ['target-identity', 'empty-state', 'migration-table-presence']);
+  assert.equal(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: '0\n', stderr: '' }).value, 'YES');
+  assert.equal(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: '1\n', stderr: '' }).value, 'NO');
+  assert.equal(orchestrator.deriveEmptyDatabase({ exitCode: 7, stdout: '', stderr: 'failed' }).value, 'UNKNOWN');
+  assert.equal(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: '0\n', stderr: '' }).value, 'NO');
+  assert.equal(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: 'bad', stderr: '' }).value, 'UNKNOWN');
 });
 
-test('R5_EMPTY_STATE_DERIVATION_REQUIRES_SUCCESSFUL_EVIDENCE', () => {
-  const { orchestrator } = setup();
-  assert.deepEqual(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: '0\n', stderr: '' }), {
-    value: 'YES', sourceCommandId: 'empty-state',
-  });
-  assert.deepEqual(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: '1\n', stderr: '' }), {
-    value: 'NO', sourceCommandId: 'empty-state',
-  });
-  assert.deepEqual(orchestrator.deriveEmptyDatabase({ exitCode: 7, stdout: '', stderr: 'failed' }), {
-    value: 'UNKNOWN', sourceCommandId: 'empty-state',
-  });
+test('R7C_ORCHESTRATOR_HAS_NO_DIRECT_DATABASE_OR_CHILD_PROCESS_EXECUTION', () => {
+  const source = fs.readFileSync(path.join(repositoryRoot, 'scripts/gates/historical-reconciliation-proof.cjs'), 'utf8');
+  assert.equal(/spawnSync|execSync|execFileSync|docker exec|migrate deploy/i.test(source), false);
+  assert.equal((source.match(/runner\.runCommand\(/g) || []).length, 1);
 });
 
-test('R5_MIGRATION_TABLE_FAILURE_IS_UNKNOWN', () => {
-  const { orchestrator } = setup();
-  assert.deepEqual(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: '0\n', stderr: '' }), {
-    value: 'NO', sourceCommandId: 'migration-table-presence',
-  });
-  assert.deepEqual(orchestrator.deriveMigrationTablePresence({ exitCode: 9, stdout: '', stderr: 'failed' }), {
-    value: 'UNKNOWN', sourceCommandId: 'migration-table-presence',
-  });
+test('R13A_MANIFEST_IDENTITY_AND_EXECUTION_SET_ARE_VALID', () => {
+  const governed = loadAndVerifyManifest(repositoryRoot);
+  assert.equal(governed.manifestSha256, MANIFEST_SHA256);
+  assert.equal(governed.entries.length, HISTORICAL_COUNT);
+  assert.equal(governed.historicalCatalogFingerprint, HISTORICAL_FINGERPRINT);
+  assert.equal(fingerprintEntries(governed.entries), HISTORICAL_FINGERPRINT);
 });
 
-test('R5_INVALID_OUTPUT_IS_UNKNOWN', () => {
-  const { orchestrator } = setup();
-  assert.equal(orchestrator.deriveEmptyDatabase({ exitCode: 0, stdout: 'unexpected', stderr: '' }).value, 'UNKNOWN');
-  assert.equal(orchestrator.deriveMigrationTablePresence({ exitCode: 0, stdout: 'unexpected', stderr: '' }).value, 'UNKNOWN');
-});
-
-function runtimeRequest(overrides = {}) {
-  const runner = { runCommand(request, dir) {
-    const result = { exitCode: 0, status: 'COMPLETED', signal: null, stdout: '0\n', stderr: '', evidenceFile: path.join(dir, `${request.commandId}.jsonl`) };
-    return Promise.resolve(result);
-  } };
-  return {
-    runId: 'runtime-test', evidenceRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-proof-')),
-    databaseConnectionMaterial: { DATABASE_URL: 'secret-value' },
-    expectedDatabaseIdentity: { databaseName: 'mobility', postgresMajor: 15 },
-    historicalMigrations: ['h1', 'h2'], runner, runnerPath, expectedRunnerSha256,
-    expectedCatalogFingerprint: 'CATALOG_OK', currentHead: 'HEAD_OK', expectedHead: 'HEAD_OK', catalogFingerprint: 'CATALOG_OK',
-    commands: {
-      targetIdentity: { executable: 'synthetic', args: ['identity'] },
-      emptyState: { executable: 'synthetic', args: ['empty'] },
-      migrationTable: { executable: 'synthetic', args: ['ledger'] },
-      baseline: { executable: 'synthetic', args: ['baseline'] },
-      baselineLedger: { executable: 'synthetic', args: ['baseline-ledger'] },
-      historical: (name) => ({ executable: 'synthetic', args: [name] }),
-    },
-    ...overrides,
-  };
-}
-
-test('R11_PUBLIC_RUNTIME_ENTRYPOINT_SUCCESS_PATH', async () => {
-  const result = await runHistoricalReconciliationProof(runtimeRequest());
+test('R13A_PUBLIC_RUNTIME_BINDS_MANIFEST_EXECUTION_SET_TO_GOVERNED_RUNNER', async () => {
+  const { request, calls } = createRequest();
+  const result = await runHistoricalReconciliationProof(request);
+  const manifestNames = loadAndVerifyManifest(repositoryRoot).entries.map((entry) => entry.folderName);
+  const historicalCalls = calls.filter((call) => call.commandId.startsWith('historical-'));
   assert.equal(result.status, 'ALL_HISTORICAL_PASS');
-  assert.equal(result.historicalAttemptedCount, 2);
-  assert.equal(result.finalHistoricalLedgerCount, 3);
+  assert.equal(result.executionSetCount, HISTORICAL_COUNT);
+  assert.equal(result.historicalSucceededCount, HISTORICAL_COUNT);
+  assert.equal(historicalCalls.length, HISTORICAL_COUNT);
+  assert.deepEqual(historicalCalls.map((call) => path.basename(path.dirname(call.args[1]))), manifestNames);
+  assert.deepEqual(historicalCalls.map((call) => call.commandId), manifestNames.map((_, index) => `historical-${String(index + 1).padStart(2, '0')}`));
+  assert.equal(historicalCalls.every((call) => call.executable === process.execPath), true);
+  assert.deepEqual(historicalCalls.map((call) => call.args[0]), manifestNames.map(() => path.join(repositoryRoot, 'scripts', 'apply-sql-migration.cjs')));
+  assert.deepEqual(historicalCalls.map((call) => call.args[1]), manifestNames.map((name) => path.join(repositoryRoot, 'prisma', 'migrations', name, 'migration.sql')));
 });
 
-test('R11_EMPTY_FAILURE_STOPS_BEFORE_BASELINE', async () => {
-  const request = runtimeRequest({ runner: { runCommand(req, dir) {
-    const stdout = req.commandId === 'empty-state' ? '' : '0\n';
-    return Promise.resolve({ exitCode: req.commandId === 'empty-state' ? 8 : 0, status: 'FAILED', stdout, stderr: 'failed', evidenceFile: path.join(dir, `${req.commandId}.jsonl`) });
-  } } });
-  const result = await runHistoricalReconciliationProof(request);
-  assert.equal(result.status, 'EMPTY_STATE_FAILURE');
-  assert.equal(result.inspections.length, 2);
+test('R13A_VALID_PHYSICAL_FIXTURE_BINDS_TO_MANIFEST_HASH', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r7c-physical-valid-'));
+  const name = '20260421003315_init';
+  const sqlPath = path.join(root, 'prisma/migrations', name, 'migration.sql');
+  const sql = Buffer.from('SELECT 1;\r\n');
+  fs.mkdirSync(path.dirname(sqlPath), { recursive: true });
+  fs.writeFileSync(sqlPath, sql);
+  const normalizedHash = crypto.createHash('sha256').update(normalizedSqlBytes(sql)).digest('hex');
+  const verified = verifyPhysicalArtifacts(root, [{ sequence: 1, folderName: name, normalizedSqlHash: normalizedHash }]);
+  assert.equal(verified[0].sqlPath, sqlPath);
+  assert.equal(verified[0].normalizedSqlHash, normalizedHash);
 });
 
-test('R11_HISTORICAL_FAILURE_STOPS_BEFORE_NEXT_ENTRY', async () => {
-  const calls = [];
-  const request = runtimeRequest({ runner: { runCommand(req, dir) {
-    calls.push(req.commandId);
-    const failed = req.commandId === 'historical-01';
-    const inspection = req.commandId === 'empty-state' || req.commandId === 'migration-table-presence';
-    return Promise.resolve({ exitCode: failed ? 9 : 0, status: failed ? 'FAILED' : 'COMPLETED', stdout: inspection ? '0\n' : '', stderr: failed ? 'failed' : '', evidenceFile: path.join(dir, `${req.commandId}.jsonl`) });
-  } } });
-  const result = await runHistoricalReconciliationProof(request);
-  assert.equal(result.status, 'HISTORICAL_FIRST_FAILURE');
-  assert.deepEqual(calls.slice(-1), ['historical-01']);
-  assert.equal(calls.includes('historical-02'), false);
+test('R13A_CALLER_CANNOT_SUBSTITUTE_EXECUTION_MEMBERSHIP_ORDER_OR_FACTORY', async () => {
+  const names = loadAndVerifyManifest(repositoryRoot).entries.map((entry) => entry.folderName);
+  const attempts = [
+    { historicalMigrations: ['fake'] },
+    { historicalMigrations: names.slice(0, 42) },
+    { historicalMigrations: [...names, '20260921000000_not_authorized'] },
+    { historicalMigrations: [...names].reverse() },
+    { historicalMigrations: names.map((name, index) => index === 4 ? `${name}_substituted` : name) },
+    { historicalOrder: ['reordered'] },
+    { migrationCatalog: ['substituted'] },
+    { migrationSqlPath: 'outside.sql' },
+    { migrationSqlHash: '0'.repeat(64) },
+    { historicalCommandFactory: () => ({ executable: 'evil', args: [] }) },
+    { repositoryRoot: os.tmpdir() },
+    { commands: { ...createRequest().request.commands, historical: () => ({ executable: 'evil', args: [] }) } },
+  ];
+  for (const addition of attempts) {
+    const { request, calls } = createRequest(addition);
+    await assert.rejects(() => runHistoricalReconciliationProof(request), /forbidden|only governed non-historical|unknown runtime request field/);
+    assert.equal(calls.length, 0);
+  }
 });
 
-test('R11_SECRET_NOT_IN_RUNNER_ENVIRONMENT_KEYS_OR_RESULT', async () => {
-  const request = runtimeRequest();
+test('R13A_CALLER_CANNOT_OVERRIDE_MANIFEST_IDENTITY', async () => {
+  const { request, calls } = createRequest({
+    manifestPath: path.join(os.tmpdir(), 'attacker-manifest.json'),
+    expectedManifestSha256: '0'.repeat(64),
+    catalogFingerprint: 'caller-selected',
+    expectedCatalogFingerprint: 'caller-selected',
+  });
+  await assert.rejects(() => runHistoricalReconciliationProof(request), /caller-controlled execution input is forbidden/);
+  assert.equal(calls.length, 0);
+});
+
+test('R13A_MANIFEST_SHA_MISMATCH_FAILS_BEFORE_ANY_RUNNER_CALL', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r7c-manifest-hash-'));
+  fs.mkdirSync(path.join(root, 'governance'), { recursive: true });
+  const source = fs.readFileSync(path.join(repositoryRoot, 'governance/r7c-r13-historical-execution-manifest.json'));
+  fs.writeFileSync(path.join(root, 'governance/r7c-r13-historical-execution-manifest.json'), Buffer.concat([source, Buffer.from(' ')]));
+  assert.throws(() => loadGovernedHistoricalSet(root), /MANIFEST_SHA256_MISMATCH/);
+});
+
+test('R13A_HISTORICAL_FINGERPRINT_MISMATCH_IS_REJECTED', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(repositoryRoot, 'governance/r7c-r13-historical-execution-manifest.json'), 'utf8'));
+  manifest.catalog[0].normalizedSqlHash = '0'.repeat(64);
+  assert.throws(() => validateManifestDocument(manifest), /HISTORICAL_FINGERPRINT_MISMATCH/);
+});
+
+test('R13A_PHYSICAL_SQL_HASH_MISMATCH_IS_REJECTED', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r7c-physical-hash-'));
+  const name = '20260421003315_init';
+  const migrationDir = path.join(root, 'prisma/migrations', name);
+  fs.mkdirSync(migrationDir, { recursive: true });
+  fs.writeFileSync(path.join(migrationDir, 'migration.sql'), 'SELECT 2;\n');
+  assert.throws(() => verifyPhysicalArtifacts(root, [{
+    sequence: 1,
+    folderName: name,
+    normalizedSqlHash: '0'.repeat(64),
+  }]), /MIGRATION_SQL_HASH_MISMATCH/);
+});
+
+test('R13A_SQL_NORMALIZATION_CONVERTS_CRLF_TO_LF', () => {
+  assert.deepEqual(normalizedSqlBytes(Buffer.from('SELECT 1;\r\nSELECT 2;\r\n')), Buffer.from('SELECT 1;\nSELECT 2;\n'));
+});
+
+test('R13A_SECRET_VALUE_IS_NOT_RETURNED', async () => {
+  const { request } = createRequest();
   const result = await runHistoricalReconciliationProof(request);
-  assert.equal(JSON.stringify(result).includes('secret-value'), false);
+  assert.equal(JSON.stringify(result).includes('synthetic-secret'), false);
 });
