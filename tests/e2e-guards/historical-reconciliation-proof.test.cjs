@@ -14,6 +14,7 @@ const {
   fingerprintEntries,
   loadAndVerifyManifest,
   loadGovernedHistoricalSet,
+  normalizedManifestBytes,
   normalizedSqlBytes,
   validateManifestDocument,
   verifyPhysicalArtifacts,
@@ -241,3 +242,82 @@ test('R13A_SECRET_VALUE_IS_NOT_RETURNED', async () => {
   const result = await runHistoricalReconciliationProof(request);
   assert.equal(JSON.stringify(result).includes('synthetic-secret'), false);
 });
+
+test('R13C4_MANIFEST_NORMALIZATION_ACCEPTS_CANONICAL_LF_AND_CRLF', () => {
+  const manifestPath = path.join(repositoryRoot, 'governance/r7c-r13-historical-execution-manifest.json');
+  const rawBytes = fs.readFileSync(manifestPath);
+  const lfString = rawBytes.toString('utf8').replace(/\r\n/g, '\n');
+  const lfBytes = Buffer.from(lfString, 'utf8');
+  const crlfBytes = Buffer.from(lfString.replace(/\n/g, '\r\n'), 'utf8');
+
+  // 3 & 4. Canonical hashes
+  const expectedLower = MANIFEST_SHA256.toLowerCase();
+  const lfHash = crypto.createHash('sha256').update(normalizedManifestBytes(lfBytes)).digest('hex');
+  const crlfHash = crypto.createHash('sha256').update(normalizedManifestBytes(crlfBytes)).digest('hex');
+
+  assert.equal(lfHash, expectedLower, 'LF_CANONICAL_SHA256 must match MANIFEST_SHA256');
+  assert.equal(crlfHash, expectedLower, 'CRLF_CANONICAL_SHA256 must match MANIFEST_SHA256');
+  assert.equal(lfHash, crlfHash, 'LF and CRLF canonical identities must be equal');
+
+  // 1. CANONICAL_LF_MANIFEST_ACCEPTED
+  const lfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'r13c4-lf-manifest-'));
+  fs.mkdirSync(path.join(lfRoot, 'governance'), { recursive: true });
+  fs.writeFileSync(path.join(lfRoot, 'governance/r7c-r13-historical-execution-manifest.json'), lfBytes);
+  const lfLoaded = loadAndVerifyManifest(lfRoot);
+  assert.equal(lfLoaded.manifestSha256, MANIFEST_SHA256);
+  assert.equal(lfLoaded.entries.length, HISTORICAL_COUNT);
+
+  // 2. EQUIVALENT_CRLF_MANIFEST_ACCEPTED
+  const crlfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'r13c4-crlf-manifest-'));
+  fs.mkdirSync(path.join(crlfRoot, 'governance'), { recursive: true });
+  fs.writeFileSync(path.join(crlfRoot, 'governance/r7c-r13-historical-execution-manifest.json'), crlfBytes);
+  const crlfLoaded = loadAndVerifyManifest(crlfRoot);
+  assert.equal(crlfLoaded.manifestSha256, MANIFEST_SHA256);
+  assert.equal(crlfLoaded.entries.length, HISTORICAL_COUNT);
+});
+
+test('R13C4_MANIFEST_CONTENT_TAMPERING_REJECTED', () => {
+  // 5. CONTENT_TAMPERING_REJECTED
+  const manifestPath = path.join(repositoryRoot, 'governance/r7c-r13-historical-execution-manifest.json');
+  const rawString = fs.readFileSync(manifestPath, 'utf8');
+  const tamperedString = rawString.replace('"historicalCount": 43', '"historicalCount": 42');
+  assert.notEqual(tamperedString, rawString);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r13c4-tampered-manifest-'));
+  fs.mkdirSync(path.join(root, 'governance'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'governance/r7c-r13-historical-execution-manifest.json'), Buffer.from(tamperedString, 'utf8'));
+
+  assert.throws(() => loadAndVerifyManifest(root), /MANIFEST_SHA256_MISMATCH/);
+});
+
+test('R13C4_MANIFEST_NON_LINE_ENDING_JSON_REFORMATTING_REJECTED', () => {
+  // 6. NON_LINE_ENDING_JSON_REFORMATTING_REJECTED
+  const manifestPath = path.join(repositoryRoot, 'governance/r7c-r13-historical-execution-manifest.json');
+  const parsed = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const reformattedString = JSON.stringify(parsed, null, 4) + '\n';
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r13c4-reformatted-manifest-'));
+  fs.mkdirSync(path.join(root, 'governance'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'governance/r7c-r13-historical-execution-manifest.json'), Buffer.from(reformattedString, 'utf8'));
+
+  assert.throws(() => loadAndVerifyManifest(root), /MANIFEST_SHA256_MISMATCH/);
+});
+
+test('R13C4_FINAL_NEWLINE_SEMANTICS_PRESERVED', () => {
+  // 7. FINAL_NEWLINE_SEMANTICS_PRESERVED
+  assert.deepEqual(normalizedManifestBytes(Buffer.from('{"a":1}\r\n')), Buffer.from('{"a":1}\n'));
+  assert.deepEqual(normalizedManifestBytes(Buffer.from('{"a":1}\n')), Buffer.from('{"a":1}\n'));
+  assert.deepEqual(normalizedManifestBytes(Buffer.from('{"a":1}')), Buffer.from('{"a":1}'));
+
+  const manifestPath = path.join(repositoryRoot, 'governance/r7c-r13-historical-execution-manifest.json');
+  const canonicalLf = Buffer.from(fs.readFileSync(manifestPath, 'utf8').replace(/\r\n/g, '\n'), 'utf8');
+  assert.equal(canonicalLf[canonicalLf.length - 1], 0x0A, 'Canonical manifest ends with LF');
+  const stripped = canonicalLf.subarray(0, canonicalLf.length - 1);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r13c4-nonewline-manifest-'));
+  fs.mkdirSync(path.join(root, 'governance'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'governance/r7c-r13-historical-execution-manifest.json'), stripped);
+
+  assert.throws(() => loadAndVerifyManifest(root), /MANIFEST_SHA256_MISMATCH/);
+});
+

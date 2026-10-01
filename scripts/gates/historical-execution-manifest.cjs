@@ -20,6 +20,10 @@ function normalizedSqlBytes(bytes) {
   return Buffer.from(bytes.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
 }
 
+function normalizedManifestBytes(bytes) {
+  return Buffer.from(bytes.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+}
+
 function fingerprintEntries(entries) {
   const payload = `${entries.map((entry) => `${entry.folderName}\t${entry.normalizedSqlHash}`).join('\n')}\n`;
   return sha256(Buffer.from(payload, 'utf8'));
@@ -59,7 +63,7 @@ function validateManifestDocument(manifest) {
 function loadAndVerifyManifest(repositoryRoot) {
   const manifestPath = path.join(repositoryRoot, MANIFEST_RELATIVE_PATH);
   const bytes = fs.readFileSync(manifestPath);
-  const actualSha256 = sha256(bytes).toUpperCase();
+  const actualSha256 = sha256(normalizedManifestBytes(bytes)).toUpperCase();
   if (actualSha256 !== MANIFEST_SHA256) throw new Error('MANIFEST_SHA256_MISMATCH');
   let manifest;
   try {
@@ -109,6 +113,7 @@ module.exports = {
   fingerprintEntries,
   loadAndVerifyManifest,
   loadGovernedHistoricalSet,
+  normalizedManifestBytes,
   normalizedSqlBytes,
   validateManifestDocument,
   verifyPhysicalArtifacts,
