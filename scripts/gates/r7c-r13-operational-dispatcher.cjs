@@ -302,6 +302,44 @@ function writeResult(operation, result, output = process.stdout) {
   else output.write(`${JSON.stringify(result)}\n`);
 }
 
+const DIAGNOSTIC_CATEGORIES = Object.freeze([
+  'AUTHENTICATION_FAILURE',
+  'CONNECTION_FAILURE',
+  'DATABASE_NOT_FOUND',
+  'NAME_RESOLUTION_FAILURE',
+  'TLS_TRANSPORT_FAILURE',
+  'QUERY_FAILURE',
+  'MODULE_RUNTIME_FAILURE',
+  'UNKNOWN',
+]);
+
+function boundedValue(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : 'UNKNOWN';
+}
+
+function classifyDispatchError(error, operation = 'UNKNOWN') {
+  const code = boundedValue(error?.code);
+  const syscall = boundedValue(error?.syscall);
+  let category = 'UNKNOWN';
+
+  if (/^28/.test(code)) category = 'AUTHENTICATION_FAILURE';
+  else if (/^3D/.test(code)) category = 'DATABASE_NOT_FOUND';
+  else if (/^(08|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)$/.test(code)) category = 'CONNECTION_FAILURE';
+  else if (/^(ENOTFOUND|EAI_AGAIN)$/.test(code)) category = 'NAME_RESOLUTION_FAILURE';
+  else if (/^(CERT_|DEPTH_ZERO_SELF_SIGNED_CERT|ERR_TLS)/.test(code)) category = 'TLS_TRANSPORT_FAILURE';
+  else if (/^(22|23|40|42|43|54|55)/.test(code)) category = 'QUERY_FAILURE';
+  else if (code === 'MODULE_NOT_FOUND' || code === 'ERR_MODULE_NOT_FOUND') category = 'MODULE_RUNTIME_FAILURE';
+  else if (syscall === 'connect') category = 'CONNECTION_FAILURE';
+
+  return Object.freeze({
+    protocol: 'E: DISPATCH_OPERATION_FAILED',
+    operation: boundedValue(operation),
+    category: DIAGNOSTIC_CATEGORIES.includes(category) ? category : 'UNKNOWN',
+    code,
+    syscall,
+  });
+}
+
 async function main(argv = process.argv.slice(2)) {
   if (argv.length !== 1) throw new Error('E: ONE_FIXED_OPERATION_REQUIRED');
   const [operation] = argv;
@@ -314,6 +352,9 @@ if (require.main === module) {
   main().catch((error) => {
     const code = /^E: [A-Z0-9_]+$/.test(error.message) ? error.message : 'E: DISPATCH_OPERATION_FAILED';
     process.stderr.write(`${code}\n`);
+    if (code === 'E: DISPATCH_OPERATION_FAILED') {
+      process.stderr.write(`E: DISPATCH_DIAGNOSTIC ${JSON.stringify(classifyDispatchError(error, process.argv[2]))}\n`);
+    }
     process.exitCode = 1;
   });
 }
@@ -328,6 +369,8 @@ module.exports = {
   MIGRATION_TABLE_SQL,
   OPERATIONS,
   buildCommandSet,
+  classifyDispatchError,
+  DIAGNOSTIC_CATEGORIES,
   main,
   runOperation,
   targetIdentity,

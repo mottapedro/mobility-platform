@@ -241,3 +241,36 @@ test('CLI accepts exactly one operation and never loads dotenv', async () => {
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'gates', 'r7c-r13-operational-dispatcher.cjs'), 'utf8');
   assert.equal(/dotenv|execSync|execFileSync|shell\s*:\s*true/.test(source), false);
 });
+
+test('bounded diagnostic classifier preserves the generic protocol', () => {
+  assert.deepEqual(dispatcher.classifyDispatchError({ name: 'error', code: '28P01', message: 'secret' }, 'targetIdentity'), {
+    protocol: 'E: DISPATCH_OPERATION_FAILED', operation: 'targetIdentity', category: 'AUTHENTICATION_FAILURE', code: '28P01', syscall: 'UNKNOWN',
+  });
+  assert.equal(dispatcher.classifyDispatchError({ name: 'Error', code: 'ECONNREFUSED', message: 'postgresql://user:password@host' }, 'targetIdentity').category, 'CONNECTION_FAILURE');
+  assert.equal(dispatcher.classifyDispatchError({ code: '3D000' }, 'targetIdentity').category, 'DATABASE_NOT_FOUND');
+  assert.equal(dispatcher.classifyDispatchError({ code: 'ENOTFOUND' }, 'targetIdentity').category, 'NAME_RESOLUTION_FAILURE');
+  assert.equal(dispatcher.classifyDispatchError({ code: 'CERT_HAS_EXPIRED', message: 'password=secret' }, 'targetIdentity').category, 'TLS_TRANSPORT_FAILURE');
+  assert.equal(dispatcher.classifyDispatchError(new Error('DATABASE_URL=postgresql://x:secret@host'), 'targetIdentity').category, 'UNKNOWN');
+});
+
+test('diagnostic classifier emits no raw error fields', () => {
+  const error = Object.assign(new Error('DATABASE_URL=postgresql://user:password@host'), {
+    code: 'ECONNREFUSED',
+    syscall: 'connect',
+    stack: 'SECRET_STACK',
+    connectionString: 'SECRET_CONNECTION_STRING',
+    cause: { password: 'SECRET_PASSWORD' },
+  });
+  const serialized = JSON.stringify(dispatcher.classifyDispatchError(error, 'targetIdentity'));
+  assert.doesNotMatch(serialized, /DATABASE_URL|password|SECRET_|connectionString|stack|cause|postgresql:/i);
+  assert.match(serialized, /DISPATCH_OPERATION_FAILED/);
+});
+
+test('successful dispatcher output contract remains unchanged', () => {
+  assert.deepEqual(dispatcher.classifyDispatchError({ code: '42P01' }, 'targetIdentity').category, 'QUERY_FAILURE');
+  assert.deepEqual(dispatcher.DIAGNOSTIC_CATEGORIES, [
+    'AUTHENTICATION_FAILURE', 'CONNECTION_FAILURE', 'DATABASE_NOT_FOUND',
+    'NAME_RESOLUTION_FAILURE', 'TLS_TRANSPORT_FAILURE', 'QUERY_FAILURE',
+    'MODULE_RUNTIME_FAILURE', 'UNKNOWN',
+  ]);
+});
