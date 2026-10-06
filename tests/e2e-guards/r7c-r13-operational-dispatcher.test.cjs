@@ -237,7 +237,7 @@ test('catalog count or fingerprint mismatch fails before client construction', a
 });
 
 test('CLI accepts exactly one operation and never loads dotenv', async () => {
-  await assert.rejects(() => dispatcher.main(['targetIdentity', 'extra']), /ONE_FIXED_OPERATION_REQUIRED/);
+  await assert.rejects(() => dispatcher.main(['targetIdentity', 'extra'], { emitEvent: () => true }), /ONE_FIXED_OPERATION_REQUIRED/);
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts', 'gates', 'r7c-r13-operational-dispatcher.cjs'), 'utf8');
   assert.equal(/dotenv|execSync|execFileSync|shell\s*:\s*true/.test(source), false);
 });
@@ -273,4 +273,28 @@ test('successful dispatcher output contract remains unchanged', () => {
     'NAME_RESOLUTION_FAILURE', 'TLS_TRANSPORT_FAILURE', 'QUERY_FAILURE',
     'MODULE_RUNTIME_FAILURE', 'UNKNOWN',
   ]);
+});
+
+test('diagnostic event vocabulary is closed and fixed', () => {
+  assert.equal(dispatcher.DIAGNOSTIC_EVENTS.length, 13);
+  assert.equal(dispatcher.emitBoundaryEvent('ARBITRARY_EVENT', () => { throw new Error('must not write'); }), false);
+  const writes = [];
+  assert.equal(dispatcher.emitBoundaryEvent('DISPATCHER_MODULE_LOADED', (_fd, bytes) => writes.push(bytes)), true);
+  assert.deepEqual(writes[0], Buffer.from('{"event":"DISPATCHER_MODULE_LOADED"}\n'));
+});
+
+test('fd3 failure has a reserved exit classification', () => {
+  const previous = process.exitCode;
+  process.exitCode = undefined;
+  assert.equal(dispatcher.emitBoundaryEvent('DISPATCHER_MAIN_ENTERED', () => { throw new Error('secret'); }), false);
+  assert.equal(process.exitCode, dispatcher.FD3_FAILURE_EXIT_CODE);
+  process.exitCode = previous;
+});
+
+test('target identity boundary order distinguishes connection and query success', async () => {
+  const events = [];
+  const client = { connect: async () => {}, end: async () => {}, query: async () => ({ rows: [{ database_name: 'mobility', server_version_num: 150000, server_address: '127.0.0.1', server_port: 5432 }] }) };
+  const result = await dispatcher.runOperation('targetIdentity', { env: { DATABASE_URL }, createClient: () => client, spawnSync: materializerSpawn(), emitEvent: (event) => { events.push(event); return true; } });
+  assert.equal(result.databaseName, 'mobility');
+  assert.deepEqual(events.slice(-6), ['PG_CLIENT_CONSTRUCTION_REACHED', 'PG_CONNECT_ATTEMPTED', 'PG_CONNECT_SUCCEEDED', 'TARGETIDENTITY_ENTERED', 'TARGETIDENTITY_QUERY_ATTEMPTED', 'TARGETIDENTITY_QUERY_SUCCEEDED']);
 });

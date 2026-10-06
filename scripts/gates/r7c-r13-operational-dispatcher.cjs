@@ -27,6 +27,27 @@ const OPERATIONS = Object.freeze([
   'baseline',
   'baselineLedger',
 ]);
+const FD3_FAILURE_EXIT_CODE = 70;
+const DIAGNOSTIC_EVENTS = Object.freeze([
+  'DISPATCHER_MODULE_LOADED', 'DISPATCHER_MAIN_ENTERED', 'TARGETIDENTITY_ENTERED',
+  'PG_CLIENT_CONSTRUCTION_REACHED', 'PG_CONNECT_ATTEMPTED', 'PG_CONNECT_SUCCEEDED',
+  'TARGETIDENTITY_QUERY_ATTEMPTED', 'TARGETIDENTITY_QUERY_SUCCEEDED', 'MAIN_CATCH_ENTERED',
+  'GENERIC_PROTOCOL_EMISSION_ATTEMPTED', 'GENERIC_PROTOCOL_EMISSION_COMPLETED',
+  'BOUNDED_DIAGNOSTIC_EMISSION_ATTEMPTED', 'BOUNDED_DIAGNOSTIC_EMISSION_COMPLETED',
+]);
+const EVENT_BYTES = Object.freeze(Object.fromEntries(DIAGNOSTIC_EVENTS.map((event) => [
+  event, Buffer.from(`${JSON.stringify({ event })}\n`, 'utf8'),
+])));
+
+function emitBoundaryEvent(event, write = fs.writeSync) {
+  if (!EVENT_BYTES[event]) return false;
+  try { write(3, EVENT_BYTES[event]); return true; }
+  catch { process.exitCode = FD3_FAILURE_EXIT_CODE; return false; }
+}
+
+function requireBoundaryEvent(event, emit) {
+  if (!emit(event)) throw new Error('E: DIAGNOSTIC_CHANNEL_FAILURE');
+}
 
 const EMPTY_STATE_SQL = `
 SELECT CASE WHEN
@@ -114,10 +135,14 @@ function createPgClient(connectionString) {
 }
 
 async function withClient(connectionString, deps, action) {
+  const emit = deps.emitEvent || (() => true);
+  requireBoundaryEvent('PG_CLIENT_CONSTRUCTION_REACHED', emit);
   const client = (deps.createClient || createPgClient)(connectionString);
   let actionFailed = false;
   try {
+    requireBoundaryEvent('PG_CONNECT_ATTEMPTED', emit);
     await client.connect();
+    requireBoundaryEvent('PG_CONNECT_SUCCEEDED', emit);
     return await action(client);
   } catch (error) {
     actionFailed = true;
@@ -131,13 +156,16 @@ async function withClient(connectionString, deps, action) {
   }
 }
 
-async function targetIdentity(client) {
+async function targetIdentity(client, emit = () => true) {
+  requireBoundaryEvent('TARGETIDENTITY_ENTERED', emit);
+  requireBoundaryEvent('TARGETIDENTITY_QUERY_ATTEMPTED', emit);
   const result = await client.query(`
     SELECT current_database() AS database_name,
            current_setting('server_version_num')::integer AS server_version_num,
            inet_server_addr()::text AS server_address,
            inet_server_port() AS server_port;
   `);
+  requireBoundaryEvent('TARGETIDENTITY_QUERY_SUCCEEDED', emit);
   const row = result.rows?.[0];
   if (!row || row.database_name !== EXPECTED_DATABASE) throw new Error('E: DATABASE_IDENTITY_MISMATCH');
   if (Math.floor(Number(row.server_version_num) / 10000) !== EXPECTED_POSTGRES_MAJOR) {
@@ -282,7 +310,7 @@ async function runOperation(operation, deps = {}) {
     }
     if (operation === 'baselineLedger') return runBaselineLedger(connectionString, env, deps, catalogPath);
     return withClient(connectionString, deps, async (client) => {
-      if (operation === 'targetIdentity') return targetIdentity(client);
+      if (operation === 'targetIdentity') return targetIdentity(client, deps.emitEvent);
       if (operation === 'emptyState') {
         const result = await client.query(EMPTY_STATE_SQL);
         const value = String(result.rows?.[0]?.nonempty);
@@ -340,20 +368,30 @@ function classifyDispatchError(error, operation = 'UNKNOWN') {
   });
 }
 
-async function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2), deps = {}) {
+  const emit = deps.emitEvent || emitBoundaryEvent;
+  requireBoundaryEvent('DISPATCHER_MAIN_ENTERED', emit);
   if (argv.length !== 1) throw new Error('E: ONE_FIXED_OPERATION_REQUIRED');
   const [operation] = argv;
   assertOperation(operation);
-  const result = await runOperation(operation);
+  const result = await runOperation(operation, { ...deps, emitEvent: emit });
   writeResult(operation, result);
 }
 
 if (require.main === module) {
-  main().catch((error) => {
+  const emit = emitBoundaryEvent;
+  if (!emit('DISPATCHER_MODULE_LOADED')) process.exitCode = FD3_FAILURE_EXIT_CODE;
+  else main(process.argv.slice(2), { emitEvent: emit }).catch((error) => {
+    if (process.exitCode === FD3_FAILURE_EXIT_CODE) return;
+    if (!emit('MAIN_CATCH_ENTERED')) return;
     const code = /^E: [A-Z0-9_]+$/.test(error.message) ? error.message : 'E: DISPATCH_OPERATION_FAILED';
+    if (!emit('GENERIC_PROTOCOL_EMISSION_ATTEMPTED')) return;
     process.stderr.write(`${code}\n`);
+    if (!emit('GENERIC_PROTOCOL_EMISSION_COMPLETED')) return;
     if (code === 'E: DISPATCH_OPERATION_FAILED') {
+      if (!emit('BOUNDED_DIAGNOSTIC_EMISSION_ATTEMPTED')) return;
       process.stderr.write(`E: DISPATCH_DIAGNOSTIC ${JSON.stringify(classifyDispatchError(error, process.argv[2]))}\n`);
+      if (!emit('BOUNDED_DIAGNOSTIC_EMISSION_COMPLETED')) return;
     }
     process.exitCode = 1;
   });
@@ -371,6 +409,9 @@ module.exports = {
   buildCommandSet,
   classifyDispatchError,
   DIAGNOSTIC_CATEGORIES,
+  DIAGNOSTIC_EVENTS,
+  FD3_FAILURE_EXIT_CODE,
+  emitBoundaryEvent,
   main,
   runOperation,
   targetIdentity,
