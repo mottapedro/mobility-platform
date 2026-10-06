@@ -34,6 +34,11 @@ const DIAGNOSTIC_EVENTS = Object.freeze([
   'TARGETIDENTITY_QUERY_ATTEMPTED', 'TARGETIDENTITY_QUERY_SUCCEEDED', 'MAIN_CATCH_ENTERED',
   'GENERIC_PROTOCOL_EMISSION_ATTEMPTED', 'GENERIC_PROTOCOL_EMISSION_COMPLETED',
   'BOUNDED_DIAGNOSTIC_EMISSION_ATTEMPTED', 'BOUNDED_DIAGNOSTIC_EMISSION_COMPLETED',
+  'AUTHORIZED_CATALOG_MATERIALIZATION_ENTERED', 'MATERIALIZER_PROCESS_CREATE_ATTEMPTED',
+  'MATERIALIZER_PROCESS_CREATED', 'MATERIALIZER_PROCESS_COMPLETED',
+  'MATERIALIZER_OUTPUT_VALIDATION_ENTERED', 'MATERIALIZER_OUTPUT_VALIDATED',
+  'AUTHORIZED_CATALOG_IDENTITY_VERIFICATION_ENTERED', 'AUTHORIZED_CATALOG_IDENTITY_VERIFIED',
+  'AUTHORIZED_CATALOG_MATERIALIZATION_COMPLETED',
 ]);
 const EVENT_BYTES = Object.freeze(Object.fromEntries(DIAGNOSTIC_EVENTS.map((event) => [
   event, Buffer.from(`${JSON.stringify({ event })}\n`, 'utf8'),
@@ -47,6 +52,37 @@ function emitBoundaryEvent(event, write = fs.writeSync) {
 
 function requireBoundaryEvent(event, emit) {
   if (!emit(event)) throw new Error('E: DIAGNOSTIC_CHANNEL_FAILURE');
+}
+
+const MATERIALIZER_FAILURE_CATEGORIES = Object.freeze([
+  'MATERIALIZER_TEMP_ROOT_FAILURE',
+  'MATERIALIZER_PROCESS_CREATION_FAILED',
+  'MATERIALIZER_NONZERO_EXIT',
+  'MATERIALIZER_SIGNALLED',
+  'MATERIALIZER_OUTPUT_MISSING',
+  'MATERIALIZER_OUTPUT_INVALID',
+  'MATERIALIZER_CATALOG_COUNT_MISMATCH',
+  'MATERIALIZER_CATALOG_IDENTITY_MISMATCH',
+  'MATERIALIZER_CLEANUP_FAILURE',
+]);
+
+function withMaterializerDiagnostic(error, category, processCreated = false, exitCode = null, signal = null) {
+  const target = error instanceof Error ? error : new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED');
+  const safeCategory = MATERIALIZER_FAILURE_CATEGORIES.includes(category)
+    ? category
+    : 'MATERIALIZER_OUTPUT_INVALID';
+  Object.defineProperty(target, 'materializerDiagnostic', {
+    value: Object.freeze({
+      operation: 'authorizedCatalogMaterialization',
+      category: safeCategory,
+      processCreated: processCreated === true,
+      exitCode: Number.isInteger(exitCode) ? exitCode : null,
+      signal: typeof signal === 'string' && /^[A-Z0-9]+$/.test(signal) ? signal : null,
+    }),
+    enumerable: false,
+    configurable: true,
+  });
+  return target;
 }
 
 const EMPTY_STATE_SQL = `
@@ -208,6 +244,8 @@ function removeVerifiedTemporaryRoot(tempRoot, deps) {
 }
 
 function materializeAuthorizedCatalog(tempRoot, env, deps) {
+  const emit = deps.emitEvent || (() => true);
+  requireBoundaryEvent('AUTHORIZED_CATALOG_MATERIALIZATION_ENTERED', emit);
   const tsxPackagePath = path.join(REPOSITORY_ROOT, 'node_modules', 'tsx', 'package.json');
   const tsxPackage = JSON.parse(fs.readFileSync(tsxPackagePath, 'utf8'));
   if (tsxPackage.version !== EXPECTED_TSX_VERSION) throw new Error('E: TSX_TOOLCHAIN_IDENTITY_MISMATCH');
@@ -215,6 +253,7 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   const tsxCli = path.join(REPOSITORY_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
   const materializer = path.join(REPOSITORY_ROOT, 'scripts', 'materialize-authorized-migration-catalog.ts');
   const args = [tsxCli, materializer, '--output-dir', tempRoot, '--verify-fingerprint'];
+  requireBoundaryEvent('MATERIALIZER_PROCESS_CREATE_ATTEMPTED', emit);
   const result = (deps.spawnSync || spawnSync)(process.execPath, args, {
     cwd: REPOSITORY_ROOT,
     env: childEnvironment(env),
@@ -224,27 +263,72 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
     timeout: 30000,
     maxBuffer: 1024 * 1024,
   });
-  if (result.error || result.status !== 0) throw new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED');
+  if (result.error) {
+    throw withMaterializerDiagnostic(
+      new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED'),
+      'MATERIALIZER_PROCESS_CREATION_FAILED',
+    );
+  }
+  requireBoundaryEvent('MATERIALIZER_PROCESS_CREATED', emit);
+  requireBoundaryEvent('MATERIALIZER_PROCESS_COMPLETED', emit);
+  if (result.signal) {
+    throw withMaterializerDiagnostic(
+      new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED'),
+      'MATERIALIZER_SIGNALLED', true, null, result.signal,
+    );
+  }
+  if (result.status !== 0) {
+    throw withMaterializerDiagnostic(
+      new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED'),
+      'MATERIALIZER_NONZERO_EXIT', true, result.status,
+    );
+  }
 
+  requireBoundaryEvent('MATERIALIZER_OUTPUT_VALIDATION_ENTERED', emit);
   const expectedPath = path.join(tempRoot, 'catalog');
   const lines = String(result.stdout || '').split(/\r?\n/);
-  const reportedPath = lines.find((line) => line.startsWith('AUTHORIZED_CATALOG_PATH='))?.slice('AUTHORIZED_CATALOG_PATH='.length);
-  const count = lines.find((line) => line.startsWith('AUTHORIZED_CATALOG_COUNT='))?.slice('AUTHORIZED_CATALOG_COUNT='.length);
-  const fingerprint = lines.find((line) => line.startsWith('AUTHORIZED_CATALOG_FINGERPRINT='))?.slice('AUTHORIZED_CATALOG_FINGERPRINT='.length);
-  if (path.resolve(reportedPath || '') !== path.resolve(expectedPath)
-    || count !== '57'
-    || fingerprint !== AUTHORIZED_CATALOG_FINGERPRINT) {
-    throw new Error('E: AUTHORIZED_CATALOG_IDENTITY_MISMATCH');
+  const values = Object.fromEntries(['AUTHORIZED_CATALOG_PATH', 'AUTHORIZED_CATALOG_COUNT', 'AUTHORIZED_CATALOG_FINGERPRINT']
+    .map((key) => [key, lines.filter((line) => line.startsWith(`${key}=`)).map((line) => line.slice(key.length + 1))]));
+  if (Object.values(values).some((matches) => matches.length === 0)) {
+    throw withMaterializerDiagnostic(new Error('E: AUTHORIZED_CATALOG_IDENTITY_MISMATCH'), 'MATERIALIZER_OUTPUT_MISSING', true, 0);
   }
-  if (!fs.statSync(expectedPath).isDirectory()) throw new Error('E: MATERIALIZED_CATALOG_MISSING');
+  if (Object.values(values).some((matches) => matches.length !== 1 || matches[0] === '')) {
+    throw withMaterializerDiagnostic(new Error('E: AUTHORIZED_CATALOG_IDENTITY_MISMATCH'), 'MATERIALIZER_OUTPUT_INVALID', true, 0);
+  }
+  requireBoundaryEvent('MATERIALIZER_OUTPUT_VALIDATED', emit);
+
+  requireBoundaryEvent('AUTHORIZED_CATALOG_IDENTITY_VERIFICATION_ENTERED', emit);
+  const reportedPath = values.AUTHORIZED_CATALOG_PATH[0];
+  const count = values.AUTHORIZED_CATALOG_COUNT[0];
+  const fingerprint = values.AUTHORIZED_CATALOG_FINGERPRINT[0];
+  if (path.resolve(reportedPath) !== path.resolve(expectedPath)) {
+    throw withMaterializerDiagnostic(new Error('E: AUTHORIZED_CATALOG_IDENTITY_MISMATCH'), 'MATERIALIZER_CATALOG_IDENTITY_MISMATCH', true, 0);
+  }
+  if (count !== '57') {
+    throw withMaterializerDiagnostic(new Error('E: AUTHORIZED_CATALOG_IDENTITY_MISMATCH'), 'MATERIALIZER_CATALOG_COUNT_MISMATCH', true, 0);
+  }
+  if (fingerprint !== AUTHORIZED_CATALOG_FINGERPRINT) {
+    throw withMaterializerDiagnostic(new Error('E: AUTHORIZED_CATALOG_IDENTITY_MISMATCH'), 'MATERIALIZER_CATALOG_IDENTITY_MISMATCH', true, 0);
+  }
+  if (!fs.existsSync(expectedPath) || !fs.statSync(expectedPath).isDirectory()) {
+    throw withMaterializerDiagnostic(new Error('E: MATERIALIZED_CATALOG_MISSING'), 'MATERIALIZER_OUTPUT_MISSING', true, 0);
+  }
   const materializedBaseline = path.join(expectedPath, BASELINE_MIGRATION, 'migration.sql');
-  const materializedBaselineHash = crypto.createHash('sha256').update(fs.readFileSync(materializedBaseline)).digest('hex');
-  if (materializedBaselineHash !== BASELINE_SQL_SHA256) throw new Error('E: BASELINE_SQL_IDENTITY_MISMATCH');
+  let materializedBaselineHash;
+  try { materializedBaselineHash = crypto.createHash('sha256').update(fs.readFileSync(materializedBaseline)).digest('hex'); }
+  catch (error) { throw withMaterializerDiagnostic(error, 'MATERIALIZER_OUTPUT_MISSING', true, 0); }
+  if (materializedBaselineHash !== BASELINE_SQL_SHA256) {
+    throw withMaterializerDiagnostic(new Error('E: BASELINE_SQL_IDENTITY_MISMATCH'), 'MATERIALIZER_CATALOG_IDENTITY_MISMATCH', true, 0);
+  }
+  requireBoundaryEvent('AUTHORIZED_CATALOG_IDENTITY_VERIFIED', emit);
+  requireBoundaryEvent('AUTHORIZED_CATALOG_MATERIALIZATION_COMPLETED', emit);
   return expectedPath;
 }
 
 async function withAuthorizedCatalog(env, deps, action) {
-  const tempRoot = verifiedTemporaryRoot(deps);
+  let tempRoot;
+  try { tempRoot = verifiedTemporaryRoot(deps); }
+  catch (error) { throw withMaterializerDiagnostic(error, 'MATERIALIZER_TEMP_ROOT_FAILURE'); }
   let result;
   let primaryError;
   try {
@@ -262,10 +346,16 @@ async function withAuthorizedCatalog(env, deps, action) {
   }
   try {
     removeVerifiedTemporaryRoot(tempRoot, deps);
-  } catch {
-    throw new Error(primaryError
+  } catch (cleanupError) {
+    const error = new Error(primaryError
       ? 'E: AUTHORIZED_CATALOG_TEMP_CLEANUP_FAILED_AFTER_OPERATION_FAILURE'
       : 'E: AUTHORIZED_CATALOG_TEMP_CLEANUP_FAILED');
+    throw primaryError?.materializerDiagnostic
+      ? withMaterializerDiagnostic(error, primaryError.materializerDiagnostic.category,
+        primaryError.materializerDiagnostic.processCreated,
+        primaryError.materializerDiagnostic.exitCode,
+        primaryError.materializerDiagnostic.signal)
+      : withMaterializerDiagnostic(error, 'MATERIALIZER_CLEANUP_FAILURE');
   }
   if (primaryError) throw primaryError;
   return result;
@@ -388,9 +478,9 @@ if (require.main === module) {
     if (!emit('GENERIC_PROTOCOL_EMISSION_ATTEMPTED')) return;
     process.stderr.write(`${code}\n`);
     if (!emit('GENERIC_PROTOCOL_EMISSION_COMPLETED')) return;
-    if (code === 'E: DISPATCH_OPERATION_FAILED') {
+    if (code === 'E: DISPATCH_OPERATION_FAILED' || error.materializerDiagnostic) {
       if (!emit('BOUNDED_DIAGNOSTIC_EMISSION_ATTEMPTED')) return;
-      process.stderr.write(`E: DISPATCH_DIAGNOSTIC ${JSON.stringify(classifyDispatchError(error, process.argv[2]))}\n`);
+      process.stderr.write(`E: DISPATCH_DIAGNOSTIC ${JSON.stringify(error.materializerDiagnostic || classifyDispatchError(error, process.argv[2]))}\n`);
       if (!emit('BOUNDED_DIAGNOSTIC_EMISSION_COMPLETED')) return;
     }
     process.exitCode = 1;
@@ -410,6 +500,7 @@ module.exports = {
   classifyDispatchError,
   DIAGNOSTIC_CATEGORIES,
   DIAGNOSTIC_EVENTS,
+  MATERIALIZER_FAILURE_CATEGORIES,
   FD3_FAILURE_EXIT_CODE,
   emitBoundaryEvent,
   main,

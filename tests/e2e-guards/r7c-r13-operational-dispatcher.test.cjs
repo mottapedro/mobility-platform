@@ -276,7 +276,14 @@ test('successful dispatcher output contract remains unchanged', () => {
 });
 
 test('diagnostic event vocabulary is closed and fixed', () => {
-  assert.equal(dispatcher.DIAGNOSTIC_EVENTS.length, 13);
+  assert.equal(dispatcher.DIAGNOSTIC_EVENTS.length, 22);
+  assert.deepEqual(dispatcher.DIAGNOSTIC_EVENTS.slice(0, 13), [
+    'DISPATCHER_MODULE_LOADED', 'DISPATCHER_MAIN_ENTERED', 'TARGETIDENTITY_ENTERED',
+    'PG_CLIENT_CONSTRUCTION_REACHED', 'PG_CONNECT_ATTEMPTED', 'PG_CONNECT_SUCCEEDED',
+    'TARGETIDENTITY_QUERY_ATTEMPTED', 'TARGETIDENTITY_QUERY_SUCCEEDED', 'MAIN_CATCH_ENTERED',
+    'GENERIC_PROTOCOL_EMISSION_ATTEMPTED', 'GENERIC_PROTOCOL_EMISSION_COMPLETED',
+    'BOUNDED_DIAGNOSTIC_EMISSION_ATTEMPTED', 'BOUNDED_DIAGNOSTIC_EMISSION_COMPLETED',
+  ]);
   assert.equal(dispatcher.emitBoundaryEvent('ARBITRARY_EVENT', () => { throw new Error('must not write'); }), false);
   const writes = [];
   assert.equal(dispatcher.emitBoundaryEvent('DISPATCHER_MODULE_LOADED', (_fd, bytes) => writes.push(bytes)), true);
@@ -297,4 +304,157 @@ test('target identity boundary order distinguishes connection and query success'
   const result = await dispatcher.runOperation('targetIdentity', { env: { DATABASE_URL }, createClient: () => client, spawnSync: materializerSpawn(), emitEvent: (event) => { events.push(event); return true; } });
   assert.equal(result.databaseName, 'mobility');
   assert.deepEqual(events.slice(-6), ['PG_CLIENT_CONSTRUCTION_REACHED', 'PG_CONNECT_ATTEMPTED', 'PG_CONNECT_SUCCEEDED', 'TARGETIDENTITY_ENTERED', 'TARGETIDENTITY_QUERY_ATTEMPTED', 'TARGETIDENTITY_QUERY_SUCCEEDED']);
+});
+
+const MATERIALIZER_EVENTS = [
+  'AUTHORIZED_CATALOG_MATERIALIZATION_ENTERED',
+  'MATERIALIZER_PROCESS_CREATE_ATTEMPTED',
+  'MATERIALIZER_PROCESS_CREATED',
+  'MATERIALIZER_PROCESS_COMPLETED',
+  'MATERIALIZER_OUTPUT_VALIDATION_ENTERED',
+  'MATERIALIZER_OUTPUT_VALIDATED',
+  'AUTHORIZED_CATALOG_IDENTITY_VERIFICATION_ENTERED',
+  'AUTHORIZED_CATALOG_IDENTITY_VERIFIED',
+  'AUTHORIZED_CATALOG_MATERIALIZATION_COMPLETED',
+];
+
+async function materializerFailure(spawnResult, expectedCategory, expectedEvents, overrides = {}) {
+  const events = [];
+  let caught;
+  try {
+    await dispatcher.runOperation('targetIdentity', {
+      env: { DATABASE_URL },
+      spawnSync: typeof spawnResult === 'function' ? spawnResult : () => spawnResult,
+      createClient() { throw new Error('database must not be reached'); },
+      emitEvent(event) { events.push(event); return true; },
+      ...overrides,
+    });
+  } catch (error) { caught = error; }
+  assert.ok(caught);
+  assert.equal(caught.materializerDiagnostic.category, expectedCategory);
+  assert.deepEqual(events, expectedEvents);
+  return caught;
+}
+
+test('materializer diagnostic taxonomy and event extension are closed', () => {
+  assert.deepEqual(dispatcher.MATERIALIZER_FAILURE_CATEGORIES, [
+    'MATERIALIZER_TEMP_ROOT_FAILURE', 'MATERIALIZER_PROCESS_CREATION_FAILED',
+    'MATERIALIZER_NONZERO_EXIT', 'MATERIALIZER_SIGNALLED', 'MATERIALIZER_OUTPUT_MISSING',
+    'MATERIALIZER_OUTPUT_INVALID', 'MATERIALIZER_CATALOG_COUNT_MISMATCH',
+    'MATERIALIZER_CATALOG_IDENTITY_MISMATCH', 'MATERIALIZER_CLEANUP_FAILURE',
+  ]);
+  assert.deepEqual(dispatcher.DIAGNOSTIC_EVENTS.slice(13), MATERIALIZER_EVENTS);
+});
+
+test('materializer process creation failure is bounded before creation success', async () => {
+  const error = await materializerFailure(
+    { error: new Error(`secret ${DATABASE_URL}`), status: null, signal: null },
+    'MATERIALIZER_PROCESS_CREATION_FAILED',
+    MATERIALIZER_EVENTS.slice(0, 2),
+  );
+  assert.deepEqual(error.materializerDiagnostic, {
+    operation: 'authorizedCatalogMaterialization', category: 'MATERIALIZER_PROCESS_CREATION_FAILED',
+    processCreated: false, exitCode: null, signal: null,
+  });
+  assert.doesNotMatch(JSON.stringify(error.materializerDiagnostic), /secret|postgresql:|DATABASE_URL/i);
+});
+
+test('materializer nonzero exit and signal are distinct bounded failures', async () => {
+  const completed = MATERIALIZER_EVENTS.slice(0, 4);
+  const nonzero = await materializerFailure(
+    { error: null, status: 9, signal: null, stdout: '', stderr: 'secret' },
+    'MATERIALIZER_NONZERO_EXIT', completed,
+  );
+  assert.equal(nonzero.materializerDiagnostic.processCreated, true);
+  assert.equal(nonzero.materializerDiagnostic.exitCode, 9);
+  const signalled = await materializerFailure(
+    { error: null, status: null, signal: 'SIGTERM', stdout: '', stderr: 'secret' },
+    'MATERIALIZER_SIGNALLED', completed,
+  );
+  assert.equal(signalled.materializerDiagnostic.signal, 'SIGTERM');
+});
+
+test('output validation distinguishes missing and malformed output', async () => {
+  const entered = MATERIALIZER_EVENTS.slice(0, 5);
+  await materializerFailure(
+    { error: null, status: 0, signal: null, stdout: '', stderr: '' },
+    'MATERIALIZER_OUTPUT_MISSING', entered,
+  );
+  await materializerFailure(
+    {
+      error: null, status: 0, signal: null, stderr: '',
+      stdout: 'AUTHORIZED_CATALOG_PATH=x\nAUTHORIZED_CATALOG_PATH=y\nAUTHORIZED_CATALOG_COUNT=57\nAUTHORIZED_CATALOG_FINGERPRINT=x',
+    },
+    'MATERIALIZER_OUTPUT_INVALID', entered,
+  );
+});
+
+test('identity validation distinguishes count and catalog identity mismatch', async () => {
+  const identityEntered = MATERIALIZER_EVENTS.slice(0, 7);
+  await materializerFailure(
+    (executable, args, options) => {
+      const result = materializerSpawn()(executable, args, options);
+      return { ...result, stdout: result.stdout.replace('AUTHORIZED_CATALOG_COUNT=57', 'AUTHORIZED_CATALOG_COUNT=56') };
+    },
+    'MATERIALIZER_CATALOG_COUNT_MISMATCH', identityEntered,
+  );
+  await materializerFailure(
+    (executable, args, options) => {
+      const result = materializerSpawn()(executable, args, options);
+      return { ...result, stdout: result.stdout.replace(dispatcher.AUTHORIZED_CATALOG_FINGERPRINT, '0'.repeat(64)) };
+    },
+    'MATERIALIZER_CATALOG_IDENTITY_MISMATCH', identityEntered,
+  );
+});
+
+test('full materialization emits all boundaries before database construction', async () => {
+  const events = [];
+  const fake = fakeClient(async () => ({ rows: [{
+    database_name: 'mobility', server_version_num: 150000, server_address: '127.0.0.1', server_port: 5432,
+  }] }));
+  await dispatcher.runOperation('targetIdentity', {
+    env: { DATABASE_URL }, createClient: () => fake.client,
+    spawnSync: materializerSpawn(), emitEvent(event) { events.push(event); return true; },
+  });
+  assert.deepEqual(events.slice(0, 9), MATERIALIZER_EVENTS);
+  assert.equal(events[9], 'PG_CLIENT_CONSTRUCTION_REACHED');
+});
+
+test('cleanup failure preserves an established primary materializer diagnostic', async () => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'r13-f11-cleanup-'));
+  let caught;
+  try {
+    await dispatcher.runOperation('targetIdentity', {
+      env: { DATABASE_URL }, tmpDir: () => root,
+      spawnSync: () => ({ error: null, status: 7, signal: null, stdout: '', stderr: 'secret' }),
+      rmSync() { throw new Error('cleanup secret'); },
+      emitEvent: () => true,
+    });
+  } catch (error) { caught = error; }
+  fs.rmSync(root, { recursive: true, force: true });
+  assert.match(caught.message, /TEMP_CLEANUP_FAILED_AFTER_OPERATION_FAILURE/);
+  assert.equal(caught.materializerDiagnostic.category, 'MATERIALIZER_NONZERO_EXIT');
+  assert.equal(caught.materializerDiagnostic.exitCode, 7);
+});
+
+test('cleanup-only and temporary-root failures are bounded', async () => {
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'r13-f11-cleanup-only-'));
+  let cleanupError;
+  try {
+    await dispatcher.runOperation('targetIdentity', {
+      env: { DATABASE_URL }, tmpDir: () => root, spawnSync: materializerSpawn(),
+      createClient: () => fakeClient(async () => ({ rows: [{ database_name: 'mobility', server_version_num: 150000, server_address: '127.0.0.1', server_port: 5432 }] })).client,
+      rmSync() { throw new Error('cleanup secret'); }, emitEvent: () => true,
+    });
+  } catch (error) { cleanupError = error; }
+  fs.rmSync(root, { recursive: true, force: true });
+  assert.equal(cleanupError.materializerDiagnostic.category, 'MATERIALIZER_CLEANUP_FAILURE');
+
+  let tempError;
+  try {
+    await dispatcher.runOperation('targetIdentity', {
+      env: { DATABASE_URL }, tmpDir: () => path.resolve(__dirname, '..', '..'), emitEvent: () => true,
+    });
+  } catch (error) { tempError = error; }
+  assert.equal(tempError.materializerDiagnostic.category, 'MATERIALIZER_TEMP_ROOT_FAILURE');
 });
