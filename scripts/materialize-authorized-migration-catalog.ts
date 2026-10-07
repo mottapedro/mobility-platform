@@ -1,8 +1,84 @@
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, writeSync } from "node:fs";
 import crypto from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+export const MATERIALIZER_DIAGNOSTIC_COMPONENT = "authorizedMigrationCatalogMaterializer";
+export const MATERIALIZER_BOUNDARIES = [
+  "MATERIALIZER_MODULE_ENTERED",
+  "MATERIALIZER_MODULE_INITIALIZATION_COMPLETED",
+  "MATERIALIZER_CLI_ENTERED",
+  "SOURCE_CATALOG_VALIDATION_ENTERED",
+  "SOURCE_CATALOG_VALIDATED",
+  "CATALOG_COPY_COMPLETED",
+  "OUTPUT_STRUCTURE_VALIDATED",
+  "FINGERPRINT_AUTHORITY_READ",
+  "FINGERPRINT_VERIFIED",
+  "MANIFEST_WRITTEN",
+] as const;
+export const MATERIALIZER_FAILURE_CATEGORIES = [
+  "MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE",
+  "MATERIALIZER_SOURCE_CATALOG_INVALID",
+  "MATERIALIZER_SOURCE_MEMBERSHIP_MISMATCH",
+  "MATERIALIZER_OUTPUT_CATALOG_CREATION_FAILED",
+  "MATERIALIZER_MIGRATION_COPY_FAILED",
+  "MATERIALIZER_LOCKFILE_COPY_FAILED",
+  "MATERIALIZER_OUTPUT_STRUCTURE_INVALID",
+  "MATERIALIZER_FINGERPRINT_AUTHORITY_UNAVAILABLE",
+  "MATERIALIZER_FINGERPRINT_AUTHORITY_INVALID",
+  "MATERIALIZER_FINGERPRINT_MISMATCH",
+  "MATERIALIZER_MANIFEST_WRITE_FAILED",
+] as const;
+
+type MaterializerBoundary = typeof MATERIALIZER_BOUNDARIES[number];
+type MaterializerFailureCategory = typeof MATERIALIZER_FAILURE_CATEGORIES[number];
+type DiagnosticWrite = (fd: number, bytes: Uint8Array) => unknown;
+
+export function createMaterializerDiagnostics(write: DiagnosticWrite = writeSync) {
+  let lastBoundary: MaterializerBoundary | null = null;
+  let diagnosticEmitted = false;
+  const emit = (record: object): boolean => {
+    try {
+      write(3, Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  return Object.freeze({
+    boundary(boundary: MaterializerBoundary): boolean {
+      if (!MATERIALIZER_BOUNDARIES.includes(boundary)) return false;
+      if (!emit({ type: "BOUNDARY", boundary })) return false;
+      lastBoundary = boundary;
+      return true;
+    },
+    diagnostic(category: MaterializerFailureCategory): boolean {
+      if (diagnosticEmitted || !lastBoundary || !MATERIALIZER_FAILURE_CATEGORIES.includes(category)) return false;
+      if (!emit({
+        type: "DIAGNOSTIC",
+        component: MATERIALIZER_DIAGNOSTIC_COMPONENT,
+        category,
+        boundary: lastBoundary,
+      })) return false;
+      diagnosticEmitted = true;
+      return true;
+    },
+    get lastBoundary() { return lastBoundary; },
+  });
+}
+
+const childDiagnostics = createMaterializerDiagnostics();
+childDiagnostics.boundary("MATERIALIZER_MODULE_ENTERED");
+
+function classified<T>(category: MaterializerFailureCategory, action: () => T): T {
+  try {
+    return action();
+  } catch (error) {
+    childDiagnostics.diagnostic(category);
+    throw error;
+  }
+}
 
 export const BASELINE_MIGRATION = "20260101000000_init_baseline";
 
@@ -181,6 +257,7 @@ function writeCatalogOutputs(catalogPath: string, outputDir: string, fingerprint
     appendFileSync(process.env.GITHUB_OUTPUT, `manifest=${manifestPath}\n`);
     appendFileSync(process.env.GITHUB_OUTPUT, `fingerprint=${fingerprint}\n`);
   }
+  childDiagnostics.boundary("MANIFEST_WRITTEN");
 }
 
 export interface MaterializedCatalog {
@@ -198,13 +275,20 @@ export function materializeAuthorizedMigrationCatalog(options: {
   assertCatalogDefinition();
   const sourcePath = options.sourcePath ?? path.resolve(__dirname, "..", "prisma", "migrations");
   const targetPath = options.targetPath ?? mkdtempSync(path.join(os.tmpdir(), "mobility-authorized-migrations-"));
-  const sourceEntries = migrationDirectories(sourcePath);
+  childDiagnostics.boundary("SOURCE_CATALOG_VALIDATION_ENTERED");
+  classified("MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE", () => {
+    if (!existsSync(sourcePath) || !statSync(sourcePath).isDirectory()) {
+      throw new Error(`Migration catalog directory does not exist: ${sourcePath}`);
+    }
+  });
+  const sourceEntries = classified("MATERIALIZER_SOURCE_CATALOG_INVALID", () => migrationDirectories(sourcePath));
   const expected = unique(AUTHORIZED_MIGRATIONS);
   const allowedSource = new Set([...expected, ...EXCLUDED_SUPERSEDED_MIGRATIONS]);
   const unknown = sourceEntries.filter((name) => !allowedSource.has(name));
   const missing = difference(expected, sourceEntries);
 
   if (unknown.length > 0 || missing.length > 0) {
+    childDiagnostics.diagnostic("MATERIALIZER_SOURCE_MEMBERSHIP_MISMATCH");
     throw new Error(
       [
         "Source migration catalog validation failed.",
@@ -214,25 +298,35 @@ export function materializeAuthorizedMigrationCatalog(options: {
       ].join(" ")
     );
   }
+  childDiagnostics.boundary("SOURCE_CATALOG_VALIDATED");
 
-  mkdirSync(targetPath, { recursive: true });
-  if (migrationDirectories(targetPath).length > 0) {
-    throw new Error(`Target migration catalog must be empty: ${targetPath}`);
-  }
+  classified("MATERIALIZER_OUTPUT_CATALOG_CREATION_FAILED", () => {
+    mkdirSync(targetPath, { recursive: true });
+    if (migrationDirectories(targetPath).length > 0) {
+      throw new Error(`Target migration catalog must be empty: ${targetPath}`);
+    }
+  });
 
   for (const migration of expected) {
-    cpSync(path.join(sourcePath, migration), path.join(targetPath, migration), {
-      recursive: true,
-      errorOnExist: true,
+    classified("MATERIALIZER_MIGRATION_COPY_FAILED", () => {
+      cpSync(path.join(sourcePath, migration), path.join(targetPath, migration), {
+        recursive: true,
+        errorOnExist: true,
+      });
     });
   }
 
   const lockFile = path.join(sourcePath, "migration_lock.toml");
   if (!existsSync(lockFile)) {
+    childDiagnostics.diagnostic("MATERIALIZER_LOCKFILE_COPY_FAILED");
     throw new Error(`Source migration catalog is missing migration_lock.toml: ${sourcePath}`);
   }
-  cpSync(lockFile, path.join(targetPath, "migration_lock.toml"), { errorOnExist: true });
-  validateAuthorizedCatalogPath(targetPath);
+  classified("MATERIALIZER_LOCKFILE_COPY_FAILED", () => {
+    cpSync(lockFile, path.join(targetPath, "migration_lock.toml"), { errorOnExist: true });
+  });
+  childDiagnostics.boundary("CATALOG_COPY_COMPLETED");
+  classified("MATERIALIZER_OUTPUT_STRUCTURE_INVALID", () => validateAuthorizedCatalogPath(targetPath));
+  childDiagnostics.boundary("OUTPUT_STRUCTURE_VALIDATED");
 
   return {
     path: targetPath,
@@ -243,7 +337,10 @@ export function materializeAuthorizedMigrationCatalog(options: {
   };
 }
 
+childDiagnostics.boundary("MATERIALIZER_MODULE_INITIALIZATION_COMPLETED");
+
 if (require.main === module) {
+  childDiagnostics.boundary("MATERIALIZER_CLI_ENTERED");
   try {
     const outputDir = argumentValue("--output-dir");
     const result = materializeAuthorizedMigrationCatalog({
@@ -257,12 +354,22 @@ if (require.main === module) {
     console.log("EXCLUDED_SQL_EXECUTED=0");
     if (process.argv.includes("--verify-fingerprint")) {
       const actual = calculateAuthorizedCatalogFingerprint(result.path);
-      const expected = readFileSync(EXPECTED_FINGERPRINT_PATH, "utf8").trim();
-      if (!/^[a-f0-9]{64}$/.test(expected)) throw new Error("FINGERPRINT_AUTHORITY_NOT_ESTABLISHED");
-      if (actual !== expected) throw new Error(`AUTHORIZED_CATALOG_FINGERPRINT_MISMATCH expected=${expected} actual=${actual}`);
+      const expected = classified("MATERIALIZER_FINGERPRINT_AUTHORITY_UNAVAILABLE", () => (
+        readFileSync(EXPECTED_FINGERPRINT_PATH, "utf8").trim()
+      ));
+      if (!/^[a-f0-9]{64}$/.test(expected)) {
+        childDiagnostics.diagnostic("MATERIALIZER_FINGERPRINT_AUTHORITY_INVALID");
+        throw new Error("FINGERPRINT_AUTHORITY_NOT_ESTABLISHED");
+      }
+      childDiagnostics.boundary("FINGERPRINT_AUTHORITY_READ");
+      if (actual !== expected) {
+        childDiagnostics.diagnostic("MATERIALIZER_FINGERPRINT_MISMATCH");
+        throw new Error(`AUTHORIZED_CATALOG_FINGERPRINT_MISMATCH expected=${expected} actual=${actual}`);
+      }
+      childDiagnostics.boundary("FINGERPRINT_VERIFIED");
       console.log(`AUTHORIZED_CATALOG_FINGERPRINT=${actual}`);
       console.log("AUTHORIZED_CATALOG_FINGERPRINT_STATUS=PASS");
-      if (outputDir) writeCatalogOutputs(result.path, outputDir, actual);
+      if (outputDir) classified("MATERIALIZER_MANIFEST_WRITE_FAILED", () => writeCatalogOutputs(result.path, outputDir, actual));
     }
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

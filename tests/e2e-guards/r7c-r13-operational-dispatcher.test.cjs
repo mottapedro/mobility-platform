@@ -8,6 +8,16 @@ const test = require('node:test');
 const dispatcher = require('../../scripts/gates/r7c-r13-operational-dispatcher.cjs');
 
 const DATABASE_URL = 'postgresql://ephemeral:secret@127.0.0.1:54321/mobility';
+const CHILD_SUCCESS_FD3 = `${dispatcher.CHILD_MATERIALIZER_BOUNDARIES
+  .map((boundary) => JSON.stringify({ type: 'BOUNDARY', boundary })).join('\n')}\n`;
+const withChildFd3 = (result, fd3 = CHILD_SUCCESS_FD3) => ({
+  ...result,
+  output: [null, result.stdout || '', result.stderr || '', fd3],
+});
+const CHILD_SUCCESS_PARENT_EVENTS = [
+  'CHILD_DIAGNOSTIC_SCHEMA_VALID',
+  ...dispatcher.CHILD_MATERIALIZER_BOUNDARIES.map((boundary) => `CHILD_${boundary}`),
+];
 
 function materializerSpawn(extra = () => ({ status: 0, error: null }), onMaterializer = () => {}) {
   return (executable, args, options) => {
@@ -19,15 +29,17 @@ function materializerSpawn(extra = () => ({ status: 0, error: null }), onMateria
         path.join(__dirname, '..', '..', 'prisma', 'migrations', dispatcher.BASELINE_MIGRATION, 'migration.sql'),
         path.join(outputDir, 'catalog', dispatcher.BASELINE_MIGRATION, 'migration.sql'),
       );
-      return {
+      const stdout = [
+        `AUTHORIZED_CATALOG_PATH=${path.join(outputDir, 'catalog')}`,
+        'AUTHORIZED_CATALOG_COUNT=57',
+        `AUTHORIZED_CATALOG_FINGERPRINT=${dispatcher.AUTHORIZED_CATALOG_FINGERPRINT}`,
+      ].join('\n');
+      return withChildFd3({
         status: 0,
         error: null,
-        stdout: [
-          `AUTHORIZED_CATALOG_PATH=${path.join(outputDir, 'catalog')}`,
-          'AUTHORIZED_CATALOG_COUNT=57',
-          `AUTHORIZED_CATALOG_FINGERPRINT=${dispatcher.AUTHORIZED_CATALOG_FINGERPRINT}`,
-        ].join('\n'),
-      };
+        stdout,
+        stderr: '',
+      });
     }
     return extra(executable, args, options);
   };
@@ -222,7 +234,7 @@ test('catalog count or fingerprint mismatch fails before client construction', a
     createClient() { clientCreated += 1; throw new Error('must not connect'); },
     spawnSync(executable, args) {
       if (!args[1]?.endsWith('materialize-authorized-migration-catalog.ts')) return { status: 0, error: null };
-      return {
+      return withChildFd3({
         status: 0,
         error: null,
         stdout: [
@@ -230,7 +242,7 @@ test('catalog count or fingerprint mismatch fails before client construction', a
           'AUTHORIZED_CATALOG_COUNT=56',
           `AUTHORIZED_CATALOG_FINGERPRINT=${dispatcher.AUTHORIZED_CATALOG_FINGERPRINT}`,
         ].join('\n'),
-      };
+      });
     },
   }), /AUTHORIZED_CATALOG_IDENTITY_MISMATCH/);
   assert.equal(clientCreated, 0);
@@ -276,7 +288,7 @@ test('successful dispatcher output contract remains unchanged', () => {
 });
 
 test('diagnostic event vocabulary is closed and fixed', () => {
-  assert.equal(dispatcher.DIAGNOSTIC_EVENTS.length, 22);
+  assert.equal(dispatcher.DIAGNOSTIC_EVENTS.length, 46);
   assert.deepEqual(dispatcher.DIAGNOSTIC_EVENTS.slice(0, 13), [
     'DISPATCHER_MODULE_LOADED', 'DISPATCHER_MAIN_ENTERED', 'TARGETIDENTITY_ENTERED',
     'PG_CLIENT_CONSTRUCTION_REACHED', 'PG_CONNECT_ATTEMPTED', 'PG_CONNECT_SUCCEEDED',
@@ -343,7 +355,64 @@ test('materializer diagnostic taxonomy and event extension are closed', () => {
     'MATERIALIZER_OUTPUT_INVALID', 'MATERIALIZER_CATALOG_COUNT_MISMATCH',
     'MATERIALIZER_CATALOG_IDENTITY_MISMATCH', 'MATERIALIZER_CLEANUP_FAILURE',
   ]);
-  assert.deepEqual(dispatcher.DIAGNOSTIC_EVENTS.slice(13), MATERIALIZER_EVENTS);
+  assert.deepEqual(dispatcher.DIAGNOSTIC_EVENTS.slice(13, 22), MATERIALIZER_EVENTS);
+});
+
+test('child materializer fd3 is created and valid boundaries are projected', async () => {
+  let options;
+  const events = [];
+  const spawn = materializerSpawn(() => ({ status: 0, error: null }), (call) => { options = call.options; });
+  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'r13-f13-fd3-'));
+  try {
+    await dispatcher.runOperation('targetIdentity', {
+      env: { DATABASE_URL }, spawnSync: spawn,
+      createClient: () => fakeClient(async () => ({ rows: [{ database_name: 'mobility', server_version_num: 150000, server_address: '127.0.0.1', server_port: 5432 }] })).client,
+      emitEvent(event) { events.push(event); return true; }, tmpDir: () => root,
+    });
+  } catch {}
+  assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe', 'pipe']);
+  assert.ok(events.includes('CHILD_DIAGNOSTIC_SCHEMA_VALID'));
+  assert.ok(events.includes('CHILD_MATERIALIZER_MODULE_ENTERED'));
+});
+
+test('child protocol accepts one bounded diagnostic and projects only fixed facts', () => {
+  const raw = [
+    { type: 'BOUNDARY', boundary: 'MATERIALIZER_MODULE_ENTERED' },
+    { type: 'DIAGNOSTIC', component: dispatcher.CHILD_MATERIALIZER_COMPONENT, category: 'MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE', boundary: 'MATERIALIZER_MODULE_ENTERED' },
+  ].map(JSON.stringify).join('\n') + '\n';
+  const protocol = dispatcher.parseChildMaterializerProtocol(raw);
+  const events = [];
+  dispatcher.projectChildMaterializerProtocol(protocol, (event) => { events.push(event); return true; });
+  assert.equal(protocol.diagnostic.category, 'MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE');
+  assert.deepEqual(events, [
+    'CHILD_DIAGNOSTIC_SCHEMA_VALID', 'CHILD_MATERIALIZER_MODULE_ENTERED',
+    'CHILD_DIAGNOSTIC_PRESENT', 'CHILD_DIAGNOSTIC_CATEGORY_VALID',
+    'CHILD_MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE',
+  ]);
+});
+
+test('child protocol rejects schema, vocabulary, component, extras, multiplicity, and ordering violations', () => {
+  const parse = (records) => dispatcher.parseChildMaterializerProtocol(`${records.map(JSON.stringify).join('\n')}\n`);
+  assert.throws(() => parse([{ type: 'UNKNOWN', boundary: 'MATERIALIZER_MODULE_ENTERED' }]), /CHILD_PROTOCOL_INVALID/);
+  assert.throws(() => parse([{ type: 'BOUNDARY', boundary: 'UNKNOWN' }]), /CHILD_PROTOCOL_INVALID/);
+  assert.throws(() => parse([{ type: 'BOUNDARY', boundary: 'MATERIALIZER_CLI_ENTERED' }]), /CHILD_PROTOCOL_INVALID/);
+  assert.throws(() => parse([{ type: 'BOUNDARY', boundary: 'MATERIALIZER_MODULE_ENTERED', extra: true }]), /CHILD_PROTOCOL_INVALID/);
+  const first = { type: 'BOUNDARY', boundary: 'MATERIALIZER_MODULE_ENTERED' };
+  const diagnostic = { type: 'DIAGNOSTIC', component: dispatcher.CHILD_MATERIALIZER_COMPONENT, category: 'MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE', boundary: 'MATERIALIZER_MODULE_ENTERED' };
+  assert.throws(() => parse([first, { ...diagnostic, component: 'wrong' }]), /CHILD_PROTOCOL_INVALID/);
+  assert.throws(() => parse([first, { ...diagnostic, category: 'UNKNOWN' }]), /CHILD_PROTOCOL_INVALID/);
+  assert.throws(() => parse([first, { ...diagnostic, extra: true }]), /CHILD_PROTOCOL_INVALID/);
+  assert.throws(() => parse([first, diagnostic, diagnostic]), /CHILD_PROTOCOL_INVALID/);
+});
+
+test('nonzero exit without child diagnostic remains observable and ignores stdout/stderr semantics', async () => {
+  const raw = `${JSON.stringify({ type: 'BOUNDARY', boundary: 'MATERIALIZER_MODULE_ENTERED' })}\n`;
+  const error = await materializerFailure(
+    { error: null, status: 1, signal: null, stdout: 'MATERIALIZER_FINGERPRINT_MISMATCH', stderr: 'MATERIALIZER_SOURCE_CATALOG_INVALID', output: [null, 'ignored', 'ignored', raw] },
+    'MATERIALIZER_NONZERO_EXIT',
+    [...MATERIALIZER_EVENTS.slice(0, 4), 'CHILD_DIAGNOSTIC_SCHEMA_VALID', 'CHILD_MATERIALIZER_MODULE_ENTERED'],
+  );
+  assert.equal(error.materializerDiagnostic.exitCode, 1);
 });
 
 test('materializer process creation failure is bounded before creation success', async () => {
@@ -360,7 +429,7 @@ test('materializer process creation failure is bounded before creation success',
 });
 
 test('materializer nonzero exit and signal are distinct bounded failures', async () => {
-  const completed = MATERIALIZER_EVENTS.slice(0, 4);
+  const completed = [...MATERIALIZER_EVENTS.slice(0, 4), 'CHILD_DIAGNOSTIC_SCHEMA_VALID'];
   const nonzero = await materializerFailure(
     { error: null, status: 9, signal: null, stdout: '', stderr: 'secret' },
     'MATERIALIZER_NONZERO_EXIT', completed,
@@ -375,22 +444,22 @@ test('materializer nonzero exit and signal are distinct bounded failures', async
 });
 
 test('output validation distinguishes missing and malformed output', async () => {
-  const entered = MATERIALIZER_EVENTS.slice(0, 5);
+  const entered = [...MATERIALIZER_EVENTS.slice(0, 4), ...CHILD_SUCCESS_PARENT_EVENTS, MATERIALIZER_EVENTS[4]];
   await materializerFailure(
-    { error: null, status: 0, signal: null, stdout: '', stderr: '' },
+    withChildFd3({ error: null, status: 0, signal: null, stdout: '', stderr: '' }),
     'MATERIALIZER_OUTPUT_MISSING', entered,
   );
   await materializerFailure(
-    {
+    withChildFd3({
       error: null, status: 0, signal: null, stderr: '',
       stdout: 'AUTHORIZED_CATALOG_PATH=x\nAUTHORIZED_CATALOG_PATH=y\nAUTHORIZED_CATALOG_COUNT=57\nAUTHORIZED_CATALOG_FINGERPRINT=x',
-    },
+    }),
     'MATERIALIZER_OUTPUT_INVALID', entered,
   );
 });
 
 test('identity validation distinguishes count and catalog identity mismatch', async () => {
-  const identityEntered = MATERIALIZER_EVENTS.slice(0, 7);
+  const identityEntered = [...MATERIALIZER_EVENTS.slice(0, 4), ...CHILD_SUCCESS_PARENT_EVENTS, ...MATERIALIZER_EVENTS.slice(4, 7)];
   await materializerFailure(
     (executable, args, options) => {
       const result = materializerSpawn()(executable, args, options);
@@ -416,8 +485,10 @@ test('full materialization emits all boundaries before database construction', a
     env: { DATABASE_URL }, createClient: () => fake.client,
     spawnSync: materializerSpawn(), emitEvent(event) { events.push(event); return true; },
   });
-  assert.deepEqual(events.slice(0, 9), MATERIALIZER_EVENTS);
-  assert.equal(events[9], 'PG_CLIENT_CONSTRUCTION_REACHED');
+  assert.deepEqual(events.slice(0, 4), MATERIALIZER_EVENTS.slice(0, 4));
+  assert.deepEqual(events.slice(4, 4 + CHILD_SUCCESS_PARENT_EVENTS.length), CHILD_SUCCESS_PARENT_EVENTS);
+  assert.deepEqual(events.slice(4 + CHILD_SUCCESS_PARENT_EVENTS.length, 9 + CHILD_SUCCESS_PARENT_EVENTS.length), MATERIALIZER_EVENTS.slice(4));
+  assert.equal(events[9 + CHILD_SUCCESS_PARENT_EVENTS.length], 'PG_CLIENT_CONSTRUCTION_REACHED');
 });
 
 test('cleanup failure preserves an established primary materializer diagnostic', async () => {

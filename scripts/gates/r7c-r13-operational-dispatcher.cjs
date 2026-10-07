@@ -28,6 +28,28 @@ const OPERATIONS = Object.freeze([
   'baselineLedger',
 ]);
 const FD3_FAILURE_EXIT_CODE = 70;
+const CHILD_MATERIALIZER_COMPONENT = 'authorizedMigrationCatalogMaterializer';
+const CHILD_MATERIALIZER_BOUNDARIES = Object.freeze([
+  'MATERIALIZER_MODULE_ENTERED', 'MATERIALIZER_MODULE_INITIALIZATION_COMPLETED',
+  'MATERIALIZER_CLI_ENTERED', 'SOURCE_CATALOG_VALIDATION_ENTERED',
+  'SOURCE_CATALOG_VALIDATED', 'CATALOG_COPY_COMPLETED',
+  'OUTPUT_STRUCTURE_VALIDATED', 'FINGERPRINT_AUTHORITY_READ',
+  'FINGERPRINT_VERIFIED', 'MANIFEST_WRITTEN',
+]);
+const CHILD_MATERIALIZER_FAILURE_CATEGORIES = Object.freeze([
+  'MATERIALIZER_SOURCE_CATALOG_UNAVAILABLE', 'MATERIALIZER_SOURCE_CATALOG_INVALID',
+  'MATERIALIZER_SOURCE_MEMBERSHIP_MISMATCH', 'MATERIALIZER_OUTPUT_CATALOG_CREATION_FAILED',
+  'MATERIALIZER_MIGRATION_COPY_FAILED', 'MATERIALIZER_LOCKFILE_COPY_FAILED',
+  'MATERIALIZER_OUTPUT_STRUCTURE_INVALID', 'MATERIALIZER_FINGERPRINT_AUTHORITY_UNAVAILABLE',
+  'MATERIALIZER_FINGERPRINT_AUTHORITY_INVALID', 'MATERIALIZER_FINGERPRINT_MISMATCH',
+  'MATERIALIZER_MANIFEST_WRITE_FAILED',
+]);
+const CHILD_BOUNDARY_PARENT_EVENTS = Object.freeze(Object.fromEntries(
+  CHILD_MATERIALIZER_BOUNDARIES.map((boundary) => [boundary, `CHILD_${boundary}`]),
+));
+const CHILD_CATEGORY_PARENT_EVENTS = Object.freeze(Object.fromEntries(
+  CHILD_MATERIALIZER_FAILURE_CATEGORIES.map((category) => [category, `CHILD_${category}`]),
+));
 const DIAGNOSTIC_EVENTS = Object.freeze([
   'DISPATCHER_MODULE_LOADED', 'DISPATCHER_MAIN_ENTERED', 'TARGETIDENTITY_ENTERED',
   'PG_CLIENT_CONSTRUCTION_REACHED', 'PG_CONNECT_ATTEMPTED', 'PG_CONNECT_SUCCEEDED',
@@ -39,6 +61,9 @@ const DIAGNOSTIC_EVENTS = Object.freeze([
   'MATERIALIZER_OUTPUT_VALIDATION_ENTERED', 'MATERIALIZER_OUTPUT_VALIDATED',
   'AUTHORIZED_CATALOG_IDENTITY_VERIFICATION_ENTERED', 'AUTHORIZED_CATALOG_IDENTITY_VERIFIED',
   'AUTHORIZED_CATALOG_MATERIALIZATION_COMPLETED',
+  'CHILD_DIAGNOSTIC_SCHEMA_VALID', 'CHILD_DIAGNOSTIC_PRESENT', 'CHILD_DIAGNOSTIC_CATEGORY_VALID',
+  ...Object.values(CHILD_BOUNDARY_PARENT_EVENTS),
+  ...Object.values(CHILD_CATEGORY_PARENT_EVENTS),
 ]);
 const EVENT_BYTES = Object.freeze(Object.fromEntries(DIAGNOSTIC_EVENTS.map((event) => [
   event, Buffer.from(`${JSON.stringify({ event })}\n`, 'utf8'),
@@ -52,6 +77,61 @@ function emitBoundaryEvent(event, write = fs.writeSync) {
 
 function requireBoundaryEvent(event, emit) {
   if (!emit(event)) throw new Error('E: DIAGNOSTIC_CHANNEL_FAILURE');
+}
+
+function parseChildMaterializerProtocol(raw) {
+  const text = raw == null ? '' : String(raw);
+  if (text === '') return Object.freeze({ records: Object.freeze([]), boundaries: Object.freeze([]), diagnostic: null });
+  if (!text.endsWith('\n')) throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID');
+  const lines = text.slice(0, -1).split('\n');
+  const records = [];
+  const boundaries = [];
+  let diagnostic = null;
+  for (const line of lines) {
+    let record;
+    try { record = JSON.parse(line); }
+    catch { throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID'); }
+    if (!record || Array.isArray(record) || typeof record !== 'object') {
+      throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID');
+    }
+    const keys = Object.keys(record).sort();
+    if (record.type === 'BOUNDARY') {
+      if (diagnostic || keys.join(',') !== 'boundary,type' || !CHILD_MATERIALIZER_BOUNDARIES.includes(record.boundary)) {
+        throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID');
+      }
+      const expected = CHILD_MATERIALIZER_BOUNDARIES[boundaries.length];
+      if (record.boundary !== expected) throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID');
+      boundaries.push(record.boundary);
+    } else if (record.type === 'DIAGNOSTIC') {
+      if (diagnostic || keys.join(',') !== 'boundary,category,component,type'
+        || record.component !== CHILD_MATERIALIZER_COMPONENT
+        || !CHILD_MATERIALIZER_FAILURE_CATEGORIES.includes(record.category)
+        || record.boundary !== boundaries.at(-1)) {
+        throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID');
+      }
+      diagnostic = Object.freeze({
+        component: record.component,
+        category: record.category,
+        boundary: record.boundary,
+      });
+    } else {
+      throw new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID');
+    }
+    records.push(Object.freeze({ ...record }));
+  }
+  return Object.freeze({ records: Object.freeze(records), boundaries: Object.freeze(boundaries), diagnostic });
+}
+
+function projectChildMaterializerProtocol(protocol, emit) {
+  requireBoundaryEvent('CHILD_DIAGNOSTIC_SCHEMA_VALID', emit);
+  for (const boundary of protocol.boundaries) {
+    requireBoundaryEvent(CHILD_BOUNDARY_PARENT_EVENTS[boundary], emit);
+  }
+  if (protocol.diagnostic) {
+    requireBoundaryEvent('CHILD_DIAGNOSTIC_PRESENT', emit);
+    requireBoundaryEvent('CHILD_DIAGNOSTIC_CATEGORY_VALID', emit);
+    requireBoundaryEvent(CHILD_CATEGORY_PARENT_EVENTS[protocol.diagnostic.category], emit);
+  }
 }
 
 const MATERIALIZER_FAILURE_CATEGORIES = Object.freeze([
@@ -262,6 +342,7 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
     windowsHide: true,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
   });
   if (result.error) {
     throw withMaterializerDiagnostic(
@@ -271,6 +352,13 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   }
   requireBoundaryEvent('MATERIALIZER_PROCESS_CREATED', emit);
   requireBoundaryEvent('MATERIALIZER_PROCESS_COMPLETED', emit);
+  let childProtocol;
+  try {
+    childProtocol = parseChildMaterializerProtocol(result.output?.[3]);
+    projectChildMaterializerProtocol(childProtocol, emit);
+  } catch (error) {
+    throw withMaterializerDiagnostic(error, 'MATERIALIZER_OUTPUT_INVALID', true, result.status, result.signal);
+  }
   if (result.signal) {
     throw withMaterializerDiagnostic(
       new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED'),
@@ -281,6 +369,11 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
     throw withMaterializerDiagnostic(
       new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED'),
       'MATERIALIZER_NONZERO_EXIT', true, result.status,
+    );
+  }
+  if (childProtocol.diagnostic || childProtocol.boundaries.length !== CHILD_MATERIALIZER_BOUNDARIES.length) {
+    throw withMaterializerDiagnostic(
+      new Error('E: MATERIALIZER_CHILD_PROTOCOL_INVALID'), 'MATERIALIZER_OUTPUT_INVALID', true, 0,
     );
   }
 
@@ -501,6 +594,11 @@ module.exports = {
   DIAGNOSTIC_CATEGORIES,
   DIAGNOSTIC_EVENTS,
   MATERIALIZER_FAILURE_CATEGORIES,
+  CHILD_MATERIALIZER_COMPONENT,
+  CHILD_MATERIALIZER_BOUNDARIES,
+  CHILD_MATERIALIZER_FAILURE_CATEGORIES,
+  parseChildMaterializerProtocol,
+  projectChildMaterializerProtocol,
   FD3_FAILURE_EXIT_CODE,
   emitBoundaryEvent,
   main,
