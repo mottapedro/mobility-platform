@@ -28,6 +28,15 @@ const OPERATIONS = Object.freeze([
   'baselineLedger',
 ]);
 const FD3_FAILURE_EXIT_CODE = 70;
+const PRELOADER_WRAPPER_PATH = path.join(REPOSITORY_ROOT, 'scripts', 'gates', 'r13-preloader-wrapper.cjs');
+const preloaderWrapper = require('./r13-preloader-wrapper.cjs');
+const PRELOADER_PIPELINE_STATES = Object.freeze([
+  'TRANSPORT_ESTABLISHED',
+  'BYTES_RECEIVED',
+  'RECORDS_PARSED',
+  'RECORDS_ACCEPTED',
+  'EVIDENCE_PERSISTED',
+]);
 const CHILD_MATERIALIZER_COMPONENT = 'authorizedMigrationCatalogMaterializer';
 const CHILD_MATERIALIZER_BOUNDARIES = Object.freeze([
   'MATERIALIZER_MODULE_ENTERED', 'MATERIALIZER_MODULE_INITIALIZATION_COMPLETED',
@@ -330,19 +339,21 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   const tsxPackage = JSON.parse(fs.readFileSync(tsxPackagePath, 'utf8'));
   if (tsxPackage.version !== EXPECTED_TSX_VERSION) throw new Error('E: TSX_TOOLCHAIN_IDENTITY_MISMATCH');
 
-  const tsxCli = path.join(REPOSITORY_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
+  const wrapper = deps.preloaderWrapperPath || PRELOADER_WRAPPER_PATH;
   const materializer = path.join(REPOSITORY_ROOT, 'scripts', 'materialize-authorized-migration-catalog.ts');
-  const args = [tsxCli, materializer, '--output-dir', tempRoot, '--verify-fingerprint'];
+  const nonce = (deps.generateNonce || (() => crypto.randomBytes(16).toString('hex')))();
+  const args = [wrapper, materializer, '--output-dir', tempRoot, '--verify-fingerprint'];
+  const pipelineStates = new Set(['TRANSPORT_ESTABLISHED']);
   requireBoundaryEvent('MATERIALIZER_PROCESS_CREATE_ATTEMPTED', emit);
   const result = (deps.spawnSync || spawnSync)(process.execPath, args, {
     cwd: REPOSITORY_ROOT,
-    env: childEnvironment(env),
+    env: childEnvironment(env, { R13_PRELOADER_NONCE: nonce }),
     encoding: 'utf8',
     shell: false,
     windowsHide: true,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+    stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
   });
   if (result.error) {
     throw withMaterializerDiagnostic(
@@ -352,10 +363,17 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   }
   requireBoundaryEvent('MATERIALIZER_PROCESS_CREATED', emit);
   requireBoundaryEvent('MATERIALIZER_PROCESS_COMPLETED', emit);
+  pipelineStates.add('BYTES_RECEIVED');
   let childProtocol;
+  let preloaderProtocol = null;
   try {
     childProtocol = parseChildMaterializerProtocol(result.output?.[3]);
+    if (result.output?.[4] && String(result.output[4]).trim() !== '') {
+      preloaderProtocol = preloaderWrapper.parsePreloaderProtocol(result.output[4], nonce);
+    }
+    pipelineStates.add('RECORDS_PARSED');
     projectChildMaterializerProtocol(childProtocol, emit);
+    pipelineStates.add('RECORDS_ACCEPTED');
   } catch (error) {
     throw withMaterializerDiagnostic(error, 'MATERIALIZER_OUTPUT_INVALID', true, result.status, result.signal);
   }
@@ -366,10 +384,15 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
     );
   }
   if (result.status !== 0) {
-    throw withMaterializerDiagnostic(
+    const error = withMaterializerDiagnostic(
       new Error('E: AUTHORIZED_CATALOG_MATERIALIZATION_FAILED'),
       'MATERIALIZER_NONZERO_EXIT', true, result.status,
     );
+    const classification = preloaderWrapper.classifyPreloaderFailure(preloaderProtocol);
+    if (classification?.positiveEvidence) {
+      error.preloaderClassification = classification;
+    }
+    throw error;
   }
   if (childProtocol.diagnostic || childProtocol.boundaries.length !== CHILD_MATERIALIZER_BOUNDARIES.length) {
     throw withMaterializerDiagnostic(
@@ -415,6 +438,31 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   }
   requireBoundaryEvent('AUTHORIZED_CATALOG_IDENTITY_VERIFIED', emit);
   requireBoundaryEvent('AUTHORIZED_CATALOG_MATERIALIZATION_COMPLETED', emit);
+
+  try {
+    const evidenceDir = path.join(tempRoot, '.evidence');
+    const manifest = {
+      schemaVersion: 1,
+      operation: 'materializeAuthorizedCatalog',
+      nonce,
+      processIdentity: preloaderProtocol?.processIdentity || null,
+      status: result.status,
+      signal: result.signal,
+      pipelineStates: Array.from(pipelineStates),
+    };
+    preloaderWrapper.persistPreloaderEvidence(
+      evidenceDir,
+      manifest,
+      Buffer.from(result.stdout || ''),
+      Buffer.from(result.stderr || ''),
+      Buffer.from(result.output?.[3] || ''),
+      Buffer.from(result.output?.[4] || ''),
+    );
+    pipelineStates.add('EVIDENCE_PERSISTED');
+  } catch (err) {
+    if (deps.failOnPersistence) throw err;
+  }
+
   return expectedPath;
 }
 
@@ -604,4 +652,7 @@ module.exports = {
   main,
   runOperation,
   targetIdentity,
+  PRELOADER_WRAPPER_PATH,
+  PRELOADER_PIPELINE_STATES,
+  materializeAuthorizedCatalog,
 };

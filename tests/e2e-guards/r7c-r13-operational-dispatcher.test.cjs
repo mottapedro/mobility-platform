@@ -370,7 +370,7 @@ test('child materializer fd3 is created and valid boundaries are projected', asy
       emitEvent(event) { events.push(event); return true; }, tmpDir: () => root,
     });
   } catch {}
-  assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe', 'pipe']);
+  assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']);
   assert.ok(events.includes('CHILD_DIAGNOSTIC_SCHEMA_VALID'));
   assert.ok(events.includes('CHILD_MATERIALIZER_MODULE_ENTERED'));
 });
