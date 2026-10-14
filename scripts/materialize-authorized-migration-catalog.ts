@@ -43,6 +43,15 @@ export function createMaterializerDiagnostics(write: DiagnosticWrite = writeSync
       write(3, Buffer.from(`${JSON.stringify(record)}\n`, "utf8"));
       return true;
     } catch {
+      try {
+        write(4, Buffer.from(`${JSON.stringify({
+          type: "DIAGNOSTIC",
+          code: "C03",
+          category: "FD3_WRITE_FAILURE",
+          component: MATERIALIZER_DIAGNOSTIC_COMPONENT,
+          boundary: lastBoundary ?? "MATERIALIZER_MODULE_ENTERED",
+        })}\n`, "utf8"));
+      } catch {}
       return false;
     }
   };
