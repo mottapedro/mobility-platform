@@ -159,3 +159,13 @@ jobs:
             /tmp/mobility-authorized-migrations-*) rm -rf -- "$catalog_path" ;;
             *) echo "Refusing to remove unexpected catalog path: $catalog_path" >&2; exit 1 ;;
           esac
+
+      - name: Collect R13 diagnostic evidence (dormant)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r13-evidence-${{ github.sha }}
+          path: /tmp/r13-governed-evidence/
+          retention-days: 30
+          if-no-files-found: ignore
+

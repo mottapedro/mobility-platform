@@ -202,6 +202,13 @@ function safeEvidenceRoot(root) {
   if (resolved === path.parse(resolved).root || resolved.includes('..')) {
     throw new Error('E: UNSAFE_EVIDENCE_DESTINATION');
   }
+  const relToRepo = path.relative(REPOSITORY_ROOT, resolved);
+  if (!relToRepo.startsWith('..') && !path.isAbsolute(relToRepo)) {
+    throw new Error('E: UNSAFE_EVIDENCE_DESTINATION');
+  }
+  if (resolved.includes('r7c-r13-authorized-catalog-')) {
+    throw new Error('E: UNSAFE_EVIDENCE_DESTINATION');
+  }
   fs.mkdirSync(resolved, { recursive: true });
   return resolved;
 }

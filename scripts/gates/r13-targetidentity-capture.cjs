@@ -10,32 +10,77 @@ const { parsePreloaderProtocol } = require('./r13-preloader-wrapper.cjs');
 const REPOSITORY_ROOT = path.resolve(__dirname, '..', '..');
 const DISPATCHER_PATH = path.join(REPOSITORY_ROOT, 'scripts', 'gates', 'r7c-r13-operational-dispatcher.cjs');
 const OPERATION = 'targetIdentity';
+const GOVERNED_EVIDENCE_ROOT = path.join(os.tmpdir(), 'r13-governed-evidence');
 
 function sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
 
+function validateGovernedEvidenceRoot(targetDir) {
+  if (!targetDir || typeof targetDir !== 'string') {
+    throw new Error('E: GOVERNED_EVIDENCE_ROOT_UNAVAILABLE');
+  }
+  const resolved = path.resolve(targetDir);
+  const parsed = path.parse(resolved);
+  if (resolved === parsed.root) {
+    throw new Error('E: UNSAFE_EVIDENCE_DESTINATION');
+  }
+  if (targetDir.includes('..') || resolved.includes('..')) {
+    throw new Error('E: UNSAFE_EVIDENCE_DESTINATION');
+  }
+  const relToRepo = path.relative(REPOSITORY_ROOT, resolved);
+  if (!relToRepo.startsWith('..') && !path.isAbsolute(relToRepo)) {
+    throw new Error('E: EVIDENCE_DESTINATION_INSIDE_REPOSITORY');
+  }
+  if (resolved.includes('r7c-r13-authorized-catalog-')) {
+    throw new Error('E: EVIDENCE_DESTINATION_INSIDE_TEMPROOT');
+  }
+  if (fs.existsSync(resolved)) {
+    const stat = fs.lstatSync(resolved);
+    if (stat.isSymbolicLink()) {
+      throw new Error('E: EVIDENCE_DESTINATION_SYMLINK_ESCAPE');
+    }
+  }
+  return resolved;
+}
+
 function safeEvidenceRoot(root) {
-  const value = root || path.join(os.tmpdir(), 'r13-targetidentity-capture');
-  const resolved = path.resolve(value);
-  if (resolved === path.parse(resolved).root || resolved.includes('..')) throw new Error('E: UNSAFE_EVIDENCE_DESTINATION');
+  const value = root || GOVERNED_EVIDENCE_ROOT;
+  const resolved = validateGovernedEvidenceRoot(value);
   fs.mkdirSync(resolved, { recursive: true });
   return resolved;
 }
 
-function persistEvidence(root, manifest, stdout, stderr, events, fd4 = Buffer.alloc(0)) {
-  const dir = safeEvidenceRoot(root);
-  const partial = path.join(dir, '.partial');
-  fs.rmSync(partial, { recursive: true, force: true });
-  fs.mkdirSync(partial);
-  fs.writeFileSync(path.join(partial, 'stdout.bin'), stdout);
-  fs.writeFileSync(path.join(partial, 'stderr.bin'), stderr);
-  fs.writeFileSync(path.join(partial, 'events.jsonl'), events);
-  fs.writeFileSync(path.join(partial, 'fd4.bin'), fd4);
-  fs.writeFileSync(path.join(partial, 'execution-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-  for (const name of ['stdout.bin', 'stderr.bin', 'events.jsonl', 'fd4.bin', 'execution-manifest.json']) {
-    fs.renameSync(path.join(partial, name), path.join(dir, name));
+function persistEvidence(destination, manifest, stdout, stderr, events, fd4 = Buffer.alloc(0)) {
+  const dir = validateGovernedEvidenceRoot(destination);
+  const parentDir = path.dirname(dir);
+  fs.mkdirSync(parentDir, { recursive: true });
+
+  const stagingDir = path.join(parentDir, `.staging-${manifest.nonce || crypto.randomBytes(8).toString('hex')}`);
+  fs.rmSync(stagingDir, { recursive: true, force: true });
+  fs.mkdirSync(stagingDir, { recursive: true });
+
+  try {
+    fs.writeFileSync(path.join(stagingDir, 'stdout.bin'), stdout);
+    fs.writeFileSync(path.join(stagingDir, 'stderr.bin'), stderr);
+    fs.writeFileSync(path.join(stagingDir, 'events.jsonl'), events);
+    fs.writeFileSync(path.join(stagingDir, 'fd4.bin'), fd4);
+
+    manifest.publicationStatus = 'PUBLISHED';
+    manifest.evidenceState = 'EVIDENCE_COMPLETE';
+    fs.writeFileSync(path.join(stagingDir, 'execution-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+
+    if (fs.existsSync(dir)) {
+      for (const name of ['stdout.bin', 'stderr.bin', 'events.jsonl', 'fd4.bin', 'execution-manifest.json']) {
+        fs.renameSync(path.join(stagingDir, name), path.join(dir, name));
+      }
+      fs.rmSync(stagingDir, { recursive: true, force: true });
+    } else {
+      fs.renameSync(stagingDir, dir);
+    }
+    return dir;
+  } catch (err) {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    throw new Error(`E: EVIDENCE_PERSISTENCE_FAILED: ${err.message}`);
   }
-  fs.rmSync(partial, { recursive: true, force: true });
-  return dir;
 }
 
 function classifyChildFailure({ exitCode, signal, fd3Bytes, fd4Bytes, preloaderProtocol }) {
@@ -81,11 +126,16 @@ function classifyChildFailure({ exitCode, signal, fd3Bytes, fd4Bytes, preloaderP
 }
 
 function captureChild({ executable, args, env, evidenceRoot, source = 'synthetic', nonce = null }) {
+  const resolvedNonce = nonce || crypto.randomBytes(16).toString('hex');
+  const destination = validateGovernedEvidenceRoot(evidenceRoot || path.join(safeEvidenceRoot(), resolvedNonce));
+
   const started = {
     schemaVersion: 1,
     captureArtifactVersion: 'r13-f8i-2',
     sourceArtifactSha: '4fc82f9984151c843cdea1c3db687b0afc9d7ca0',
     operation: source === 'synthetic' ? 'synthetic' : OPERATION,
+    gateId: source === 'synthetic' ? 'synthetic' : OPERATION,
+    nonce: resolvedNonce,
     executable: path.basename(executable),
     args: args.map(String),
     databaseUrlPresent: Boolean(env && env.DATABASE_URL),
@@ -103,12 +153,14 @@ function captureChild({ executable, args, env, evidenceRoot, source = 'synthetic
     fd4ByteCount: 0,
     fd4Sha256: sha256(Buffer.alloc(0)),
     evidenceState: 'PREPARED',
+    publicationStatus: 'STAGED',
   };
-  return new Promise((resolve) => {
+
+  return new Promise((resolve, reject) => {
     let child;
     try {
       child = spawn(executable, args, {
-        env: { ...process.env, ...env },
+        env: { ...process.env, ...env, R13_PRELOADER_NONCE: resolvedNonce },
         shell: false,
         stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
       });
@@ -117,7 +169,12 @@ function captureChild({ executable, args, env, evidenceRoot, source = 'synthetic
       started.evidenceState = 'CHILD_COMPLETED';
       const empty = Buffer.alloc(0);
       started.evidenceState = 'EVIDENCE_COMPLETE';
-      resolve({ ...started, processCreated: false, evidenceRoot: persistEvidence(evidenceRoot, started, empty, empty, empty, empty) });
+      try {
+        const persisted = persistEvidence(destination, started, empty, empty, empty, empty);
+        resolve({ ...started, processCreated: false, evidenceRoot: persisted });
+      } catch (err) {
+        reject(err);
+      }
       return;
     }
     let spawned = false;
@@ -163,8 +220,13 @@ function captureChild({ executable, args, env, evidenceRoot, source = 'synthetic
       let preloaderProtocol = null;
       if (fd4Bytes.length > 0) {
         try {
-          preloaderProtocol = parsePreloaderProtocol(fd4Bytes.toString('utf8'), nonce);
-        } catch {}
+          preloaderProtocol = parsePreloaderProtocol(fd4Bytes.toString('utf8'), resolvedNonce);
+          started.protocolValid = true;
+          started.protocolError = null;
+        } catch (e) {
+          started.protocolValid = false;
+          started.protocolError = e.message;
+        }
       }
 
       if (code !== 0 || signal !== null) {
@@ -183,7 +245,12 @@ function captureChild({ executable, args, env, evidenceRoot, source = 'synthetic
       }
 
       started.evidenceState = 'EVIDENCE_COMPLETE';
-      resolve({ ...started, evidenceRoot: persistEvidence(evidenceRoot, started, stdout, stderr, eventBytes, fd4Bytes) });
+      try {
+        const persisted = persistEvidence(destination, started, stdout, stderr, eventBytes, fd4Bytes);
+        resolve({ ...started, evidenceRoot: persisted });
+      } catch (persistErr) {
+        reject(persistErr);
+      }
     };
 
     child.once('error', (error) => {
@@ -195,20 +262,34 @@ function captureChild({ executable, args, env, evidenceRoot, source = 'synthetic
 }
 
 function captureTargetIdentity(options = {}) {
-  if (Object.keys(options).length && options.synthetic !== true) throw new Error('E: CLOSED_CAPTURE_INTERFACE');
+  if (Object.keys(options).length && options.synthetic !== true) {
+    throw new Error('E: CLOSED_CAPTURE_INTERFACE');
+  }
+  const nonce = options.nonce || crypto.randomBytes(16).toString('hex');
+  const rootBase = options.evidenceRoot ? validateGovernedEvidenceRoot(options.evidenceRoot) : safeEvidenceRoot();
+  const destination = options.evidenceRoot ? options.evidenceRoot : path.join(rootBase, nonce);
+  const stagingPath = path.join(path.dirname(destination), `.staging-${nonce}`);
+  if (fs.existsSync(destination) || fs.existsSync(stagingPath)) {
+    throw new Error('E: EVIDENCE_DESTINATION_COLLISION');
+  }
+
   return captureChild({
     executable: process.execPath,
     args: [DISPATCHER_PATH, OPERATION],
     env: { DATABASE_URL: process.env.DATABASE_URL },
-    evidenceRoot: options.evidenceRoot,
+    evidenceRoot: destination,
     source: OPERATION,
+    nonce,
   });
 }
 
 module.exports = {
+  GOVERNED_EVIDENCE_ROOT,
+  validateGovernedEvidenceRoot,
+  safeEvidenceRoot,
   captureTargetIdentity,
   classifyChildFailure,
-  __test: { captureChild, persistEvidence, sha256, classifyChildFailure },
+  __test: { captureChild, persistEvidence, sha256, classifyChildFailure, validateGovernedEvidenceRoot },
 };
 
 if (require.main === module) {

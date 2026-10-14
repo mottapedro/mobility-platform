@@ -18,7 +18,7 @@ const EXPECTED_TSX_VERSION = '4.22.3';
 const CATALOG_TEMP_PREFIX = 'r7c-r13-authorized-catalog-';
 const PRISMA_ENV_ALLOWLIST = new Set([
   'path', 'systemroot', 'windir', 'temp', 'tmp', 'userprofile', 'appdata',
-  'localappdata', 'home', 'pathext', 'comspec',
+  'localappdata', 'home', 'pathext', 'comspec', 'r13_preloader_nonce',
 ]);
 const OPERATIONS = Object.freeze([
   'targetIdentity',
@@ -341,7 +341,9 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
 
   const wrapper = deps.preloaderWrapperPath || PRELOADER_WRAPPER_PATH;
   const materializer = path.join(REPOSITORY_ROOT, 'scripts', 'materialize-authorized-migration-catalog.ts');
-  const nonce = (deps.generateNonce || (() => crypto.randomBytes(16).toString('hex')))();
+  const nonce = (deps.generateNonce
+    ? deps.generateNonce()
+    : (process.env.R13_PRELOADER_NONCE || env.R13_PRELOADER_NONCE || crypto.randomBytes(16).toString('hex')));
   const args = [wrapper, materializer, '--output-dir', tempRoot, '--verify-fingerprint'];
   const pipelineStates = new Set(['TRANSPORT_ESTABLISHED']);
   requireBoundaryEvent('MATERIALIZER_PROCESS_CREATE_ATTEMPTED', emit);
@@ -364,8 +366,30 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   requireBoundaryEvent('MATERIALIZER_PROCESS_CREATED', emit);
   requireBoundaryEvent('MATERIALIZER_PROCESS_COMPLETED', emit);
   pipelineStates.add('BYTES_RECEIVED');
-  let childProtocol;
+
+  if (result.output?.[4] && result.output[4].length > 0) {
+    try {
+      const outerFd4Buf = Buffer.isBuffer(result.output[4]) ? result.output[4] : Buffer.from(result.output[4]);
+      let written = 0;
+      while (written < outerFd4Buf.length) {
+        written += (deps.writeSync || fs.writeSync)(4, outerFd4Buf.slice(written));
+      }
+    } catch (relayError) {
+      if (relayError.code !== 'EBADF') {
+        throw withMaterializerDiagnostic(
+          new Error('E: FD4_RELAY_FAILED'),
+          'MATERIALIZER_OUTPUT_INVALID',
+          true,
+          result.status,
+          result.signal,
+        );
+      }
+    }
+  }
+
+  let childProtocol = null;
   let preloaderProtocol = null;
+  let parseError = null;
   try {
     childProtocol = parseChildMaterializerProtocol(result.output?.[3]);
     if (result.output?.[4] && String(result.output[4]).trim() !== '') {
@@ -375,7 +399,42 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
     projectChildMaterializerProtocol(childProtocol, emit);
     pipelineStates.add('RECORDS_ACCEPTED');
   } catch (error) {
-    throw withMaterializerDiagnostic(error, 'MATERIALIZER_OUTPUT_INVALID', true, result.status, result.signal);
+    parseError = error;
+  }
+
+  const evidenceBase = path.resolve((deps.tmpDir || os.tmpdir)());
+  const evidenceDir = path.join(evidenceBase, 'r13-preloader-evidence', nonce);
+  try {
+    const manifest = {
+      schemaVersion: 1,
+      operation: 'materializeAuthorizedCatalog',
+      nonce,
+      processIdentity: preloaderProtocol?.processIdentity || null,
+      status: result.status,
+      signal: result.signal,
+      pipelineStates: Array.from(pipelineStates),
+    };
+    preloaderWrapper.persistPreloaderEvidence(
+      evidenceDir,
+      manifest,
+      Buffer.from(result.stdout || ''),
+      Buffer.from(result.stderr || ''),
+      Buffer.from(result.output?.[3] || ''),
+      Buffer.from(result.output?.[4] || ''),
+    );
+    pipelineStates.add('EVIDENCE_PERSISTED');
+  } catch (err) {
+    throw withMaterializerDiagnostic(
+      new Error('E: EVIDENCE_PERSISTENCE_FAILED'),
+      'MATERIALIZER_OUTPUT_INVALID',
+      true,
+      result.status,
+      result.signal,
+    );
+  }
+
+  if (parseError) {
+    throw withMaterializerDiagnostic(parseError, 'MATERIALIZER_OUTPUT_INVALID', true, result.status, result.signal);
   }
   if (result.signal) {
     throw withMaterializerDiagnostic(
@@ -438,30 +497,6 @@ function materializeAuthorizedCatalog(tempRoot, env, deps) {
   }
   requireBoundaryEvent('AUTHORIZED_CATALOG_IDENTITY_VERIFIED', emit);
   requireBoundaryEvent('AUTHORIZED_CATALOG_MATERIALIZATION_COMPLETED', emit);
-
-  try {
-    const evidenceDir = path.join(tempRoot, '.evidence');
-    const manifest = {
-      schemaVersion: 1,
-      operation: 'materializeAuthorizedCatalog',
-      nonce,
-      processIdentity: preloaderProtocol?.processIdentity || null,
-      status: result.status,
-      signal: result.signal,
-      pipelineStates: Array.from(pipelineStates),
-    };
-    preloaderWrapper.persistPreloaderEvidence(
-      evidenceDir,
-      manifest,
-      Buffer.from(result.stdout || ''),
-      Buffer.from(result.stderr || ''),
-      Buffer.from(result.output?.[3] || ''),
-      Buffer.from(result.output?.[4] || ''),
-    );
-    pipelineStates.add('EVIDENCE_PERSISTED');
-  } catch (err) {
-    if (deps.failOnPersistence) throw err;
-  }
 
   return expectedPath;
 }
