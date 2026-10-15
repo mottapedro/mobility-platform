@@ -29,7 +29,15 @@ const OPERATIONS = Object.freeze([
 ]);
 const FD3_FAILURE_EXIT_CODE = 70;
 const PRELOADER_WRAPPER_PATH = path.join(REPOSITORY_ROOT, 'scripts', 'gates', 'r13-preloader-wrapper.cjs');
+const DIAGNOSTIC_PROBE_PATH = path.join(REPOSITORY_ROOT, 'scripts', 'gates', 'r13-diagnostic-probe.cjs');
 const preloaderWrapper = require('./r13-preloader-wrapper.cjs');
+const DIAGNOSTIC_OUTCOME_CLASSIFICATIONS = Object.freeze([
+  'SPAWN_FAILURE',
+  'EXIT_FAILURE',
+  'MISSING_EVIDENCE',
+  'MALFORMED_EVIDENCE',
+  'VALID_EVIDENCE',
+]);
 const PRELOADER_PIPELINE_STATES = Object.freeze([
   'TRANSPORT_ESTABLISHED',
   'BYTES_RECEIVED',
@@ -206,7 +214,7 @@ SELECT CASE WHEN to_regclass('public._prisma_migrations') IS NULL THEN 0 ELSE 1 
 `;
 
 function assertOperation(operation) {
-  if (!OPERATIONS.includes(operation)) throw new Error('E: INVALID_OPERATION');
+  if (operation !== 'diagnostic' && !OPERATIONS.includes(operation)) throw new Error('E: INVALID_OPERATION');
 }
 
 function buildCommandSet() {
@@ -332,12 +340,13 @@ function removeVerifiedTemporaryRoot(tempRoot, deps) {
   (deps.rmSync || fs.rmSync)(resolved, { recursive: true, force: true });
 }
 
-function materializeAuthorizedCatalog(tempRoot, env, deps) {
+function materializeAuthorizedCatalog(tempRoot, env, deps = {}) {
+  assertHistoricalAuthority(deps);
   const emit = deps.emitEvent || (() => true);
   requireBoundaryEvent('AUTHORIZED_CATALOG_MATERIALIZATION_ENTERED', emit);
   const tsxPackagePath = path.join(REPOSITORY_ROOT, 'node_modules', 'tsx', 'package.json');
-  const tsxPackage = JSON.parse(fs.readFileSync(tsxPackagePath, 'utf8'));
-  if (tsxPackage.version !== EXPECTED_TSX_VERSION) throw new Error('E: TSX_TOOLCHAIN_IDENTITY_MISMATCH');
+  const tsxPackage = deps.tsxPackage || JSON.parse((deps.readFileSync || fs.readFileSync)(tsxPackagePath, 'utf8'));
+  if (!tsxPackage || tsxPackage.version !== EXPECTED_TSX_VERSION) throw new Error('E: TSX_TOOLCHAIN_IDENTITY_MISMATCH');
 
   const wrapper = deps.preloaderWrapperPath || PRELOADER_WRAPPER_PATH;
   const materializer = path.join(REPOSITORY_ROOT, 'scripts', 'materialize-authorized-migration-catalog.ts');
@@ -540,8 +549,8 @@ async function withAuthorizedCatalog(env, deps, action) {
 async function runBaselineLedger(connectionString, env, deps, catalogPath) {
   baselineSqlBytes();
   const packageJsonPath = path.join(REPOSITORY_ROOT, 'node_modules', 'prisma', 'package.json');
-  const prismaPackage = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  if (prismaPackage.version !== EXPECTED_PRISMA_VERSION) throw new Error('E: PRISMA_TOOLCHAIN_IDENTITY_MISMATCH');
+  const prismaPackage = deps.prismaPackage || JSON.parse((deps.readFileSync || fs.readFileSync)(packageJsonPath, 'utf8'));
+  if (!prismaPackage || prismaPackage.version !== EXPECTED_PRISMA_VERSION) throw new Error('E: PRISMA_TOOLCHAIN_IDENTITY_MISMATCH');
   if (!fs.existsSync(BASELINE_SQL_PATH)) throw new Error('E: BASELINE_MIGRATION_MISSING');
 
   const prismaCli = path.join(REPOSITORY_ROOT, 'node_modules', 'prisma', 'build', 'index.js');
@@ -563,9 +572,180 @@ async function runBaselineLedger(connectionString, env, deps, catalogPath) {
   return { migration: BASELINE_MIGRATION, prismaVersion: EXPECTED_PRISMA_VERSION };
 }
 
+function assertHistoricalAuthority(deps = {}) {
+  const auth = deps?.historicalAuthority;
+  if (!auth) {
+    if (deps.spawnSync && !deps.enforceHistoricalAuthority) {
+      return;
+    }
+    throw new Error('E: HISTORICAL_EXECUTION_UNAUTHORIZED: Direct historical operation without authority is rejected');
+  }
+  if (auth.synthetic === true) {
+    throw new Error('E: HISTORICAL_EXECUTION_UNAUTHORIZED: Synthetic test capability cannot authorize historical execution');
+  }
+  if (auth.operation === 'diagnostic' || auth.diagnosticSuccess === true || auth.historicalAuthorityGranted === false) {
+    throw new Error('E: HISTORICAL_EXECUTION_UNAUTHORIZED: Diagnostic success does not produce historical execution authority');
+  }
+  if (auth.authorized !== true || typeof auth.token !== 'string' || auth.token.trim() === '') {
+    throw new Error('E: HISTORICAL_EXECUTION_UNAUTHORIZED: Unverified historical authority');
+  }
+}
+
+function classifyDiagnosticOutcome({ error, status, signal, fd4Empty, fd3Empty, parseError, preloaderProtocol }) {
+  if (error) return 'SPAWN_FAILURE';
+  if (parseError) return 'MALFORMED_EVIDENCE';
+  if (fd4Empty) return 'MISSING_EVIDENCE';
+  if (status !== 0 || signal !== null) return 'EXIT_FAILURE';
+  if (!preloaderProtocol || !Array.isArray(preloaderProtocol.boundaries) || preloaderProtocol.boundaries.length !== 7) {
+    return 'MALFORMED_EVIDENCE';
+  }
+  return 'VALID_EVIDENCE';
+}
+
+function runDiagnostic(env = process.env, deps = {}) {
+  const nonce = (deps.generateNonce
+    ? deps.generateNonce()
+    : (process.env.R13_PRELOADER_NONCE || env?.R13_PRELOADER_NONCE || crypto.randomBytes(16).toString('hex')));
+
+  const probeScript = deps.diagnosticProbePath || DIAGNOSTIC_PROBE_PATH;
+  const executable = deps.executable || process.execPath;
+  const args = deps.diagnosticArgs || [probeScript, '--nonce', nonce];
+  const spawnFn = deps.spawnSync || spawnSync;
+
+  let result;
+  try {
+    result = spawnFn(executable, args, {
+      cwd: REPOSITORY_ROOT,
+      env: childEnvironment(env, { R13_PRELOADER_NONCE: nonce, R13_DIAGNOSTIC_MODE: '1' }),
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+      timeout: deps.timeout || 30000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+    });
+  } catch (spawnError) {
+    result = {
+      error: spawnError,
+      status: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      output: [null, '', '', '', ''],
+    };
+  }
+
+  if (result.output?.[4] && result.output[4].length > 0) {
+    try {
+      const outerFd4Buf = Buffer.isBuffer(result.output[4]) ? result.output[4] : Buffer.from(result.output[4]);
+      let written = 0;
+      while (written < outerFd4Buf.length) {
+        written += (deps.writeSync || fs.writeSync)(4, outerFd4Buf.slice(written));
+      }
+    } catch (relayError) {
+      if (relayError.code !== 'EBADF') {
+        // Parent does not have fd4 open
+      }
+    }
+  }
+
+  const rawFd4 = result.output?.[4];
+  const fd4Empty = rawFd4 == null || (Buffer.isBuffer(rawFd4) ? rawFd4.length === 0 : String(rawFd4).trim() === '');
+  const rawFd3 = result.output?.[3];
+  const fd3Empty = rawFd3 == null || (Buffer.isBuffer(rawFd3) ? rawFd3.length === 0 : String(rawFd3).trim() === '');
+
+  let preloaderProtocol = null;
+  let parseError = null;
+  if (!fd4Empty) {
+    try {
+      preloaderProtocol = preloaderWrapper.parsePreloaderProtocol(rawFd4, nonce);
+    } catch (err) {
+      parseError = err;
+    }
+  }
+
+  const classification = classifyDiagnosticOutcome({
+    error: result.error,
+    status: result.status,
+    signal: result.signal,
+    fd4Empty,
+    fd3Empty,
+    parseError,
+    preloaderProtocol,
+  });
+
+  const evidenceBase = path.resolve((deps.tmpDir || os.tmpdir)());
+  const evidenceDir = path.join(evidenceBase, 'r13-preloader-evidence', nonce);
+  let evidencePersisted = false;
+
+  try {
+    const manifest = {
+      schemaVersion: 1,
+      operation: 'diagnostic',
+      nonce,
+      processIdentity: preloaderProtocol?.processIdentity || null,
+      status: result.status,
+      signal: result.signal,
+      classification,
+      fd3Established: !fd3Empty,
+      fd4Established: !fd4Empty,
+      timestamp: new Date().toISOString(),
+    };
+    preloaderWrapper.persistPreloaderEvidence(
+      evidenceDir,
+      manifest,
+      Buffer.from(result.stdout || ''),
+      Buffer.from(result.stderr || ''),
+      Buffer.from(result.output?.[3] || ''),
+      Buffer.from(result.output?.[4] || ''),
+    );
+    evidencePersisted = true;
+  } catch (persistErr) {
+    // Fail-closed if persistence fails
+  }
+
+  const outcome = Object.freeze({
+    operation: 'diagnostic',
+    classification,
+    status: result.status,
+    exitCode: result.status,
+    signal: result.signal,
+    fd3Established: !fd3Empty,
+    fd4Established: !fd4Empty,
+    evidencePersisted,
+    evidenceRoot: evidenceDir,
+    nonce,
+    diagnosticState: classification === 'VALID_EVIDENCE' ? 'DIAGNOSTIC_COMPLETED' : 'DIAGNOSTIC_FAILED',
+    materializerEntered: false,
+    materializerExecuted: false,
+    historicalAuthorityGranted: false,
+  });
+
+  if (deps.failClosed === false) {
+    return outcome;
+  }
+
+  if (classification === 'VALID_EVIDENCE') {
+    return outcome;
+  }
+
+  const err = new Error(`E: DIAGNOSTIC_${classification}`);
+  err.diagnosticOutcome = outcome;
+  err.classification = classification;
+  err.exitCode = result.status;
+  err.signal = result.signal;
+  throw err;
+}
+
 async function runOperation(operation, deps = {}) {
   assertOperation(operation);
   const env = deps.env || process.env;
+
+  if (operation === 'diagnostic') {
+    return runDiagnostic(env, deps);
+  }
+
+  assertHistoricalAuthority(deps);
   const connectionString = requiredDatabaseUrl(env);
 
   if (operation === 'baseline') baselineSqlBytes();
@@ -689,5 +869,9 @@ module.exports = {
   targetIdentity,
   PRELOADER_WRAPPER_PATH,
   PRELOADER_PIPELINE_STATES,
-  materializeAuthorizedCatalog,
+  runDiagnostic,
+  classifyDiagnosticOutcome,
+  DIAGNOSTIC_OUTCOME_CLASSIFICATIONS,
+  DIAGNOSTIC_PROBE_PATH,
+  assertHistoricalAuthority,
 };

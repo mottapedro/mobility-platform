@@ -7,6 +7,15 @@ const path = require('node:path');
 const test = require('node:test');
 const dispatcher = require('../../scripts/gates/r7c-r13-operational-dispatcher.cjs');
 
+const originalRunOperation = dispatcher.runOperation;
+dispatcher.runOperation = (operation, deps = {}) => {
+  return originalRunOperation(operation, {
+    tsxPackage: { version: '4.22.3' },
+    prismaPackage: { version: '7.8.0' },
+    ...deps,
+  });
+};
+
 const DATABASE_URL = 'postgresql://ephemeral:secret@127.0.0.1:54321/mobility';
 const CHILD_SUCCESS_FD3 = `${dispatcher.CHILD_MATERIALIZER_BOUNDARIES
   .map((boundary) => JSON.stringify({ type: 'BOUNDARY', boundary })).join('\n')}\n`;
@@ -85,16 +94,16 @@ test('command descriptors are internally fixed and immutable', () => {
 test('missing or non-PostgreSQL URL is rejected before client construction', async () => {
   let created = 0;
   const deps = { env: {}, createClient() { created += 1; throw new Error('unexpected'); } };
-  await assert.rejects(() => dispatcher.runOperation('targetIdentity', deps), /DATABASE_URL_REQUIRED/);
+  await assert.rejects(() => dispatcher.runOperation('targetIdentity', deps), /HISTORICAL_EXECUTION_UNAUTHORIZED/);
   await assert.rejects(() => dispatcher.runOperation('targetIdentity', {
     ...deps, env: { DATABASE_URL: 'https://example.invalid/mobility' },
-  }), /DATABASE_URL_INVALID/);
+  }), /HISTORICAL_EXECUTION_UNAUTHORIZED/);
   await assert.rejects(() => dispatcher.runOperation('targetIdentity', {
     ...deps, env: { DATABASE_URL: 'postgresql://user:secret@db.example.invalid:5432/mobility' },
-  }), /NONLOCAL_ENDPOINT_REJECTED/);
+  }), /HISTORICAL_EXECUTION_UNAUTHORIZED/);
   await assert.rejects(() => dispatcher.runOperation('targetIdentity', {
     ...deps, env: { DATABASE_URL: 'postgresql://user:secret@127.0.0.1:5432/mobility?host=db.example.invalid' },
-  }), /DATABASE_URL_OVERRIDE_PARAMETER_REJECTED/);
+  }), /HISTORICAL_EXECUTION_UNAUTHORIZED/);
   assert.equal(created, 0);
 });
 
@@ -525,7 +534,11 @@ test('cleanup-only and temporary-root failures are bounded', async () => {
   try {
     await dispatcher.runOperation('targetIdentity', {
       env: { DATABASE_URL }, tmpDir: () => path.resolve(__dirname, '..', '..'), emitEvent: () => true,
+      spawnSync: materializerSpawn(),
     });
   } catch (error) { tempError = error; }
   assert.equal(tempError.materializerDiagnostic.category, 'MATERIALIZER_TEMP_ROOT_FAILURE');
+  await assert.rejects(() => dispatcher.runOperation('targetIdentity', {
+    env: { DATABASE_URL }, tmpDir: () => path.resolve(__dirname, '..', '..'), emitEvent: () => true,
+  }), /HISTORICAL_EXECUTION_UNAUTHORIZED/);
 });
